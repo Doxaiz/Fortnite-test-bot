@@ -7782,7 +7782,10 @@ LeaveStart(reason, manual := false) {
     if (!CFG.dryRun && hwnd && !WinActive("ahk_id " hwnd) && CFG.smartRestore) {
         CoordMode("Mouse", "Screen")
         try ST.leaveSavedHwnd := WinActive("A")
-        try MouseGetPos(&ST.leaveSavedX, &ST.leaveSavedY)
+                try {
+                    MouseGetPos(&lmx, &lmy)
+                    ST.leaveSavedX := lmx, ST.leaveSavedY := lmy
+                }
         area := GetClientArea(hwnd)
         if area
             try DllCall("SetCursorPos", "Int", area.x + area.w // 2, "Int", area.y + area.h // 2, "Int")
@@ -8284,7 +8287,10 @@ ZeroNetCameraNudge() {
         return false
     ST.xpSynthUntil := A_TickCount + 1800
     back := ZeroNetSmoothStep(-out.sentX, -out.sentY)
-    try MouseGetPos(&ST.xpLastCurX, &ST.xpLastCurY)
+    try {
+        MouseGetPos(&xmx, &xmy)
+        ST.xpLastCurX := xmx, ST.xpLastCurY := xmy
+    }
     return back.ok
 }
 
@@ -8551,7 +8557,10 @@ MacroRecCountdownTick() {
     ST.macroPrevKeys := Map()
     ST.macroRecStart := A_TickCount
     ST.macroLastT := A_TickCount
-    try MouseGetPos(&ST.macroLastCurX, &ST.macroLastCurY)
+    try {
+        MouseGetPos(&mmx, &mmy)
+        ST.macroLastCurX := mmx, ST.macroLastCurY := mmy
+    }
     ST.macroRec := true
     PlayAlertBeep(1046, 120)
     Flash("● ЗАПИСЬ МАРШРУТА ИДЁТ (Esc — сохранить и остановить)", 2600)
