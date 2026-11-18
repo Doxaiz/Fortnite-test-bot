@@ -13136,7 +13136,7 @@ OnCalibrate(*) {
     Log("  в панели лобби жёлтых: " lobbyY.Length "   кремовая «Отменить»: " (cream ? "да" : "нет"))
     Log("  HP " hb.hp.pct "% (" hb.hp.run " px)  щит " hb.sh.pct "% (" hb.sh.run " px)"
         . "   [порог лечения " CFG.hpLowPercent "%]")
-    Log("  сундук: " (chest ? ("да, " chest.area " px в (" chest.cx "," chest.cy ")") : "нет")
+    Log("  сундук: " (chest ? ("да, " chest.area " px в (" (chest.HasOwnProp("cx") ? chest.cx : chest.x) "," (chest.HasOwnProp("cy") ? chest.cy : chest.y) ")") : "нет")
         . "   лут: " (loot ? (loot.kind ", " loot.area " px") : "нет"))
     cand := EnemyCandidates(shot)
     Log("  враг: " (enemy ? ("да (" enemy.src ") в (" enemy.cx "," enemy.cy ")") : "нет")
