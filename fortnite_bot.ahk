@@ -4,12 +4,12 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — бот для Fortnite на AutoHotkey v2
-;@Ahk2Exe-SetVersion          8.0.0.0
+;@Ahk2Exe-SetVersion          8.13.2.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        FORMA
 ;@Ahk2Exe-SetMainIcon         forma.ico
 ; ============================================================================
-;  FORMA v8.13 — фарм-бот для Fortnite на чистом AutoHotkey v2
+;  FORMA — визуальная автоматизация для Fortnite на AutoHotkey v2
 ;
 ;  НИЧЕГО СКАЧИВАТЬ НЕ НУЖНО: только AutoHotkey v2. Всё внутри одного файла:
 ;  захват кадра (GDI), распознавание сцены по цвету и форме, ввод, меню.
@@ -808,6 +808,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
+global FORMA_VERSION := "8.13.2"
 global CFG := {
     ; ---- окно игры ----
     winTitle:     "ahk_class UnrealWindow",
@@ -926,7 +927,6 @@ global CFG := {
     hudLostMs:      3000,       ; HUD пропал дольше — только тогда выходим из матча
     sceneHoldMs:    1200,       ; слабую сцену меняем не чаще
     hpBarMinThick:  6,          ; и толщиной хотя бы столько строк
-    slotsBrightMin: 0.015,      ; справочно: яркость панели слотов (для журнала)
     endDarkRatio:   0.45,       ; затемнение экрана итогов (резервный признак)
     deathBrightMin: 0.10,       ; яркая панель «ВАС УСТРАНЯЕТ» => мы устранены
     deathEscMs:     45000,      ; столько ждём на экране смерти, потом Esc
@@ -1160,7 +1160,6 @@ global CFG := {
     scanLootMs:    200,     ; общий проход по области лута (золото+редкости)
     scanChestMs:   160,     ; v7.6: сундуки не ищем каждый тик — run-21 показывал
                             ; тик 400-2000 мс, а FindChest был в нём каждый раз
-    scanHpMs:      300,
     scanMenuMs:    200,
     scanDensityMs: 150,
     scanSoundMs:   500,
@@ -1207,7 +1206,6 @@ global CFG := {
 ; ============================================================================
 global ST := {
     state:        "UNKNOWN",   ; MENU | MATCHMAKING | GAME | END_SCREEN | UNKNOWN
-    target:       0,
     prompt:       0,
     density:      0.0,
     hpPercent:    -1,
@@ -1235,7 +1233,6 @@ global ST := {
     pendingCount: 0,
     queueTries:   0,
     lastBeat:     0,
-    lastLobbyBtn: 0,
     lastLobbyAt:  0,
     prevShot:     0,
     held:         Map(),
@@ -1257,7 +1254,6 @@ global ST := {
     queueSeen:    false,        ; видели экран поиска в этом заходе
     lastAimT:     0,            ; когда последний раз подводили прицел
     tgt:          0,            ; объект, по которому нажали E: {x,y,kind,at}
-    lastHpSeenT:  0,            ; когда последний раз видели полосу HP (матч идёт)
     matchStartT:  0,            ; когда вошли в матч
     phase:        "",           ; эпизод матча: air | land | loot | roam
     phaseAt:      0,
@@ -1328,10 +1324,12 @@ global ST := {
     tickLong:     0,            ; сколько раз тик работал дольше 2 с
     tickReentry:  0,            ; сколько раз пропустили вход (тик не успел)
     lastTickMs:   0,            ; длительность последнего тика
+    tickProfile:  0,            ; профиль завершённого тика
     winTxt:       "",           ; заголовок окна, из которого берём кадр
     sprintOn:     false,        ; зажат Shift (бежим)
     crouchOn:     false,        ; зажат Ctrl (присели)
-    adsOn:        false,        ; зажата ПКМ (прицел)
+    adsOn:        false,        ; бот удерживает ПКМ (прицел)
+    leftDown:     false,        ; бот удерживает ЛКМ
     sprintUntil:  0,            ; до какого времени держим бег
     lastJumpT:    0,            ; когда прыгали
     lastSlideT:   0,            ; когда подкатывались
@@ -1350,12 +1348,9 @@ global ST := {
     hudFound:     0,            ; последняя найденная полоса HP (для журнала и окна)
     hudFoundSeq:  0,            ; кадр, на котором она была найдена
     enemyTrackSeq: 0,           ; кадр, на котором построена диагностическая метка
-    hudLastT:     0,            ; когда HUD матча видели в последний раз
-    hudFoundT:    0,
+    hudLastT:     0,            ; время захвата последнего кадра с подтверждённым HUD
+    hudWindow:    0,            ; окно, к которому относится память HUD
     hudScore:     0,            ; сколько признаков матча видно
-    hudEvAt:      0,            ; кэш признаков матча (одного замера на 120 мс хватает)
-    hudEvScore:   0,
-    hudEvShot:    "",
     hudWhy:       "",           ; из чего сложились признаки
     sceneSince:   0,            ; когда приняли текущую сцену
     sceneRaw:     "",           ; что видит детектор без «липкости»
@@ -1480,14 +1475,12 @@ global ST := {
     chestCache:   0,
     chestCacheAt: 0,            ; когда сундуки искали в последний раз
     chestCacheSeq: 0,           ; кадр использованной маски
-    hpCache:      0,
     soundCache:   0,
     soundCacheSeq: 0,           ; ID кадра, на котором получен звук
     scanMenuAt:   0,
     scanDensityAt:0,
     scanEnemyAt:  0,
     scanLootAt:   0,
-    scanHpAt:     0,
     scanSoundAt:  0,
     paused:       false,
     running:      false,
@@ -1552,7 +1545,6 @@ global PHOTO_PY := [
     "    btnMinW=0.06, btnMaxW=0.45, btnMinAspect=1.6,",
     "    chestGoldArea=1500, lootMinArea=500,",
     "    hpBarFrac=0.159, shBarFrac=0.159, hpPresentPx=40,",
-    "    slotsBrightMin=0.015,",
     "    enemyCenterFrac=0.40,",
     "    skinCell=8, skinStep=6,",
     "    enemySkinMinPct=8, enemySkinMaxPct=60,",
@@ -2711,7 +2703,10 @@ global MC_RAW := {active:false, registered:false, sink:0, hwnd:0, packets:0, act
 global lastLogMsg := ""      ; (оставлено для совместимости с прежними вызовами)
 global lastLogT := 0
 
-Init()
+; #Include из тестов предоставляет функции и состояние без интерфейса,
+; хоткеев, таймеров и чтения пользовательских настроек.
+if (A_IsCompiled || A_LineFile = A_ScriptFullPath)
+    Init()
 
 ; ============================================================================
 ;                          УТИЛИТЫ И ДАЛЬШЕ
@@ -2725,6 +2720,24 @@ SlotKey(n) {
 ; ============================================================================
 ;                               УТИЛИТЫ
 ; ============================================================================
+FormaTitle() {
+    global FORMA_VERSION
+    return "FORMA v" FORMA_VERSION
+}
+
+FormaBuildInfo() {
+    static info := ""
+    if (info = "") {
+        info := FormaTitle() " · " (A_IsCompiled ? "EXE" : "AHK") " «" A_ScriptName "»"
+            . " · AutoHotkey " A_AhkVersion " (" (A_PtrSize * 8) " бит)"
+        ; Без полного пути. Размер и дата помогают различать файлы, но не
+        ; являются контрольной суммой.
+        try info .= " · файл " FileGetSize(A_ScriptFullPath) " байт, изменён "
+            . FormatTime(FileGetTime(A_ScriptFullPath), "yyyy-MM-dd HH:mm:ss")
+    }
+    return info
+}
+
 Log(msg) {
     global CFG, LogBuf, UI
     LogBuf.Push(FormatTime(, "HH:mm:ss") "  " msg)
@@ -2757,7 +2770,7 @@ RefreshLog() {
 ; не видно: скрипт замирал, а в журнале не было ни строки. Теперь ошибка
 ; пишется в журнал с номером строки, показывается подсказкой, а работа
 ; продолжается.
-LogFatal(err, mode) {
+LogFatal(err, mode, context := "") {
     global ST
     ST.lastError := A_TickCount
     line := ""
@@ -2776,7 +2789,8 @@ LogFatal(err, mode) {
     catch {
     }
     ; mode: Return (можно продолжить) / Exit (поток завершится) / ExitApp (беда)
-    Log("[!!] ОШИБКА (" mode "): " msg " · " what " · строка " line)
+    Log("[!!] ОШИБКА (" mode "): " msg (what != "" ? " · " what : "")
+        . " · строка " line (context != "" ? " · " context : ""))
     Toast("Ошибка в скрипте", msg " (строка " line ")", 6000)
     ; По документации AHK v2: 1 — подавить диалог и остальные обработчики;
     ; текущий поток (один тик таймера) завершается, а сам таймер продолжает
@@ -3041,8 +3055,15 @@ CaptureClient(hwnd) {
         return 0
     }
     ST.visSrc := ST.capSource
-    ST.captureSeq += 1
-    shot.captureId := ST.captureSeq
+    ; Диагностика и цикл могут чередовать захваты. ID выдаём атомарно.
+    previous := Critical("On")
+    try {
+        ST.captureSeq += 1
+        shot.captureId := ST.captureSeq
+    } finally {
+        Critical(previous)
+    }
+    shot.hwnd := hwnd
     ; Время НАЧАЛА захвата — консервативная оценка возраста кадра. При медленном
     ; PrintWindow время детектора нельзя принимать за время съёмки.
     shot.capturedAt := t0
@@ -3595,12 +3616,13 @@ RareBanner(shot) {
     return (GoldBandRows(shot, r) >= CFG.bannerBandRows)
 }
 
-FindChest(shot) {
+FindChest(shot, masks := 0) {
     ; Сундук: плотное золотое пятно (RGB ≈ 153,91,1 + свечение).
     ; Маски берём из ОДНОГО общего прохода (CachedLootMasks) — это вчетверо
     ; дешевле, чем сканировать область лута отдельно под каждый цвет.
     global CFG
-    list := LootMask(CachedLootMasks(shot), "gold")
+    live := !IsObject(masks)
+    list := LootMask(live ? CachedLootMasks(shot) : masks, "gold")
     best := 0
     for c in list {
         if (c.area < CFG.chestGoldArea)
@@ -3615,8 +3637,9 @@ FindChest(shot) {
             continue
         if (c.w > CFG.chestMaxW || c.h > CFG.chestMaxH)
             continue
-        ; место, где E уже не сработало, второй раз не трогаем
-        if SpotIsBad(c.cx, c.cy)
+        ; Рабочий цикл не трогает место, где E уже не сработало. F5
+        ; показывает кандидатов без изменения списка таких мест.
+        if (live && SpotIsBad(c.cx, c.cy))
             continue
         if (!best || c.area > best.area)
             best := c
@@ -3624,10 +3647,12 @@ FindChest(shot) {
     return best
 }
 
-FindLoot(shot) {
+FindLoot(shot, masks := 0) {
     ; Предметы по редкости: зелёный / синий / фиолетовый (золото — сундук выше)
     global CFG
-    masks := CachedLootMasks(shot)
+    live := !IsObject(masks)
+    if live
+        masks := CachedLootMasks(shot)
     best := 0
     for mode in ["green", "blue", "purple"] {
         for c in LootMask(masks, mode) {
@@ -3637,7 +3662,7 @@ FindLoot(shot) {
             ; Это фильтр ложных кандидатов, не распознавание предмета.
             if (c.area > shot.w * shot.h * 0.03 || c.w > shot.w * 0.30 || c.h > shot.h * 0.25)
                 continue
-            if SpotIsBad(c.cx, c.cy)
+            if (live && SpotIsBad(c.cx, c.cy))
                 continue
             if (!best || c.area > best.area)
                 best := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area, kind: mode
@@ -3735,16 +3760,14 @@ CrosshairRed(shot) {
 ; Кандидаты в «врага» для калибровки (F5): видно, что именно нашлось и что
 ; отсеялось. v7.7: полосок HP у врага в игре нет, поэтому кандидаты — фигуры,
 ; цифры урона и метки звука.
-EnemyCandidates(shot) {
-    global CFG, ST
+EnemyCandidates(shot, f, skinPct) {
     out := []
-    f := FindEnemySkin(shot, CFG.enemyFastFrac)
     if f
         out.Push({w: f.w, h: f.h, cx: f.cx, cy: f.cy, dist: f.dist, pass: true
                 , src: "фигура (кожа " f.skin "%)"})
     else
-        out.Push({w: 0, h: 0, cx: 0, cy: 0, dist: ST.enemySkinPct
-                , pass: false, src: "фигуры нет (кожи " ST.enemySkinPct "%)"})
+        out.Push({w: 0, h: 0, cx: 0, cy: 0, dist: skinPct
+                , pass: false, src: "фигуры нет (кожи " skinPct "%)"})
     d := FindDamageNumber(shot)
     if d
         out.Push({w: d.w, h: d.h, cx: d.cx, cy: d.cy
@@ -3883,7 +3906,7 @@ MarkFalseEnemy(x, y) {
 }
 
 ; --- канал 1: фигура игрока -------------------------------------------------
-FindEnemySkin(shot, frac := 0, stepIn := 0) {
+FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
     global CFG, ST
     if (frac <= 0)
         frac := CFG.enemyFastFrac
@@ -3952,7 +3975,10 @@ FindEnemySkin(shot, frac := 0, stepIn := 0) {
     if (all < 40)
         return 0
     pct := skin / all * 100
-    ST.enemySkinPct := Round(pct)
+    if diagnostic
+        diagnostic.skinPct := Round(pct)
+    else
+        ST.enemySkinPct := Round(pct)
     if (pct < CFG.enemySkinMinPct || pct > CFG.enemySkinMaxPct)
         return 0
     ; 5) голова должна быть УЖЕ плеч: у человека верх бокса узкий, у камня,
@@ -3975,7 +4001,7 @@ FindEnemySkin(shot, frac := 0, stepIn := 0) {
     if (cx > shot.w * 0.34 && cx < shot.w * 0.66
         && (by1 + bh) > shot.h * 0.55 && bw > shot.w * 0.08)
         return 0
-    if NearFalseEnemy(cx, by1 + bh // 2)
+    if (!diagnostic && NearFalseEnemy(cx, by1 + bh // 2))
         return 0
     return {x: bx1, y: by1, w: bw, h: bh, cx: cx
           , cy: by1 + Round(bh * 0.55)
@@ -4978,15 +5004,16 @@ LightRatio(shot, rect) {
 
 BrightRatio(shot, region, thr := 165) {
     r := RegionToPixels(shot, region)
+    buf := shot.buf, stride := shot.stride
     cnt := 0, tot := 0
     y := r.y1
     while (y < r.y2) {
-        TickCheck("скан пикселей")   ; run-11: скан тоже обязан уметь прерваться
+        TickCheck("скан пикселей")
+        row := y * stride
         x := r.x1
         while (x < r.x2) {
-            o := y * shot.stride + x * 4
-            b := NumGet(shot.buf, o, "UChar"), g := NumGet(shot.buf, o + 1, "UChar")
-            rr := NumGet(shot.buf, o + 2, "UChar")
+            px := NumGet(buf, row + x * 4, "UInt") ; BGRX, старший байт не учитывается
+            b := px & 255, g := (px >> 8) & 255, rr := (px >> 16) & 255
             if ((rr * 299 + g * 587 + b * 114) // 1000 >= thr)
                 cnt += 1
             tot += 1
@@ -5048,80 +5075,93 @@ FindHealthBar(shot) {
     return best
 }
 
-; СКОЛЬКО ПРИЗНАКОВ МАТЧА ВИДНО. Раньше ответ был «да/нет» по одной полосе, и
-; от одного дрогнувшего замера рушилось всё. Теперь это сумма признаков, а
-; решение принимает InMatchHud с «памятью» (hudHoldMs / hudLostMs).
-HudEvidence(shot) {
-    global CFG, ST
-    ; InMatchHud зовут несколько раз за тик (детектор сцены, фазa матча,
-    ; смерть) — незачем искать полосу заново каждые 50 мс.
-    if (ST.hudEvAt && A_TickCount - ST.hudEvAt < 120 && ST.hudEvShot = shot.w "x" shot.h)
-        return ST.hudEvScore
-    ST.hudEvAt := A_TickCount
-    ST.hudEvShot := shot.w "x" shot.h
-    score := 0, why := ""
-
-    hpb := FindHealthBar(shot)
-    ; Полоса и id записываются вместе: F3 не должен рисовать старую рамку
-    ; поверх другого снимка, включая отдельный захват при остановленном боте.
-    prev := Critical("On")
-    ST.hudFound := hpb, ST.hudFoundSeq := shot.captureId
-    Critical(prev)
-    if hpb {
-        score += 2
-        why .= (hpb.kind = "sh" ? "щит " : "HP ") hpb.run "px "
+; Оценки принадлежат буферу кадра. Повторные вызовы в том же тике
+; переиспользуют законченный результат; одинаковый размер двух кадров
+; не делает их одним снимком. Диагностика F5 не публикует эти оценки в ST.
+FrameHealth(shot, budgeted := false) {
+    if shot.HasOwnProp("healthReading")
+        return shot.healthReading
+    if budgeted {
+        if shot.HasOwnProp("healthDeferred")
+            return 0
+        if !ScanAllow(1) {
+            ; Отсрочка — не замер и не повод вернуть HP прошлого кадра.
+            shot.healthDeferred := true
+            return 0
+        }
     }
-
-    ; панель слотов: в матче она почти пустая и тёмная, в лобби — залитая
-    ST.hudSlots := BrightRatio(shot, CFG.regSlots, 170)
-    if (ST.hudSlots > 0.004 && ST.hudSlots < 0.35) {
-        score += 1
-        why .= "слоты " Round(ST.hudSlots * 1000) / 1000 " "
-    }
-
-    ; прицел: в матче он есть всегда, в лобби вместо него курсор
-    if (CrosshairCenter(shot)) {
-        score += 1
-        why .= "прицел "
-    }
-
-    ST.hudScore := score
-    ST.hudWhy := why
-    ST.hudEvScore := score
-    return score
+    reading := HealthBars(shot)
+    TickCheck("после замера HP")
+    shot.healthReading := reading
+    return reading
 }
 
-InMatchHud(shot) {
-    ; Признак матча — полоса HP/щита (ищем по широкой полосе) плюс «память»:
-    ; если HUD был виден только что, матч продолжается, даже если один замер
-    ; дрогнул. В лобби полосы нет вовсе, поэтому ложных «матчей» это не даёт.
-    global CFG, ST
-    hb := CachedHealth(shot)
-    ST.hudHp := hb.hp.run
-    score := HudEvidence(shot)
-    now := A_TickCount
-    ; Два слабых признака (яркие «слоты» и «прицел» на фоне лобби)
-    ; не доказывают матч. Нужна полоса в области HUD и ещё один признак.
-    if (score >= 3 && ST.hudFound && hb.hp.pct >= 0) {
-        ST.hudLastT := now
-        ST.hudFoundT := now
-        return true
+FrameHudEvidence(shot, budgeted := false) {
+    global CFG
+    if shot.HasOwnProp("hudEvidence")
+        return shot.hudEvidence
+    bar := FindHealthBar(shot)
+    score := bar ? 2 : 0
+    why := bar ? (bar.kind = "sh" ? "щит " : "HP ") bar.run "px " : ""
+    slots := BrightRatio(shot, CFG.regSlots, 170)
+    if (slots > 0.004 && slots < 0.35) {
+        score += 1
+        why .= "слоты " Round(slots * 1000) / 1000 " "
     }
-    if (ST.hudLastT && (now - ST.hudLastT < CFG.hudHoldMs))
-        return true
-    return false
+    if CrosshairCenter(shot) {
+        score += 1
+        why .= "прицел"
+    }
+    ; Два слабых признака или один цветной прямоугольник не подтверждают
+    ; матч. Точный замер HP нужен только при достаточно сильных признаках.
+    reading := (score >= 3 && bar) ? FrameHealth(shot, budgeted) : 0
+    if shot.HasOwnProp("healthDeferred") && !reading
+        why .= " · замер HP отложен"
+    evidence := {bar:bar, score:score, slots:slots, why:Trim(why)
+        , hpRun:reading ? reading.hp.run : 0, confirmed:reading && reading.hp.pct >= 0}
+    TickCheck("после проверки HUD")
+    shot.hudEvidence := evidence
+    return evidence
+}
+
+PublishFrameHud(shot, evidence) {
+    global ST
+    previous := Critical("On")
+    try {
+        if (ST.hudWindow != shot.hwnd) {
+            ST.hudWindow := shot.hwnd
+            ST.hudLastT := 0
+        }
+        ST.hudFound := evidence ? evidence.bar : 0
+        ST.hudFoundSeq := shot.captureId
+        ST.hudScore := evidence ? evidence.score : 0
+        ST.hudWhy := evidence ? evidence.why : "не проверялся: меню/итоги"
+        ST.hudSlots := evidence ? evidence.slots : 0.0
+        ST.hudHp := evidence ? evidence.hpRun : 0
+        if (evidence && evidence.confirmed)
+            ST.hudLastT := Max(ST.hudLastT, shot.capturedAt)
+    } finally {
+        Critical(previous)
+    }
+}
+
+MatchHudRecentlySeen(now, limit) {
+    global ST
+    return ST.hudLastT && now >= ST.hudLastT && now - ST.hudLastT < limit
 }
 
 DarkRatio(shot, region) {
     r := RegionToPixels(shot, region)
+    buf := shot.buf, stride := shot.stride
     cnt := 0, tot := 0
     y := r.y1
     while (y < r.y2) {
-        TickCheck("скан пикселей")   ; run-11: скан тоже обязан уметь прерваться
+        TickCheck("скан пикселей")
+        row := y * stride
         x := r.x1
         while (x < r.x2) {
-            o := y * shot.stride + x * 4
-            if (NumGet(shot.buf, o, "UChar") + NumGet(shot.buf, o + 1, "UChar") + NumGet(shot.buf, o + 2, "UChar") < 120)
+            px := NumGet(buf, row + x * 4, "UInt")
+            if ((px & 255) + ((px >> 8) & 255) + ((px >> 16) & 255) < 120)
                 cnt += 1
             tot += 1
             x += 4
@@ -5196,8 +5236,9 @@ BgInputActive() {
 }
 
 InputDownAllowed(epoch) {
-    global ST
-    return ST.running && !ST.paused && !ST.tickAbort && epoch = ST.inputEpoch
+    global CFG, ST
+    ; DryRun проверяется у отправки, а не только у отдельных действий.
+    return !CFG.dryRun && ST.running && !ST.paused && !ST.tickAbort && epoch = ST.inputEpoch
 }
 
 KeyDown(code, expectedEpoch := -1) {
@@ -5206,7 +5247,7 @@ KeyDown(code, expectedEpoch := -1) {
     ; сразу после отправки, но до внесения в held. Для одного кода допускаем
     ; только одно незавершённое нажатие.
     prev := Critical("On")
-    if (!ST.running || ST.paused || ST.tickAbort || ST.held.Has(code) || ST.inputDownPending.Has(code)
+    if (!InputDownAllowed(ST.inputEpoch) || ST.held.Has(code) || ST.inputDownPending.Has(code)
         || (expectedEpoch >= 0 && ST.inputEpoch != expectedEpoch)) {
         Critical(prev)
         return false
@@ -5225,7 +5266,9 @@ KeyDown(code, expectedEpoch := -1) {
             catch
                 sent := false
         } else {
-            if (!GameResponsive() || !InputDownAllowed(epoch))
+            ; Alt+Tab мог произойти после захвата. Системный ввод только
+            ; пока активно то окно, с которым работает тик.
+            if (!GameResponsive() || !ST.hwnd || !WinActive("ahk_id " ST.hwnd) || !InputDownAllowed(epoch))
                 return false
             attempted := true
             try {
@@ -5375,16 +5418,8 @@ ReleaseKeys() {
     for code, _ in ST.held.Clone()
         KeyUp(code)
     ST.held := Map()
-    ; страховка: если действие прервалось между MouseDown и MouseUp, кнопка
-    ; осталась бы зажатой — в игре это «стрельба без остановки»
-    try
-        DllCall("mouse_event", "UInt", 0x0004, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    ; то же и для прицела (ПКМ): зажатый прицел после сбоя мешает идти и стрелять
-    try
-        DllCall("mouse_event", "UInt", 0x0010, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    ST.sprintOn := false
-    ST.crouchOn := false
-    ST.adsOn := false
+    ReleaseMouseButtons()
+    ST.sprintOn := false, ST.crouchOn := false
 }
 
 ForceKeyUp(code) {
@@ -5428,11 +5463,8 @@ ReleaseKeysSafe() {
         }
     }
     ST.held := Map()
-    ST.sprintOn := false, ST.crouchOn := false, ST.adsOn := false
-    try
-        DllCall("mouse_event", "UInt", 0x0004, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    try
-        DllCall("mouse_event", "UInt", 0x0010, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
+    ST.sprintOn := false, ST.crouchOn := false
+    ReleaseMouseButtons()
 }
 
 HeldCount() {
@@ -5449,6 +5481,8 @@ MouseSmooth(dx, dy := 0, durMs := 0) {
     if (!dx && !dy)
         return
     epoch := ST.inputEpoch
+    if !InputDownAllowed(epoch)
+        return
     micro := Max(3, CFG.mouseMicroPx)
     dist := Sqrt(dx * dx + dy * dy)
     steps := Clamp(Ceil(dist * 1.9 / micro) + 2, 5, 90)
@@ -5461,7 +5495,7 @@ MouseSmooth(dx, dy := 0, durMs := 0) {
         i := 1
         while (i <= steps) {
             TickCheck("плавный поворот")
-            if (!ST.running || ST.paused || ST.tickAbort || ST.inputEpoch != epoch || !MouseAllowed())
+            if (!InputDownAllowed(epoch) || !MouseAllowed())
                 return
             t := i / steps
             e := 10 * t ** 3 - 15 * t ** 4 + 6 * t ** 5
@@ -5477,7 +5511,7 @@ MouseSmooth(dx, dy := 0, durMs := 0) {
         ; Если лимит числа шагов сработал, остаток тоже идёт мелкими шагами.
         while (sx != dx || sy != dy) {
             TickCheck("доводка поворота")
-            if (!ST.running || ST.paused || ST.tickAbort || ST.inputEpoch != epoch || !MouseAllowed())
+            if (!InputDownAllowed(epoch) || !MouseAllowed())
                 return
             stepX := Round(Clamp(dx - sx, -micro, micro))
             stepY := Round(Clamp(dy - sy, -micro, micro))
@@ -5494,7 +5528,8 @@ MoveCursorHuman(x, y) {
     ; Курсор проходит промежуточные точки; после F8/паузы/утраты фокуса
     ; не продолжаем движение и не кликаем. Не используем прыжок в конце.
     global CFG, ST
-    if (!ST.running || ST.paused || ST.tickAbort)
+    epoch := ST.inputEpoch
+    if !InputDownAllowed(epoch)
         return false
     if !MouseAllowed()
         return MouseBlockedNote("движение курсора")
@@ -5512,7 +5547,7 @@ MoveCursorHuman(x, y) {
     i := 1
     while (i <= steps) {
         TickCheck("движение курсора")
-        if (!ST.running || ST.paused || ST.tickAbort)
+        if !InputDownAllowed(epoch)
             return false
         if !MouseAllowed()
             return MouseBlockedNote("движение курсора")
@@ -5570,10 +5605,13 @@ MouseBlockedNote(where) {
 
 MouseRel(dx, dy := 0, smooth := false) {
     global CFG, ST
-    if (!ST.running || ST.paused || ST.tickAbort)
+    epoch := ST.inputEpoch
+    if !InputDownAllowed(epoch)
         return false
     if !MouseAllowed()
         return MouseBlockedNote("поворот камеры")
+    if !InputDownAllowed(epoch)
+        return false
     if (CFG.humanize && !smooth) {
         dx *= RndF(0.92, 1.08)
         dy *= RndF(0.92, 1.08)
@@ -5589,19 +5627,42 @@ MouseRel(dx, dy := 0, smooth := false) {
 
 MouseDown(where := "кнопка мыши") {
     global ST
-    if (!ST.running || ST.paused || ST.tickAbort)
+    epoch := ST.inputEpoch
+    if !InputDownAllowed(epoch)
         return false
     if !MouseAllowed()
         return MouseBlockedNote(where)
-    DllCall("mouse_event", "UInt", 0x0002, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    return true
+    prev := Critical("On")
+    try {
+        if (!InputDownAllowed(epoch) || ST.leftDown)
+            return false
+        DllCall("mouse_event", "UInt", 0x0002, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
+        ST.leftDown := true
+        return true
+    } finally {
+        Critical(prev)
+    }
 }
 
 MouseUp() {
-    ; Отпускание НЕ блокируем: если кнопка осталась зажатой до перехода в фон,
-    ; её обязательно нужно отпустить, иначе она «залипнет» у вас в браузере.
-    DllCall("mouse_event", "UInt", 0x0004, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    return true
+    global ST
+    ; Снимаем только удержание бота, в том числе после Alt+Tab или смены
+    ; режима. Без удержания DryRun не посылает лишний mouse up в чужое окно.
+    prev := Critical("On")
+    try {
+        if !ST.leftDown
+            return false
+        DllCall("mouse_event", "UInt", 0x0004, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
+        ST.leftDown := false
+        return true
+    } finally {
+        Critical(prev)
+    }
+}
+
+ReleaseMouseButtons() {
+    try MouseUp()
+    try AdsSet(false)
 }
 
 ClickScreen(x, y) {
@@ -5817,20 +5878,22 @@ CrouchSet(on) {
 ; Прицел (ПКМ). Игра слушает правую кнопку мыши, а не клавишу.
 AdsSet(on) {
     global ST
-    if (on = ST.adsOn)
-        return
-    ; Не нажимаем ПКМ после F8/паузы и без фокуса в фон-режиме.
-    if (on && (!ST.running || ST.paused || ST.tickAbort))
+    epoch := ST.inputEpoch
+    if (on = ST.adsOn || (on && !InputDownAllowed(epoch)))
         return false
     if (on && !MouseAllowed())
         return MouseBlockedNote("прицел ПКМ")
+    prev := Critical("On")
     try {
-        if on
-            DllCall("mouse_event", "UInt", 0x0008, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-        else
-            DllCall("mouse_event", "UInt", 0x0010, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
+        if (on = ST.adsOn || (on && !InputDownAllowed(epoch)))
+            return false
+        DllCall("mouse_event", "UInt", on ? 0x0008 : 0x0010
+            , "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
+        ST.adsOn := on
+        return true
+    } finally {
+        Critical(prev)
     }
-    ST.adsOn := on
 }
 
 JumpNow(reason := "") {
@@ -6429,7 +6492,9 @@ TryHeal(shot, now) {
     TraceStep("лечение")
     if !CFG.featHeal
         return false
-    hb := CachedHealth(shot)
+    hb := FrameHealth(shot, true)
+    if !hb
+        return false
     ST.hpPercent := hb.hp.pct
     ST.shPercent := hb.sh.pct
     ; Слоты без распознавания могут содержать оружие. Случайный LMB — выстрел,
@@ -6787,32 +6852,64 @@ CachedDensity(shot) {
     return ST.densityCache
 }
 
-CachedMenu(shot) {
+FrameMenu(shot) {
     global CFG, ST
-    ; ВАЖНО: раньше условие начиналось с «!ST.menuCache» — пустой кэш (когда
-    ; кнопок не найдено) заставлял сканировать КАЖДЫЙ кадр. То же было у
-    ; жетона, лута и врага: «ничего не найдено» = 0 = «кэша нет». Теперь
-    ; смотрим только на время.
-    ; структурные кэши (меню, HP) обязаны быть заполнены в любом случае:
-    ; по ним читаются поля, а не только «есть/нет» — бюджет их не отменяет
-    if (A_TickCount - ST.scanMenuAt >= CFG.scanMenuMs && (!ST.menuCache || ScanAllow(2))) {
-        ST.menuCache := {
-            ; Полноэкранный yellow нигде не использовался; не сканируем зря.
-            results: FindYellowButtons(shot, CFG.regResults),
-            lobbyY: FindYellowButtons(shot, CFG.regLobbyBtn),
-            lobby:  LobbyButton(shot),
-            cream:  FindCreamButton(shot, CFG.regLobbyBtn),
-            dark:   DarkRatio(shot, [0.15, 0.10, 0.85, 0.90])
-        }
-        ST.scanMenuAt := A_TickCount
-        lb := ST.menuCache.lobby ? ST.menuCache.lobby
-            : (ST.menuCache.lobbyY.Length ? ST.menuCache.lobbyY[ST.menuCache.lobbyY.Length] : 0)
-        if lb {
-            ST.lastLobbyBtn := lb
-            ST.lastLobbyAt := A_TickCount
+    if shot.HasOwnProp("menuEvidence")
+        return shot.menuEvidence
+    candidates := ST.menuCache
+    if (candidates && (candidates.hwnd != shot.hwnd || candidates.w != shot.w || candidates.h != shot.h)) {
+        ; Не переносить координаты и непрерывность видимости между окнами
+        ; или размерами. Если полный скан отложен, здесь нет подсказок.
+        candidates := 0
+        ST.menuSeenAt := 0, ST.playSeenAt := 0, ST.lastLobbyAt := 0
+    }
+    scanned := (!candidates || A_TickCount - ST.scanMenuAt >= CFG.scanMenuMs) && ScanAllow(2)
+    if scanned {
+        candidates := {seq:shot.captureId, hwnd:shot.hwnd, w:shot.w, h:shot.h
+            , results:FindYellowButtons(shot, CFG.regResults)
+            , lobbyY:FindYellowButtons(shot, CFG.regLobbyBtn)
+            , lobby:LobbyButton(shot), cream:FindCreamButton(shot)}
+    }
+    box := 0, kind := "?", cream := 0, results := []
+    fresh := candidates && candidates.seq = shot.captureId
+    if candidates {
+        box := candidates.lobby ? candidates.lobby
+            : (candidates.lobbyY.Length ? candidates.lobbyY[-1] : 0)
+        kind := PlateKind(shot, box)
+        cream := candidates.cream
+        if fresh
+            results := candidates.results
+        else {
+            ; Старый прямоугольник — только подсказка, где искать цвет на
+            ; новом кадре. Для клика всё равно нужен полный скан этого кадра.
+            if (kind = "?")
+                box := 0
+            if (cream && PlateKind(shot, cream) != "cancel")
+                cream := 0
+            for candidate in candidates.results {
+                if (PlateKind(shot, candidate) = "play")
+                    results.Push(candidate)
+            }
         }
     }
-    return ST.menuCache
+    evidence := {fresh:fresh, box:box, kind:kind, cream:cream, results:results
+        , blocksGame:kind != "?" || !!cream}
+    TickCheck("после проверки плашек")
+    if scanned
+        ST.menuCache := candidates, ST.scanMenuAt := A_TickCount
+    shot.menuEvidence := evidence
+    return evidence
+}
+
+FrameDarkRatio(shot) {
+    if !shot.HasOwnProp("darkRatio")
+        shot.darkRatio := DarkRatio(shot, [0.15, 0.10, 0.85, 0.90])
+    return shot.darkRatio
+}
+
+FrameActionButton(shot, scene) {
+    action := shot.HasOwnProp("screenAction") ? shot.screenAction : 0
+    return action && action.scene = scene ? action.box : 0
 }
 
 CachedEnemy(shot) {
@@ -6940,11 +7037,16 @@ LootMask(masks, mode) {
     }
 }
 
+ScanLootMasks(shot) {
+    global CFG
+    return MaskClustersMulti(shot, CFG.regLoot
+        , ["gold", "green", "blue", "purple"], 18, ScanStep(6), 2)
+}
+
 CachedLootMasks(shot) {
     global CFG, ST
     if (A_TickCount - ST.lootMasksAt >= CFG.scanLootMs && ScanAllow(2)) {
-        ST.lootMasks := MaskClustersMulti(shot, CFG.regLoot
-            , ["gold", "green", "blue", "purple"], 18, ScanStep(6), 2)
+        ST.lootMasks := ScanLootMasks(shot)
         ST.lootMasksAt := A_TickCount
         ST.lootMasksSeq := shot.captureId
     }
@@ -6990,15 +7092,6 @@ CachedLoot(shot) {
     return lootResult
 }
 
-CachedHealth(shot) {
-    global CFG, ST
-    if (A_TickCount - ST.scanHpAt >= CFG.scanHpMs && (!ST.hpCache || ScanAllow(1))) {
-        ST.hpCache := HealthBars(shot)
-        ST.scanHpAt := A_TickCount
-    }
-    return ST.hpCache
-}
-
 CachedSound(shot) {
     global CFG, ST
     if (A_TickCount - ST.scanSoundAt >= CFG.scanSoundMs && ScanAllow(2)) {
@@ -7017,7 +7110,7 @@ ResetCaches() {
     ; времени» каждые 5 секунд в run-13.log. Теперь помечаем кэш устаревшим:
     ; значения обновятся по одному в ближайших тиках (бюджет не даст все сразу).
     ST.scanMenuAt := 0, ST.scanDensityAt := 0, ST.scanEnemyAt := 0
-    ST.scanLootAt := 0, ST.scanHpAt := 0, ST.scanSoundAt := 0
+    ST.scanLootAt := 0, ST.scanSoundAt := 0
     ST.soundCache := 0, ST.sound := 0, ST.soundCacheSeq := 0
     ST.lootMasksAt := 0, ST.chestCacheAt := 0, ST.lootMasksSeq := 0, ST.lootCacheSeq := 0, ST.chestCacheSeq := 0
     ST.enemyCache := 0, ST.chestCache := 0, ST.lootCache := 0, ST.lootMasks := 0
@@ -7077,153 +7170,169 @@ PlateKind(shot, box) {
 DetectState(shot, density, now) {
     global CFG, ST
     ST.density := density
+    shot.screenAction := 0
+    m := FrameMenu(shot)
+    ; Свежую плашку итогов обрабатываем как раньше. Проверенная по цвету
+    ; подсказка с прошлого скана не имеет приоритета над текущим HUD.
+    hud := (!m.blocksGame && (!m.fresh || !m.results.Length)) ? FrameHudEvidence(shot, true) : 0
+    PublishFrameHud(shot, hud)
 
-    m := CachedMenu(shot)
-    lobbyBox := m.lobby ? m.lobby : (m.lobbyY.Length ? m.lobbyY[m.lobbyY.Length] : 0)
-    lobbyKind := lobbyBox ? PlateKind(shot, lobbyBox) : "?"
-    ; Явная плашка лобби блокирует ложные итог/смерть/HUD по фону.
-    lobbyPlate := lobbyKind = "play" || lobbyKind = "cancel"
-
-    ; ---- 1) экран итогов: жёлтая «ИГРАТЬ СНОВА» в правой колонке ----------
-    if (!lobbyPlate && m.results.Length) {
-        ST.menuSeenAt := 0, ST.playSeenAt := 0
-        ST.target := m.results[1]
+    if (!m.blocksGame && m.results.Length && (!hud || !hud.confirmed)) {
+        ST.menuSeenAt := 0, ST.playSeenAt := 0, ST.deadSince := 0
+        if m.fresh
+            shot.screenAction := {scene:"END_SCREEN", box:m.results[1]}
         ST.mmSince := 0
         return "END_SCREEN"
     }
 
-    ; ---- 2) экран смерти: яркая панель «ВАС УСТРАНЯЕТ» + полоса HP ---------
-    if (!lobbyPlate && (BrightRatio(shot, CFG.regDeath, 200) >= CFG.deathBrightMin) && InMatchHud(shot)) {
+    if (hud && hud.confirmed && BrightRatio(shot, CFG.regDeath, 200) >= CFG.deathBrightMin) {
         ST.menuSeenAt := 0, ST.playSeenAt := 0
-        ST.target := 0
-        if (ST.deadSince = 0)
+        if !ST.deadSince
             ST.deadSince := now
         return "DEATH"
     }
     ST.deadSince := 0
 
-    ; ---- 3) матч: есть ровная толстая полоса здоровья ----------------------
-    if (!lobbyPlate && InMatchHud(shot)) {
+    if (hud && hud.confirmed) {
         ST.menuSeenAt := 0, ST.playSeenAt := 0
         ST.prompt := 0
-        ST.inMatchT := now          ; матч точно идёт — защита от ложного лобби
+        ST.inMatchT := shot.capturedAt
+        return "GAME"
+    }
+    ; Память только удерживает уже принятую сцену. Она не обновляет время
+    ; последнего HUD и не подтверждает очередь, смерть или приземление.
+    if (!m.blocksGame && ST.state = "GAME" && MatchHudRecentlySeen(now, CFG.hudHoldMs)) {
+        ST.menuSeenAt := 0, ST.playSeenAt := 0
+        ST.prompt := 0
         return "GAME"
     }
 
-    ; ---- 3.5) сколько времени «лобби» видно НЕПРЕРЫВНО --------------------
-    ; Нужно для защиты матча: в автобусе, на глайдере и на загрузке HUD
-    ; пропадает, кадр похож на лобби — и раньше бот выходил из матча кликом по
-    ; «Играть» (run-13.log: «МАТЧ -> ЛОББИ» три раза за минуту).
-    lobbySeen := (m.lobby || m.lobbyY.Length) ? true : false
-    if lobbySeen {
+    if (m.box || m.cream) {
         if !ST.menuSeenAt
             ST.menuSeenAt := now
-    } else {
-        ST.menuSeenAt := 0
-        ST.playSeenAt := 0
-    }
+        if (m.kind != "play" || m.cream)
+            ST.playSeenAt := 0
 
-    ; ---- 4) лобби: жёлтая «ИГРАТЬ» (RGB 203,203,0) ------------------------
-    ; проверяем ДО поиска матча: кнопка «Играть» и кнопка «Отменить» вместе
-    ; не встречаются, а кремовых пятен в пиратском лобби полным-полно.
-    if lobbySeen {
-        ; (а) матч ещё жив — «лобби» должно продержаться matchGuardMs подряд
+        ; Защита от ложного лобби в матче (например, в автобусе).
         if (ST.inMatchT && (now - ST.inMatchT < CFG.matchGuardWindowMs)
             && (now - ST.menuSeenAt < CFG.matchGuardMs)) {
             ST.guardStops += 1
             LogThrottledKey("[matchguard]", "[=] кадр похож на лобби, но матч шёл "
-                . Round((now - ST.inMatchT) / 1000) " с назад — остаюсь в матче"
-                . " (так бот раньше бросал игру в автобусе)")
+                . Round((now - ST.inMatchT) / 1000) " с назад — остаюсь в матче без действий по плашке")
             ST.prompt := 0
             return "GAME"
         }
-        ; (б) ЧТО ЗА ПЛАШКА: во время поиска на месте «Играть» стоит «Отменить».
-        ; Это и была главная причина «рандомных нажатий» в run-13.log.
-        box := m.lobby ? m.lobby : m.lobbyY[m.lobbyY.Length]
-        kind := PlateKind(shot, box)
-        if (kind = "cancel") {
-            ; «ОТМЕНИТЬ»: очередь идёт, кликать нельзя ни в коем случае
-            ST.cancelSeen += 1
-            ST.target := 0
-            if (ST.mmSince = 0)
+        ; Кремовая «Отменить» проверяется раньше «Играть», в том числе если
+        ; контур нашли сканером кремового цвета, а не по старому жёлтому боксу.
+        if (m.cream || m.kind = "cancel") {
+            if !ST.mmSince
                 ST.mmSince := now
+            if (m.kind = "cancel")
+                ST.cancelSeen += 1
             ST.mmEnterAt := now
             ST.queueSeen := true
-            ST.playSeenAt := 0
             return "MATCHMAKING"
         }
-        ; «ИГРАТЬ» должна продержаться playConfirmMs подряд: одиночные
-        ; кадры-выбросы (свет, вспышка, смена кадра) кликом не становятся
-        confident := false
-        if (kind = "play") {
+        if (m.kind = "play") {
+            ST.lastLobbyAt := shot.capturedAt
             if !ST.playSeenAt
                 ST.playSeenAt := now
-            confident := (now - ST.playSeenAt >= CFG.playConfirmMs)
-        } else
-            ST.playSeenAt := 0
-
-        ; (в) плашку не разобрали: держим «поиск», пока он свежий
-        ; (15 с после нажатия «Играть» — очередь как раз успевает начаться)
+        }
+        confident := ST.playSeenAt && (now - ST.playSeenAt >= CFG.playConfirmMs)
+        ; После попытки «Играть» ждём признаки очереди. Один нераспознанный
+        ; кадр не становится разрешением повторно нажать кнопку.
         if (!confident && ST.mmEnterAt && (now - ST.mmEnterAt < CFG.mmStickyMs)) {
             ST.prompt := 0
             return "MATCHMAKING"
         }
-        ; (г) сцена менялась только что — держим прежнюю
         if (!confident && (ST.state = "MENU" || ST.state = "MATCHMAKING")
             && ST.lastFlipAt && (now - ST.lastFlipAt < CFG.stateStickyMs)) {
             ST.prompt := 0
             return ST.state
         }
-        ST.target := box
         ST.mmSince := 0
+        if (m.fresh && m.kind = "play")
+            shot.screenAction := {scene:"MENU", box:m.box}
         return "MENU"
     }
 
-    ; ---- 5) поиск матча: кремовая «ОТМЕНИТЬ» ------------------------------
-    ; ВАЖНО: проверяется ДО «липкого» лобби — иначе после нажатия «Играть»
-    ; бот мог бы ещё раз кликнуть по тому же месту, а там уже «Отменить».
-    if m.cream {
-        ST.target := 0
-        if (ST.mmSince = 0)
-            ST.mmSince := now
-        ST.queueSeen := true
-        return "MATCHMAKING"
-    }
-
-    ; ---- 5.4) только что видели «Отменить» — значит очередь идёт ----------
-    ; ВАЖНО (run-9.log): пока идёт поиск, на месте кнопки «Играть» находится
-    ; «Отменить». Если сцена мигнёт в ЛОББИ и бот кликнет по этому месту,
-    ; он ОТМЕНИТ очередь — в журнале это «очередь оборвалась через 0 с» по
-    ; кругу. Поэтому 5 секунд после входа в поиск состояние не меняем.
+    ST.menuSeenAt := 0, ST.playSeenAt := 0
     if (ST.mmEnterAt && (now - ST.mmEnterAt < CFG.mmStickyMs)) {
         ST.prompt := 0
         return "MATCHMAKING"
     }
-
-    ; ---- 5.5) кнопка «Играть» была только что — значит мы всё ещё в лобби
-    if (ST.lastLobbyBtn && (now - ST.lastLobbyAt < CFG.lobbyStickyMs)
+    ; Недавнее лобби можно удержать, но старых координат клика больше нет.
+    if (ST.lastLobbyAt && (now - ST.lastLobbyAt < CFG.lobbyStickyMs)
         && (now - ST.lastQueueT > 3000)) {
-        ST.target := ST.lastLobbyBtn
         ST.mmSince := 0
         return "MENU"
     }
-
-    ; ---- 6) экран награды / пиратского магазина ---------------------------
     if CFG.featReward {
         rb := FindRewardButton(shot)
         if rb {
-            ST.target := rb
+            shot.screenAction := {scene:"REWARD", box:rb}
             return "REWARD"
         }
     }
+    ; Затемнение проверяем только когда более явных признаков нет.
+    return FrameDarkRatio(shot) >= CFG.endDarkRatio ? "END_SCREEN" : "UNKNOWN"
+}
 
-    ; ---- 7) непонятный тёмный экран (загрузка/итоги без кнопки) ----------
-    if (m.dark >= CFG.endDarkRatio) {
-        ST.target := 0
-        return "END_SCREEN"
+SceneDuringQueue(scene, rawScene, shot) {
+    global ST
+    if (scene = "MATCHMAKING")
+        ST.queuePending := true
+    if (ST.queuePending && scene = "GAME" && (rawScene != "GAME"
+        || FrameMenu(shot).blocksGame || !shot.HasOwnProp("hudEvidence") || !shot.hudEvidence.confirmed))
+        return "UNKNOWN"
+    ; Даже свежий HUD пока лишь кандидат. Защёлку снимаем только после
+    ; подтверждения смены сцены, а не на этом одиночном кадре.
+    return scene
+}
+
+ConfirmScene(scene, now) {
+    global CFG, ST
+    waitForHud := ST.queuePending && scene = "GAME"
+    if (scene = ST.state && !waitForHud) {
+        ST.pendingSince := 0, ST.pendingState := scene, ST.pendingCount := 0
+        return true
     }
-    ST.target := 0
-    return "UNKNOWN"
+    if (scene = ST.pendingState)
+        ST.pendingCount += 1
+    else
+        ST.pendingState := scene, ST.pendingCount := 1
+    if !ST.pendingSince
+        ST.pendingSince := now
+    need := scene = "REWARD" ? CFG.rewardConfirmFrames : CFG.stateConfirmFrames
+    if (ST.pendingCount >= need)
+        return true
+    ; Для награды, итогов, смерти и первого HUD после очереди таймер
+    ; не заменяет подтверждение несколькими кадрами.
+    safeFast := (scene = "GAME" && !waitForHud) || scene = "MENU"
+        || scene = "MATCHMAKING" || scene = "UNKNOWN"
+    if (!safeFast || now - ST.pendingSince <= 1500)
+        return false
+    LogThrottledKey("[flip]", "[i] сцена скачет «" StateRu(ST.state) "» / «"
+        . StateRu(scene) "» — принимаю «" StateRu(scene)
+        . "» без подтверждения, иначе бот стоит на месте")
+    ST.pendingCount := need
+    return true
+}
+
+ResolveQueueScene(scene, now) {
+    global ST
+    if (!ST.queuePending || ST.cancelHold)
+        return false
+    if (scene = "GAME") {
+        ST.queuePending := false
+        return true
+    }
+    ; Через UNKNOWN/загрузку вернулись в лобби без подтверждённого матча.
+    if (scene = "MENU" && scene != ST.state) {
+        ST.cancelHold := true, ST.cancelHoldAt := now
+        return true
+    }
+    return false
 }
 
 ; ============================================================================
@@ -7236,7 +7345,8 @@ HandleEndScreen(shot, now) {
     if (ST.endFirstSeen = 0)
         ST.endFirstSeen := now
 
-    if ST.target {
+    box := FrameActionButton(shot, "END_SCREEN")
+    if box {
         if (ST.endRetry >= CFG.clickRetries && now - ST.lastClickT < CFG.retryAfterMs)
             return
         if (now - ST.lastClickT < CFG.verifyMs)
@@ -7246,7 +7356,7 @@ HandleEndScreen(shot, now) {
             return
         if !CFG.dryRun
             ActivateGame(GetGameWindow())
-        if !ClickBox(shot, ST.target, "Играть снова") {
+        if !ClickBox(shot, box, "Играть снова") {
             LogThrottledKey("[resultsnoclick]", "[i] Клик «Играть снова» не выполнен; жду.")
             return
         }
@@ -7259,7 +7369,7 @@ HandleEndScreen(shot, now) {
 
     ; Тёмный кадр может быть загрузкой или отменой, а не итогами. Без
     ; обнаруженной плашки не кликаем по фиксированным координатам.
-    LogThrottledKey("[resultsunknown]", "[?] Экран похож на итоги, но кнопка не найдена. Жду; по координатам не нажимаю.", 10000)
+    LogThrottledKey("[resultsunknown]", "[?] Кнопка итогов не подтверждена полным сканом текущего кадра — жду.", 10000)
 }
 
 HandleReward(shot, now) {
@@ -7268,7 +7378,8 @@ HandleReward(shot, now) {
     global CFG, ST
     ReleaseKeys()
 
-    if (!CFG.featReward || !ST.target)
+    box := FrameActionButton(shot, "REWARD")
+    if (!CFG.featReward || !box)
         return
     ; на экране с жетоном кнопки не трогаем: активация стартует 14-дневный таймер
     if (CFG.tokenNoClick && ST.tokenShown) {
@@ -7282,13 +7393,13 @@ HandleReward(shot, now) {
     if !Throttle()
         return
     if CFG.dryRun {
-        Log("[dry-run] экран награды: нажал бы «" (ST.target.kind = "white" ? "ЗАБРАТЬ ВСЁ" : "ПОЛУЧИТЬ ВСЁ") "»")
+        Log("[dry-run] экран награды: нажал бы «" (box.kind = "white" ? "ЗАБРАТЬ ВСЁ" : "ПОЛУЧИТЬ ВСЁ") "»")
         ST.lastClickT := now
         ST.rewardClicks += 1
         return
     }
     ActivateGame(GetGameWindow())
-    if !ClickBox(shot, ST.target, "Забрать награду") {
+    if !ClickBox(shot, box, "Забрать награду") {
         LogThrottledKey("[rewardnoclick]", "[i] Клик по награде не выполнен; жду.")
         return
     }
@@ -7381,13 +7492,15 @@ HandleDeath(shot, now) {
 LogUnknownDiag(shot) {
     ; Раз в 4 секунды объясняем, почему сцена не распознана — иначе кажется,
     ; что бот «ничего не делает».
-    global CFG, ST
-    hb := HealthBars(shot)
-    m := CachedMenu(shot)
-    LogThrottledKey("[unknown]", "[?] сцена не распознана: полоса HP " hb.hp.run " px"
-        . " · жёлтых кнопок " (m.lobbyY.Length + m.results.Length)
+    global LogThrMap
+    if (LogThrMap.Has("[unknown]") && A_TickCount - LogThrMap["[unknown]"] < 4000)
+        return
+    hb := FrameHealth(shot, true)
+    m := FrameMenu(shot)
+    LogThrottledKey("[unknown]", "[?] сцена не распознана: полоса HP " (hb ? hb.hp.run " px" : "замер отложен")
+        . " · плашка лобби " m.kind " · кандидат итогов " m.results.Length
         . " · кремовая «Отменить» " (m.cream ? "да" : "нет")
-        . " · затемнение " Round(m.dark, 2) " · ищу по правилам README"
+        . " · затемнение " Round(FrameDarkRatio(shot), 2)
         . " (F5 — подробная калибровка)")
 }
 
@@ -7426,12 +7539,10 @@ HandleMenu(shot, now) {
             . Round(CFG.lobbyStableMs / 1000, 1) " с)")
         return
     }
-    ; Не нажимаем по запасным координатам: ещё раз проверяем текущую плашку.
+    ; Координаты для нажатия выдаёт только полный скан этого кадра.
     ; Цвет — эвристика, а не прочитанный текст и не гарантия настоящего лобби.
-    menuNow := CachedMenu(shot)
-    box := menuNow.lobby ? menuNow.lobby : (menuNow.lobbyY.Length ? menuNow.lobbyY[menuNow.lobbyY.Length] : 0)
-    if (!box || PlateKind(shot, box) != "play" || !ST.playSeenAt
-        || now - ST.playSeenAt < CFG.playConfirmMs) {
+    box := FrameActionButton(shot, "MENU")
+    if (!box || now - ST.playSeenAt < CFG.playConfirmMs) {
         LogThrottledKey("[needplay]", "[?] Лобби возможно, но кнопка «Играть» не подтверждена — жду; F7 покажет состояние")
         return
     }
@@ -7614,9 +7725,8 @@ MatchPhase(shot, now) {
     ; побежал вперёд по острову ожидания — потому что HUD там уже виден.
     ; Теперь порядок жёсткий: ПРЕДМАТЧ (стоим) -> АВТОБУС/ПОЛЁТ -> ЗЕМЛЯ.
     global CFG, SC, ST
-    inHud := InMatchHud(shot)
-    if inHud
-        ST.lastHpSeenT := now
+    hud := shot.HasOwnProp("hudEvidence") ? shot.hudEvidence : 0
+    inHud := hud && hud.confirmed
 
     if (ST.phase = "") {
         ; Остров ожидания бывает только тогда, когда матч нашёл сам бот.
@@ -7636,8 +7746,8 @@ MatchPhase(shot, now) {
     if (ST.phase = "prep") {
         ReleaseKeys()
         ST.lastAction := "предматч: жду автобус"
-        ; HUD пропал — началась загрузка матча или автобус
-        if !inHud {
+        ; Краткая потеря HUD сама по себе не означает начало полёта.
+        if (!inHud && !MatchHudRecentlySeen(now, CFG.hudHoldMs)) {
             ST.phase := "bus"
             ST.phaseAt := now
             ST.busAt := now
@@ -7650,7 +7760,7 @@ MatchPhase(shot, now) {
         ; слотов — а в пиратском лобби она ЯРЧЕ, чем в матче (0.94 против 0.04).
         ; Теперь панель слотов считается признаком ТОЛЬКО вместе с полосой HP:
         ; одна яркость панели больше ничего не значит.
-        if (ST.hudSlots >= CFG.prepSlotsMin && inHud) {
+        if (inHud && hud.slots >= CFG.prepSlotsMin) {
             ST.phase := "loot"
             ST.phaseAt := now
             Log("[i] полоса HP + панель слотов — мы на земле, собираю лут")
@@ -8121,8 +8231,8 @@ Tick() {
     ; но это не означает, что поток действительно вернулся. Каждый вызов
     ; регистрируется до основного кода и снимается только в finally.
     prevCritical := Critical("On")
-    ; Закрытие допуска и регистрация тика атомарны относительно F6.
-    if ST.mouseCalActive {
+    ; Закрытие допуска и регистрация тика атомарны относительно Stop/F6.
+    if (!ST.running || ST.mouseCalActive) {
         Critical(prevCritical)
         return
     }
@@ -8162,23 +8272,35 @@ Tick() {
     ST.tickDeadline := ST.tickStart + CFG.tickBudgetMs
     ST.tickStep := "начало"
     ST.tickStepAt := ST.tickStart
-    try
-        TickBody()
-    catch as e {
-        if ST.tickAborted {
-            ; v7.5: раньше здесь было ReleaseKeysSafe() — то есть при каждом
-            ; прерывании бот ОТПУСКАЛ ВСЁ, включая W. Получалось «два шага,
-            ; стоп, два шага, стоп». Теперь снимаем только стрельбу/прицел и
-            ; одиночное нажатие, а ходьбу продолжаем со следующего тика.
-            try
-                AbortCleanup()
-            LogThrottledKey("[tickabort]", "[i] тик перерос бюджет — снял стрельбу,"
-                . " ходьбу НЕ отпускаю · действие: "
-                . (ST.lastAction != "" ? ST.lastAction : "—"))
-        }
-        else
-            LogFatal(e, "Return")
+    ST.scanWork := 0
+    startedAt := ST.tickStart
+    profile := {gen:gen, at:startedAt, stage:"подготовка", parts:Map(), frame:""}
+    skippedAtStart := ST.scanSkipped
+    outcome := "", failure := 0
+    try outcome := TickBody(profile)
+    catch as e
+        failure := e
+    endedAt := A_TickCount
+    if (ST.tickGen != gen)
+        return
+    TickStage(profile, "", endedAt)
+    profile.scene := ST.state
+    profile.totalMs := endedAt - startedAt
+    profile.skipped := ST.scanSkipped - skippedAtStart
+    profile.step := ST.tickStep
+    cancelled := failure is TickInterrupted
+    if cancelled {
+        outcome := failure.Message
+        profile.step := failure.Extra
+        ; Stop/F6 выполняют полную очистку сами. При бюджете или запросе
+        ; сторожа снимаем только мышь и одиночное нажатие.
+        if (ST.running && !ST.mouseCalActive)
+            try AbortCleanup()
+    } else if failure {
+        outcome := "ошибка"
+        LogFatal(failure, "Return", "тик #" gen " · шаг: " profile.step)
     }
+    profile.outcome := (outcome != "" ? outcome : "завершён")
     ; --- уборка текущего поколения; отдельно finally учтёт выход вызова ---
     ; Только если мы всё ещё текущее поколение: иначе тик уже «осиротели», и
     ; чужие флаги трогать нельзя (иначе новый тик потеряет свой tickBusy).
@@ -8186,36 +8308,29 @@ Tick() {
         ST.tickBusy := false
         ST.tickAbort := false
         ST.tickAborted := false
-        ST.lastTickMs := A_TickCount - ST.tickStart
+        ST.lastTickMs := profile.totalMs
         ST.tickMs := ST.lastTickMs
+        ST.tickProfile := profile
         if (ST.lastTickMs > 2000)
             ST.tickLong += 1
-        ; ---- АДАПТАЦИЯ ПОД МАШИНУ (реальное время) ----
-        ; Если тики регулярно длинные, сканы слишком дорогие для этого ПК:
-        ; огрубляем шаг (замечаем меньше мелкого, зато успеваем). Если тики
-        ; снова быстрые — возвращаем точность. В журнале видно, что и почему.
-        if (ST.lastTickMs > 350) {
-            ST.slowTicks += 1, ST.fastTicks := 0
-        } else if (ST.lastTickMs < CFG.tickTargetMs) {
-            ST.fastTicks += 1, ST.slowTicks := 0
-        }
-        if (ST.slowTicks >= 3 && ST.stepBoost < CFG.stepBoostMax) {
-            ST.stepBoost += 2, ST.slowTicks := 0
-            Log("[i] тики долгие (" Round(ST.lastTickMs) " мс) — огрубляю сканы:"
-                . " шаг +" ST.stepBoost ". Бот успевает реагировать, но видит мельче")
-        }
-        if (ST.fastTicks >= 30 && ST.stepBoost > 0) {
-            ST.stepBoost -= 1, ST.fastTicks := 0
-            Log("[i] тики быстрые — возвращаю точность сканов: шаг +" ST.stepBoost)
-        }
+        ; Пауза, отсутствие фокуса/кадра и служебные отмены не говорят о
+        ; скорости рабочего тика. Не огрубляем/уточняем сканы по таким замерам.
+        if ((!failure || outcome = "бюджет") && profile.parts.Has("сцена/HUD"))
+            TuneScanStep(profile.totalMs)
         if ST.tickHealPending {
             ST.tickHealPending := false
-            try
-                ReleaseKeysSafe()
-            ST.tickHeals += 1
-            Log("[!] зависший тик спасён и закрыт (" ST.tickHeals ") — играю дальше")
+            if (ST.running && !ST.mouseCalActive) {
+                try ReleaseKeysSafe()
+                ST.tickHeals += 1
+                Log("[!] зависший тик спасён и закрыт (" ST.tickHeals ") — играю дальше")
+            }
         }
         ST.tickStep := ""
+        if (outcome = "стоп" || outcome = "тест мыши F6")
+            Log("[perf] " TickProfileText(profile))
+        else if (cancelled || profile.totalMs > 350)
+            LogThrottledKey(cancelled ? "[tickcancel:" outcome "]" : "[tickperf]"
+                , "[perf] " TickProfileText(profile), 8000)
     }
     } finally {
         prevCritical := Critical("On")
@@ -8312,6 +8427,44 @@ TraceStep(where) {
     ST.tickStepAt := A_TickCount
 }
 
+; Время по часам (включая прерывания AHK), не время CPU и не FPS.
+TickStage(profile, next, now := -1) {
+    if (now < 0)
+        now := A_TickCount
+    profile.parts[profile.stage] := now - profile.at
+    profile.at := now, profile.stage := next
+}
+
+TickProfileText(profile) {
+    parts := ""
+    for name, ms in profile.parts
+        parts .= " · " name " " ms " мс"
+    return "тик #" profile.gen " «" StateRu(profile.scene) "» " profile.totalMs " мс"
+        . " · исход: " profile.outcome " · шаг: " profile.step
+        . (profile.frame != "" ? " · кадр " profile.frame : "")
+        . parts " · сканов отложено +" profile.skipped
+}
+
+TuneScanStep(ms) {
+    global CFG, ST
+    if (ms > 350) {
+        ST.slowTicks += 1, ST.fastTicks := 0
+    } else if (ms < CFG.tickTargetMs) {
+        ST.fastTicks += 1, ST.slowTicks := 0
+    }
+    if (ST.slowTicks >= 3 && ST.stepBoost < CFG.stepBoostMax) {
+        ST.stepBoost := Min(CFG.stepBoostMax, ST.stepBoost + 2), ST.slowTicks := 0
+        Log("[i] рабочий тик " ms " мс — увеличиваю шаг сканов: +" ST.stepBoost)
+    }
+    if (ST.fastTicks >= 30 && ST.stepBoost > 0) {
+        ST.stepBoost -= 1, ST.fastTicks := 0
+        Log("[i] рабочие тики быстрее — возвращаю точность: шаг +" ST.stepBoost)
+    }
+}
+
+class TickInterrupted extends Error {
+}
+
 ; ----------------------------------------------------------------------------
 ; Окно игры ЖИВО? (run-11.log)
 ; После приземления игра на секунды замирает на загрузке. SendEvent в такое
@@ -8398,8 +8551,8 @@ TickCheck(where := "") {
 
     if ST.tickAbort {
         ST.tickAborted := true
-        ST.lastAction := "прерываюсь по просьбе сторожа (" (where != "" ? where : "точка") ")"
-        throw Error("тик прерван сторожем · " (where != "" ? where : "точка"))
+        reason := !ST.running ? "стоп" : (ST.mouseCalActive ? "тест мыши F6" : "запрос сторожа")
+        throw TickInterrupted(reason, -1, where != "" ? where : "—")
     }
     if (ST.tickDeadline && A_TickCount > ST.tickDeadline) {
         ; ---- v7.5: НЕ РВЁМ ДВИЖЕНИЕ НА СЕРЕДИНЕ ----
@@ -8416,7 +8569,7 @@ TickCheck(where := "") {
         ST.tickAborted := true
         ST.lastAction := "превысил бюджет времени (" (where != "" ? where : "точка") ")"
             . (ST.actCritical > 0 ? " · внутри действия «" ST.actWhy "»" : "")
-        throw Error("тик работал " Round(A_TickCount - ST.tickStart) " мс — прерываю")
+        throw TickInterrupted("бюджет", -1, where != "" ? where : "—")
     }
 }
 
@@ -8454,12 +8607,8 @@ AbortCleanup() {
         try KeyUp(ST.tapKey)
         ST.tapKey := ""
     }
-    ; ЛКМ/ПКМ: прерванная очередь не должна остаться зажатой
-    if !BgInputActive() {
-        try DllCall("mouse_event", "UInt", 0x0004, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-        try DllCall("mouse_event", "UInt", 0x0010, "Int", 0, "Int", 0, "UInt", 0, "UPtr", 0)
-    }
-    ST.adsOn := false
+    ; Прерванная очередь не оставляет своё удержание зажатым даже без фокуса.
+    ReleaseMouseButtons()
 }
 
 ; ----------------------------------------------------------------------------
@@ -8493,7 +8642,7 @@ SettleScene(raw, now) {
 
     ; --- не выпускаем из матча, пока HUD свежий ---
     if (ST.state = "GAME") {
-        if (ST.hudLastT && (now - ST.hudLastT < CFG.hudLostMs)) {
+        if MatchHudRecentlySeen(now, CFG.hudLostMs) {
             LogThrottledKey("[stickgame]", "[i] кадр похож на «" StateRu(raw) "», но HUD"
                 . " матча был " . Round((now - ST.hudLastT) / 1000) . " с назад —"
                 . " остаюсь в матче (сцена не прыгает)")
@@ -8510,28 +8659,28 @@ SettleScene(raw, now) {
     return raw
 }
 
-TickBody() {
+TickBody(profile) {
     global CFG, ST
     if !ST.running
-        return
+        return "стоп"
     if ST.paused {
         ReleaseKeys()
         UpdateStatus()
-        return
+        return "пауза"
     }
     ; Защёлка отмены не снимается из-за ложной смены сцены или истечения времени.
     if ST.cancelHold {
         ReleaseKeysSafe()
         LogThrottled("[=] возможная отмена подбора · жду игрока · «Продолжить» или F8")
         UpdateStatus()
-        return
+        return "жду подтверждения поиска игроком"
     }
 
     hwnd := GetGameWindow()
     if !hwnd {
         LogThrottled("[!] Окно игры не найдено: " CFG.winTitle " / " CFG.winTitleAlt)
         UpdateStatus()
-        return
+        return "нет окна игры"
     }
 
     if (BgInputActive() && !ST.bgWarned) {
@@ -8563,14 +8712,14 @@ TickBody() {
             lost := A_TickCount - ST.focusLostAt
             if (lost < CFG.focusGraceMs) {
                 AbortCleanup()          ; снимаем только стрельбу/прицел
-                if (A_TickCount - ST.focusNoteAt > 4000) {
+                if (!ST.focusNoteAt || A_TickCount - ST.focusNoteAt >= 4000) {
                     ST.focusNoteAt := A_TickCount
                     LogThrottledKey("[focusgrace]", "[i] фокус ушёл из игры на "
                         . Round(lost) " мс — это не остановка: держу сцену,"
                         . " вернусь к работе сразу, как только вы вернётесь")
                 }
                 UpdateStatus()
-                return
+                return "нет фокуса"
             }
             ; долгая потеря фокуса — ведём себя как раньше, но не дёргаем игру
             ReleaseKeys()
@@ -8590,7 +8739,7 @@ TickBody() {
         ; работает — кадр уже взят у окна игры, клавиши пойдут сообщениями.
         if !BgInputActive() {
             UpdateStatus()
-            return
+            return "нет фокуса"
         }
     }
     if ST.focusLostAt {
@@ -8613,11 +8762,12 @@ TickBody() {
             . " с — клавиши не шлю, жду (обычно это загрузка, а не сбой бота)")
         TraceStep("жду ответа игры (" waited " с)")
         UpdateStatus()
-        return
+        return "игра не отвечает"
     }
+    TickStage(profile, "захват")
     TraceStep("захват кадра")
-
     shot := CaptureClient(hwnd)
+    TickCheck("после захвата")
     if !shot {
         ; с причиной и без спама раз в тик (run-18.log: одна и та же строка
         ; каждые 5 секунд, хотя причина одна — игра была свёрнута)
@@ -8629,7 +8779,7 @@ TickBody() {
               . " кадр со свёрнутого окна не снимается никак."
             : "[!] Кадр не взят: окно игры не отдало изображение (PrintWindow и"
               . " экран пусты). Нажмите F7 — там подробности.")
-        return
+        return "кадр недоступен"
     }
     ; защита от повторения истории с 776x728: если кадр совпал с размерами
     ; нашего меню — это не игра, и играть по такому кадру нельзя
@@ -8637,7 +8787,7 @@ TickBody() {
         LogThrottledKey("[selfwin]", "[!] Захвачено СОБСТВЕННОЕ окно бота (776x728),"
             . " а не игра. Сверните/закройте меню или запустите игру заново.")
         Toast("Вижу своё меню, а не игру", "нажмите F7", 3000)
-        return
+        return "кадр отклонён"
     }
     ST.winTxt := ""
     try
@@ -8648,16 +8798,16 @@ TickBody() {
     ST.frames += 1
     ST.capW := shot.w, ST.capH := shot.h
 
-    ST.scanWork := 0                 ; бюджет тяжёлых сканов на этот тик
+    profile.frame := shot.w "×" shot.h
+    TickStage(profile, "сцена/HUD")
     TraceStep("распознаю сцену")
     density := CachedDensity(shot)
-    scene := DetectState(shot, density, A_TickCount)
-    ; Даже если антидребезг ещё удерживает старое состояние GAME, не
-    ; выполнять игровые действия на кадре с похожей на лобби плашкой.
-    frameMenu := CachedMenu(shot)
-    frameLobby := frameMenu.lobby ? frameMenu.lobby : (frameMenu.lobbyY.Length ? frameMenu.lobbyY[frameMenu.lobbyY.Length] : 0)
-    frameKind := frameLobby ? PlateKind(shot, frameLobby) : "?"
-    blockGameForLobby := (frameKind = "play" || frameKind = "cancel")
+    rawScene := DetectState(shot, density, A_TickCount)
+    TickCheck("после распознавания сцены")
+    scene := rawScene
+    ; Плашка «Играть» или «Отменить» блокирует игровое действие даже
+    ; при удержанной сцене GAME. Данные этого кадра уже посчитаны.
+    blockGameForLobby := FrameMenu(shot).blocksGame
     TraceStep("сцена: " StateRu(scene))
 
     ; Автобус, глайдер, пауза меню по Esc — HUD на это время пропадает, и
@@ -8665,84 +8815,39 @@ TickBody() {
     ; HP видели недавно, матч продолжается.
     fromQueue := ST.leftQueueT && (A_TickCount - ST.leftQueueT < CFG.hpSeenWindowMs * 3)
     if (scene = "UNKNOWN" && !ST.queuePending
-        && ST.matchStarted && (A_TickCount - ST.lastHpSeenT < CFG.hpSeenWindowMs))
+        && ST.matchStarted && MatchHudRecentlySeen(A_TickCount, CFG.hpSeenWindowMs))
         scene := "GAME" ; краткое исчезновение HUD после уже принятого матча
 
     ; --- «липкая» сцена: не даём одному дрогнувшему кадру сбить работу
-    scene := SettleScene(scene, A_TickCount)
-    ; Даже если поиск ушёл через UNKNOWN/загрузку, сохраняем его до нового HUD.
-    ; Статус — эвристика, а не доказательство начала матча.
-    if (scene = "MATCHMAKING")
-        ST.queuePending := true
-    if (ST.queuePending && scene = "GAME") {
-        if (HudEvidence(shot) >= 2) {
-            ST.queuePending := false
-            Log("[i] После поиска видны признаки HUD матча; начинаю обработку игры")
-        } else
-            scene := "UNKNOWN"
+    scene := SceneDuringQueue(SettleScene(scene, A_TickCount), rawScene, shot)
+
+    if !ConfirmScene(scene, A_TickCount) {
+        ST.prevShot := shot
+        UpdateStatus()
+        return
     }
 
-    ; антидребезг: состояние меняем, только если оно повторилось несколько кадров
-    if (scene != ST.state) {
-        if (scene = ST.pendingState)
-            ST.pendingCount += 1
-        else
-            ST.pendingState := scene, ST.pendingCount := 1
-        if !ST.pendingSince
-            ST.pendingSince := A_TickCount
-        need := (scene = "REWARD") ? CFG.rewardConfirmFrames : CFG.stateConfirmFrames
-        ; БЕСКОНЕЧНОЕ ОЖИДАНИЕ: если сцена скачет (МАТЧ/ОЖИДАНИЕ кадр в кадр),
-        ; счётчик никогда не дойдёт до порога, и бот молча простаивал каждый
-        ; кадр — именно так выглядело «ничего не делает и не пишет в журнал».
-        if (ST.pendingCount < need) {
-            ; Наспех принимаем только рабочие сцены. Награда, итоги и смерть
-            ; требуют настоящего подтверждения: в run-8.log «НАГРАДА» наспех
-            ; принялась прямо в лобби и бот жал кнопку внизу.
-            safeFast := (scene = "GAME" || scene = "MENU" || scene = "MATCHMAKING"
-                || scene = "UNKNOWN")
-            if (safeFast && (A_TickCount - ST.pendingSince > 1500)) {
-                LogThrottledKey("[flip]", "[i] сцена скачет «" StateRu(ST.state) "» / «"
-                    . StateRu(scene) "» — принимаю «" StateRu(scene)
-                    . "» без подтверждения, иначе бот стоит на месте")
-                ST.pendingCount := need
-            } else {
-                ST.prevShot := shot
-                UpdateStatus()
-                return
-            }
-        }
-    } else {
-        ST.pendingSince := 0
-        ST.pendingState := scene
-        ST.pendingCount := 0
+    ; Краткое мигание лобби во время поиска не считаем исходом очереди.
+    if (ST.state = "MATCHMAKING" && scene = "MENU" && ST.mmSince > 0
+        && (A_TickCount - ST.mmSince) < CFG.mmFlickerMs) {
+        ST.mmFlicker += 1
+        ST.pendingState := "MATCHMAKING", ST.pendingCount := 0
+        LogThrottledKey("[mmflicker]", "[i] детектор мигнул «лобби» во время поиска"
+            . " — остаюсь в поиске (миганий: " ST.mmFlicker ")")
+        ST.prevShot := shot
+        UpdateStatus()
+        return
     }
-
-    if (scene != ST.state) {
-        ; --- МИГАНИЕ ДЕТЕКТОРА В ПОИСКЕ (run-16.log) --------------------------
-        ; В журнале: «ПОИСК МАТЧА -> ЛОББИ», «очередь оборвалась через 0 с»,
-        ; снова «Играть» — и так по кругу, хотя поиск шёл своим ходом. Если
-        ; мы в поиске меньше mmFlickerMs, это мигнул детектор, а не выход в
-        ; лобби: остаёмся в поиске, ничего не нажимаем.
-        if (ST.state = "MATCHMAKING" && scene = "MENU" && ST.mmSince > 0
-            && (A_TickCount - ST.mmSince) < CFG.mmFlickerMs) {
-            ST.mmFlicker += 1
-            ST.pendingState := "MATCHMAKING", ST.pendingCount := 0
-            LogThrottledKey("[mmflicker]", "[i] детектор мигнул «лобби» во время поиска"
-                . " — остаюсь в поиске (миганий: " ST.mmFlicker ")")
-            ST.prevShot := shot
-            UpdateStatus()
-            return
-        }
-        ; Пока исход очереди не подтверждён HUD, даже через промежуточный
-        ; UNKNOWN/тёмный экран возврат в MENU может быть ручной отменой.
-        if (scene = "MENU" && ST.queuePending) {
-            ST.cancelHold := true
-            ST.cancelHoldAt := A_TickCount
+    if ResolveQueueScene(scene, A_TickCount) {
+        if ST.cancelHold {
             Log("[?] Поиск завершился, причина неизвестна: возможна ручная отмена. «Играть» не жму; жду F8 или «Продолжить».")
             Flash("Возможна отмена подбора — бот ждёт.`n"
                 . "Возобновить поиск: F8 или «Продолжить».", 7000)
             UpdateStatus()
-        }
+        } else
+            Log("[i] После поиска сцена матча подтверждена текущим HUD; начинаю обработку игры")
+    }
+    if (scene != ST.state) {
         ST.pendingSince := 0
         prevState := ST.state          ; нужно ниже: откуда мы пришли
         if (scene = "GAME")
@@ -8794,14 +8899,10 @@ TickBody() {
         }
         if (scene = "GAME")
             ST.queueSeen := false
-        if (scene = "GAME") {
-            ST.inMatchT := A_TickCount    ; матч идёт — защита от ложного лобби
-        }
         if (scene = "GAME" && !ST.matchStarted) {
             ST.matchStarted := true
             ST.tokenPresses := 0
             ST.matchStartT := A_TickCount
-            ST.lastHpSeenT := A_TickCount
             ST.phase := "", ST.phaseAt := 0, ST.busJumped := false, ST.glideDeploys := 0
             ST.weaponTries := 0, ST.lastWeaponT := 0
             ST.hpPrev := -1, ST.damagedAt := 0, ST.tgt := 0
@@ -8834,6 +8935,7 @@ TickBody() {
         UpdateStatus()
         return
     }
+    TickStage(profile, "действия")
     ; жетон/баннер находки может выскочить где угодно, в том числе в матче
     CheckToken(shot, A_TickCount)
 
@@ -8845,20 +8947,21 @@ TickBody() {
         ; HP читаем каждый кадр: от него зависит и лечение, и «нас бьют».
         ; Раньше проценты обновлялись только внутри TryHeal, поэтому отстрел
         ; по урону мог не сработать.
-        hbNow := CachedHealth(shot)
-        ; Каждая полоса независима. Не сохраняем старое значение, если свежая
-        ; оценка неизвестна: старый HP/щит опасен для решений в бою.
-        ST.hpPercent := hbNow.hp.pct
-        ST.shPercent := hbNow.sh.pct
-        if (hbNow.hp.pct < 0) {
+        hbNow := FrameHealth(shot, true)
+        ST.hudHp := hbNow ? hbNow.hp.run : 0
+        ; Каждая полоса независима. Пропуск скана тоже даёт «неизвестно» —
+        ; старый HP/щит опасен для решений в бою.
+        ST.hpPercent := hbNow ? hbNow.hp.pct : -1
+        ST.shPercent := hbNow ? hbNow.sh.pct : -1
+        if (ST.hpPercent < 0) {
             ST.hpPrev := -1
         } else {
-            if (ST.hpPrev >= 0 && ST.hpPrev - hbNow.hp.pct >= CFG.damageDrop) {
+            if (ST.hpPrev >= 0 && ST.hpPrev - ST.hpPercent >= CFG.damageDrop) {
                 ST.damagedAt := A_TickCount
-                LogThrottledKey("[hpdrop]", "[?] HP снизился " ST.hpPrev " -> " hbNow.hp.pct
+                LogThrottledKey("[hpdrop]", "[?] HP снизился " ST.hpPrev " -> " ST.hpPercent
                     . "; причина не установлена (противник, буря или ошибка оценки)")
             }
-            ST.hpPrev := hbNow.hp.pct
+            ST.hpPrev := ST.hpPercent
         }
         TraceStep("обход матча")
         Roam(shot, A_TickCount)
@@ -8877,6 +8980,7 @@ TickBody() {
         HandleMenu(shot, A_TickCount)
     }
 
+    TickStage(profile, "журнал/снимок")
     ; «пульс» раз в 10 секунд: видно, что бот жив и что он видит
     if (A_TickCount - ST.lastBeat > 10000) {
         ST.lastBeat := A_TickCount
@@ -8886,8 +8990,7 @@ TickBody() {
             . " · срабатываний детектора урона " ST.dmgN
             . " · сундук " (ST.chest ? "да" : "нет")
             . " · нажатий " ST.clickQueue " · очередь " ST.queueTries
-            . " · тик " Round(ST.lastTickMs) " мс ("
-            . Round(10000 / Max(1, ST.lastTickMs)) / 10 " 1/с — обратная длительность тика)")
+            . " · предыдущий тик " (ST.tickProfile ? ST.lastTickMs " мс" : "—"))
     }
 
     ; v7.6: свой датасет — кадр раз в CFG.autoSnapMs, только в матче
@@ -9126,7 +9229,7 @@ VisionOverlayKey(shot) {
             . (ST.lootCacheSeq = shot.captureId && IsObject(ST.lootCache) ? "1" : "0")
             . (ST.enemySeenSeq = shot.captureId && IsObject(ST.enemyCache) ? "1" : "0")
             . (ST.enemyTrackSeq = shot.captureId && IsObject(ST.enemyTrack) ? "1" : "0")
-            . (ST.hudFoundSeq = shot.captureId && IsObject(ST.hudFound) ? "1" : "0")
+            . (ST.hudFoundSeq != shot.captureId ? "0" : (IsObject(ST.hudFound) ? "2" : "1"))
     } finally {
         Critical(prev)
     }
@@ -9232,7 +9335,9 @@ DrawVisionFrame() {
         lootBox := ST.lootCacheSeq = shot.captureId ? ST.lootCache : 0
         enemyBox := ST.enemySeenSeq = shot.captureId ? ST.enemyCache : 0
         trackBox := ST.enemyTrackSeq = shot.captureId ? ST.enemyTrack : 0
-        hudBox := ST.hudFoundSeq = shot.captureId ? ST.hudFound : 0
+        hudReady := ST.hudFoundSeq = shot.captureId
+        hudBox := hudReady ? ST.hudFound : 0
+        hudText := hudReady ? ST.hudScore " (" (ST.hudWhy != "" ? ST.hudWhy : "нет") ")" : "нет оценки этого кадра"
         Critical(prev)
         BoxRect(hdcDst, chestBox, k, 0x0000FFFF)
         if IsObject(lootBox) && lootBox.HasOwnProp("drawX") && lootBox.HasOwnProp("drawY") {
@@ -9277,7 +9382,7 @@ DrawVisionFrame() {
             . "Может быть свой персонаж или союзник. Нейромодель не управляет игрой.`n"
             . "Показ кадров не равен FPS модели; частота модели — в журнале."
     } else {
-        hpb := IsObject(ST.hudFound) ? ("полоса " ST.hudFound.run " px · " ST.hudFound.kind) : "полосы нет"
+        hpb := IsObject(hudBox) ? ("полоса " hudBox.run " px · " hudBox.kind) : "нет рамки HP"
         VIS.txt.Value := "сцена: " StateRu(ST.state) " (детектор: "
             . (ST.sceneRaw != "" ? StateRu(ST.sceneRaw) : "—") ")`n"
             . "делаю: " (ST.lastAction != "" ? ST.lastAction : "—") " · шаг: "
@@ -9285,7 +9390,7 @@ DrawVisionFrame() {
             . "кэш: " (ST.enemy ? "кандидат" : "враг нет") " · "
             . (ST.chest ? "кандидат сундука" : "сундук нет") " · лут "
             . (IsObject(ST.lootCache) ? "есть" : "нет") " · " hpb "`n"
-            . "признаки матча: " ST.hudScore " (" (ST.hudWhy != "" ? ST.hudWhy : "нет") ") · "
+            . "признаки матча: " hudText " · "
             . "кадр " shot.w "x" shot.h " · " VIS.fps " кадр/с · "
             . (MouseAllowed() ? "мышь: можно" : "мышь: ЗАКРЫТА (фон-режим)")
             . (brightPct < 8
@@ -10340,7 +10445,7 @@ ModelLiveTick() {
 BuildGui() {
     global CFG, UI
     ; Сохранены цвета и стиль FORMA, но на главном экране только важное.
-    g := Gui("+Resize -MaximizeBox -DPIScale", "FORMA — Fortnite AFK")
+    g := Gui("+Resize -MaximizeBox -DPIScale", FormaTitle() " — Fortnite AFK")
     g.BackColor := "0A0E13", UI.gui := g
     fnt := "Segoe UI"
     card := "151E2A", head := "1B2735", editBg := "0C1219"
@@ -10540,7 +10645,7 @@ OnShowHelp() {
 
 BuildGuiFallback(errMsg := "") {
     global UI
-    g := Gui("", "FORMA — Fortnite AFK (простая панель)")
+    g := Gui("", FormaTitle() " — Fortnite AFK (простая панель)")
     UI.gui := g
     g.SetFont("s10", "Segoe UI")
     g.AddText("x12 y10 w300 h20", "FORMA запущена. Тема GUI не создалась:")
@@ -10571,11 +10676,10 @@ ApplyToggles() {
 
 OnModeOptionsChange(*) {
     global CFG, ST, UI
-    oldBg := CFG.bgMode
-    newBg := UI.cbBg.Value
-    ; При смене способа ввода сначала останавливаем старые удержания и
-    ; оставляем бота на паузе до ручного продолжения после завершения тика.
-    if (oldBg != newBg && ST.running && !ST.paused && !ST.mouseCalActive)
+    oldBg := CFG.bgMode, oldDry := CFG.dryRun
+    changed := (oldBg != UI.cbBg.Value || oldDry != UI.cbDry.Value)
+    ; Сначала снимаем старые удержания, затем ждём ручного продолжения.
+    if (changed && ST.running && !ST.paused && !ST.mouseCalActive)
         OnPause()
     ApplyToggles()
     if (oldBg != CFG.bgMode) {
@@ -10583,9 +10687,11 @@ OnModeOptionsChange(*) {
         Log(CFG.bgMode
             ? "[i] Фоновый режим: фокус не забираю, клавиши сообщениями (приём игрой не гарантирован), мышь только при фокусе."
             : "[i] Фоновый режим выключен: без фокуса жду, окно игры не поднимаю.")
-        if (ST.running && ST.paused)
-            Flash("Режим ввода изменён; проверьте игру и снимите паузу", 3500)
     }
+    if (oldDry != CFG.dryRun)
+        Log(CFG.dryRun ? "DryRun ВКЛ (только журнал)" : "DryRun ВЫКЛ")
+    if (changed && ST.running && ST.paused)
+        Flash("Режим ввода изменён; проверьте игру и снимите паузу", 3500)
     SaveSettings()
     UpdateStatus()
 }
@@ -10713,6 +10819,32 @@ UpdateStatus() {
 }
 
 ; ------------------------------ обработчики меню ---------------------------
+ResetRunDiagnostics() {
+    global ST, LogThrMap
+    ; Фокус измеряем внутри конкретного запуска, а не с момента старого
+    ; Alt+Tab до Stop. Первый новый переход не подавляем старым троттлом.
+    ST.focusLostAt := 0, ST.focusBackAt := 0, ST.focusNoteAt := 0, ST.bgWarned := false
+    ST.tickProfile := 0, ST.tickMs := 0, ST.lastTickMs := 0
+    ST.slowTicks := 0, ST.fastTicks := 0
+    for key in ["[focusgrace]", "[focus]", "[tickperf]", "[tickcancel:бюджет]", "[tickcancel:запрос сторожа]"] {
+        if LogThrMap.Has(key)
+            LogThrMap.Delete(key)
+    }
+}
+
+ResetSceneEvidence() {
+    global ST
+    ST.sceneRaw := "", ST.sceneRawAt := 0
+    ST.menuCache := 0, ST.scanMenuAt := 0
+    ST.lastLobbyAt := 0, ST.playSeenAt := 0, ST.menuSeenAt := 0
+    ST.inMatchT := 0, ST.hudLastT := 0, ST.hudWindow := 0
+    ST.hudFound := 0, ST.hudFoundSeq := 0, ST.hudScore := 0, ST.hudWhy := ""
+    ST.hudSlots := 0.0, ST.hudHp := 0
+    ST.hpPercent := -1, ST.shPercent := -1
+    ST.lastShot := 0, ST.lastShotAt := 0, ST.prevShot := 0
+    ST.deadSince := 0
+}
+
 StartPermit(gen) {
     global ST
     return ST.startWorkers > 0 && ST.startGeneration = gen && !ST.stopWorkers && !ST.mouseCalActive
@@ -10799,9 +10931,8 @@ OnStart(expectedGen := 0, *) {
     ST.queuePending := false, ST.queueSeen := false, ST.leftQueueT := 0
     ST.state := "", ST.pendingState := "", ST.pendingCount := 0, ST.pendingSince := 0
     ST.mmEnterAt := 0, ST.mmSince := 0
-    ST.hudLastT := 0, ST.hudEvAt := 0, ST.lastHpSeenT := 0
+    ResetSceneEvidence()
     ST.matchStarted := false, ST.matchFromQueue := false
-    ST.lastLobbyBtn := 0, ST.lastLobbyAt := 0, ST.playSeenAt := 0, ST.menuSeenAt := 0
     ST.roundActive := false, ST.lobbyRequeue := false
     ST.promptConfirm := {seq: 0, at: 0, hits: 0, x: 0, y: 0}
     ST.enemyConfirm := {seq: 0, at: 0, hits: 0, x: 0, y: 0}
@@ -10822,6 +10953,7 @@ OnStart(expectedGen := 0, *) {
     try {
         if (!StartPermit(startGen) || ST.tickLiveCount > 0 || ST.inputReleasesLive > 0 || ST.inputDownsLive > 0)
             return
+        ResetRunDiagnostics()
         ST.tickAbort := true, ST.running := true, ST.paused := false
         ST.startedAt := A_TickCount
         try {
@@ -11431,6 +11563,10 @@ OnCheckCapture(*) {
     ; удаётся ли вернуть фокус, что видит бот и какие галочки включены.
     global CFG, ST, PHOTO
     Log("── диагностика окна и ввода ────────────────")
+    Log("  сборка: " FormaBuildInfo())
+    profile := ST.tickProfile
+    if profile
+        Log("  последний завершённый тик: " TickProfileText(profile))
     ; Пассивная проверка кандидата для будущей калибровки. Само значение не
     ; доказывает, что Fortnite и все устройства доступны hook; на управление
     ; и сохранение коэффициентов оно пока не влияет.
@@ -11586,6 +11722,10 @@ OnCheckCapture(*) {
             Log("  проверка кадров: идёт " Round((A_TickCount - PHOTO.started) / 1000)
                 . " с · " PHOTO.n " кадров")
     }
+    Log("  HUD цикла: " (ST.hudFoundSeq ? "кадр #" ST.hudFoundSeq " · " ST.hudScore
+        . " (" (ST.hudWhy != "" ? ST.hudWhy : "нет") ")" : "нет оценки")
+        . " · последний подтверждённый HUD: "
+        . (ST.hudLastT ? A_TickCount - ST.hudLastT " мс назад" : "не видели"))
     Log("  эпизод: " (ST.phase != "" ? ST.phase : "—")
         . " (" Round((A_TickCount - ST.phaseAt) / 1000) " с) · матч найден ботом: "
         . (ST.matchFromQueue ? "да" : "нет") . " · слоты " Round(ST.hudSlots * 1000) / 1000)
@@ -11603,10 +11743,8 @@ OnCheckCapture(*) {
         . " · нажатий Пробела в полёте " ST.glidePresses
         . " · пауза между отрезками: " (ST.pauseUntil ? "идёт" : "нет"))
     ; ---- v7.6: видно, почему кирка молчит и сколько кадров реально выходит ----
-    Log("  v7.6: кадр " Round(ST.capMs) " мс (" (ST.visSrc != "" ? ST.visSrc : "—") ")"
-        . " · захват в цикле средний " Fps() " кадр/с (не FPS зрения)"
-        . " · тик " Round(ST.lastTickMs) " мс = "
-        . Round(10000 / Max(1, ST.lastTickMs)) / 10 " 1/с (обратная длительность, не FPS)"
+    Log("  последний замер захвата: " Round(ST.capMs) " мс (" (ST.visSrc != "" ? ST.visSrc : "—") ")"
+        . " · захват в цикле (не FPS зрения): " (ST.running ? Fps() " кадр/с" : "— цикл остановлен")
         . " · кирка: попыток " ST.breaks " · мест в чёрном списке " ST.badSpots.Length
         . " · слепые удары киркой отключены")
     Log("  команды мыши бота: суммарно X=" ST.cameraCmdX " Y=" ST.cameraCmdY
@@ -11653,7 +11791,6 @@ Flag(v) {
 
 
 OnCalibrate(*) {
-    global CFG, ST
     hwnd := GetGameWindow()
     if !hwnd {
         Flash("Окно не найдено", 2000)
@@ -11664,24 +11801,32 @@ OnCalibrate(*) {
         Flash("Захват не удался", 2000)
         return
     }
+    Flash(DescribeCalibrationFrame(shot), 7000)
+}
+
+DescribeCalibrationFrame(shot) {
+    global CFG
     dens := Round(EdgeDensity(shot), 3)
-    dark := Round(DarkRatio(shot, [0.15, 0.10, 0.85, 0.90]), 2)
+    dark := Round(FrameDarkRatio(shot), 2)
     yellow := FindYellowButtons(shot, CFG.regEnd)
     lobbyY := FindYellowButtons(shot, CFG.regLobbyBtn)
     cream := FindCreamButton(shot, CFG.regLobbyBtn)
-    hb := HealthBars(shot)
-    chest := FindChest(shot)
-    loot := FindLoot(shot)
-    enemy := FindEnemySkin(shot, CFG.enemyFastFrac)   ; v7.7: фигура, не полоска
+    hud := FrameHudEvidence(shot)
+    hb := FrameHealth(shot)
+    masks := ScanLootMasks(shot)
+    chest := FindChest(shot, masks)
+    loot := FindLoot(shot, masks)
+    diagnostic := {skinPct:0}
+    enemy := FindEnemySkin(shot, CFG.enemyFastFrac, 0, diagnostic)
     cross := CrosshairRed(shot)
     ring := SoundMarks(shot)
     flashPct := SoundFlash(shot)
 
     Log("── калибровка ──────────────────────────────")
-    slots := BrightRatio(shot, CFG.regSlots, 170)
-    Log("  кадр " shot.w "x" shot.h " · края " dens " (для справки)")
-    Log("  слоты внизу справа " Round(slots, 3) "  [порог матча " CFG.slotsBrightMin "]")
-    Log("  HUD матча: " (InMatchHud(shot) ? "ДА (это матч)" : "нет (меню/итоги)"))
+    Log("  кадр #" shot.captureId " · " shot.w "x" shot.h " · края " dens " (для справки)")
+    Log("  слоты внизу справа " Round(hud.slots, 3))
+    Log("  HUD на диагностическом кадре: " (hud.confirmed ? "есть признаки матча" : "не подтверждён")
+        . " · " hud.score " (" (hud.why != "" ? hud.why : "нет") ") · память HUD цикла не меняю")
     Log("  панель «ВАС УСТРАНЯЕТ» " Round(BrightRatio(shot, CFG.regDeath, 200), 3)
         . "   [порог экрана смерти " CFG.deathBrightMin "]")
     Log("  затемнение " dark "   [порог итогов " CFG.endDarkRatio "]")
@@ -11694,7 +11839,7 @@ OnCalibrate(*) {
         . "   [порог лечения " CFG.hpLowPercent "%]")
     Log("  сундук: " (chest ? ("да, " chest.area " px в (" chest.cx "," chest.cy ")") : "нет")
         . "   лут: " (loot ? (loot.kind ", " loot.area " px") : "нет"))
-    cand := EnemyCandidates(shot)
+    cand := EnemyCandidates(shot, enemy, diagnostic.skinPct)
     Log("  враг: " (enemy ? ("да (" enemy.src ") в (" enemy.cx "," enemy.cy ")") : "нет")
         . "   прицел красный: " (cross ? "да" : "нет"))
     ; Полосы здоровья над врагом в игре НЕТ (v7.7), поэтому смотрим каналы:
@@ -11720,7 +11865,7 @@ OnCalibrate(*) {
     msg .= "HP " hb.hp.pct "% · щит " hb.sh.pct "%`n"
     msg .= "сундук: " (chest ? "да" : "нет") " · лут: " (loot ? loot.kind : "нет") "`n"
     msg .= "враг: " (enemy ? "да" : "нет") " · звук: " (ring ? "метка" : (flashPct ? "вспышка" : "нет"))
-    Flash(msg, 7000)
+    return msg
 }
 
 ; ============================================================================
@@ -13199,12 +13344,15 @@ OnApplyKeys(*) {
 }
 
 ToggleDry(*) {
-    global CFG
+    global CFG, ST
+    if (ST.running && !ST.paused && !ST.mouseCalActive)
+        OnPause()
     CFG.dryRun := !CFG.dryRun
     SyncTogglesFromCfg()
-    Log(CFG.dryRun ? "DryRun ВКЛ (только логи)" : "DryRun ВЫКЛ (нажимаю)")
+    Log(CFG.dryRun ? "DryRun ВКЛ (только журнал)" : "DryRun ВЫКЛ")
     SaveSettings()
-    Flash(CFG.dryRun ? "DryRun: ВКЛ" : "DryRun: ВЫКЛ", 1500)
+    mode := CFG.dryRun ? "DryRun: ВКЛ" : "DryRun: ВЫКЛ"
+    Flash(mode (ST.running && ST.paused ? " · снимите паузу вручную" : ""), 2500)
     UpdateStatus()
 }
 
@@ -13256,9 +13404,9 @@ Init() {
     ;     один раз на набор, кусками по 5 картинок, меню при этом живое
     SetTimer(AutoLearnOnStart, -2500)
 
-    A_IconTip := "FORMA — Fortnite AFK"
+    A_IconTip := FormaTitle() " — Fortnite AFK"
     TrayTip("F1 меню · F8 старт/стоп · F9 DryRun · F5 калибровка · F7 диагностика · F3 зрение", "FORMA", 1)
-    Log("=== FORMA v8.13 запущена" (A_IsCompiled ? " (EXE)" : " (скрипт .ahk)")
+    Log("=== Запуск: " FormaBuildInfo()
         . " · окно: " CFG.winTitle " / " CFG.winTitleAlt
         . " · режим: " (CFG.dryRun ? "DryRun (только журнал)" : "БОЕВОЙ")
         . " · права администратора: " (A_IsAdmin ? "есть" : "НЕТ (игра может не принять нажатия)") " ===")
