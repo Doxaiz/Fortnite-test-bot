@@ -48,8 +48,14 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
 for file in "${files[@]}"; do
-    gh api -H 'Accept: application/vnd.github.raw+json' \
-        "repos/$repo/contents/portable/$file?ref=$commit" > "$work/$file"
+    # Use the blob's base64 JSON rather than piping binary bytes through gh's
+    # text output. The blob endpoint also works beyond the Contents JSON limit.
+    blob=$(gh api -H 'Accept: application/vnd.github.object+json' \
+        "repos/$repo/contents/portable/$file?ref=$commit" --jq .sha)
+    [[ $blob =~ ^[0-9a-f]{40}$ ]] || fail "Cannot locate $file in $tag."
+    gh api "repos/$repo/git/blobs/$blob" --jq 'select(.encoding == "base64") | .content' \
+        | base64 --decode > "$work/$file"
+    [[ -s $work/$file ]] || fail "Empty file received for $file in $tag."
 done
 expected=$(awk -v name="$archive" '$2 == name || $2 == "*" name {print $1}' "$work/SHA256SUMS.txt")
 [[ $expected =~ ^[0-9a-fA-F]{64}$ ]] || fail "Expected one SHA-256 entry for $archive in $tag."
