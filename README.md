@@ -126,7 +126,7 @@ foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_pan
 
 ### Подготовка релиза по тегу
 
-[Portable Windows build](https://github.com/Doxaiz/Fortnite-test-bot/actions/workflows/portable.yml) работает на Windows при pull request в `main`, после изменений в `main`, при отправке тега `vX.Y.Z` и вручную. Изменение одного только номера тега не меняет версию приложения.
+[Portable Windows build](https://github.com/Doxaiz/Fortnite-test-bot/actions/workflows/portable.yml) работает на Windows при pull request в `main`, после изменений в `main`, при отправке тега `vX.Y.Z` и вручную. Изменение одного только номера тега не меняет версию приложения. В прогонах без тега или `expected_tag` CI проверяет отказ на неверном номере, а затем собирает и тестирует ZIP с номером из `Ahk2Exe-SetVersion`. Эти проверки не создают тегов.
 
 1. Перед новым релизом обновите `FORMA_VERSION` и директиву `Ahk2Exe-SetVersion` в `fortnite_bot.ahk` (`X.Y.Z` и `X.Y.Z.0`). Для проверки без создания тега выберите **Run workflow**, нужную ветку и укажите `expected_tag` (например, `v11.0.12` для текущих исходников). Можно проверить версию локально командой `.\tools\build-portable.ps1 -SmokeTest -ExpectedTag v11.0.12`.
 2. После проверки отправьте тег `vX.Y.Z` на проверенном коммите. При несовпадении тега и `FORMA_VERSION` сборка остановится **до загрузки зависимостей**. При успехе на странице прогона появится артефакт `FORMA-vX.Y.Z-windows-x64` (на обычных прогонах без тега — `FORMA-portable-windows-x64`, срок хранения — 14 дней).
