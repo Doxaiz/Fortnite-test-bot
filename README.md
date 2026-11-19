@@ -6,9 +6,9 @@
 
 ## Скачать для Windows x64
 
-[**FORMA v11.0.11 — переносимая сборка**](https://github.com/Doxaiz/Fortnite-test-bot/releases/tag/v11.0.11)
+[**Скачать FORMA v11.0.11 для Windows x64 (.zip)**](https://github.com/Doxaiz/Fortnite-test-bot/raw/refs/tags/v11.0.11/portable/FORMA-v11.0.11-windows-x64.zip) · [Страница релиза](https://github.com/Doxaiz/Fortnite-test-bot/releases/tag/v11.0.11) · [SHA-256](portable/SHA256SUMS.txt)
 
-Скачайте `FORMA-v11.0.11-windows-x64.zip`, распакуйте в обычную папку с правом записи и запустите `FORMA.exe`. Установщика нет, AutoHotkey уже встроен. `forma.ini` и `run.log` хранятся рядом с EXE. Закройте другие экземпляры FORMA перед запуском. Исходный `.ahk` тоже можно запустить через AutoHotkey v2.
+Распакуйте архив в обычную папку с правом записи и запустите `FORMA.exe`. Установщика нет, AutoHotkey уже встроен. `forma.ini` и `run.log` хранятся рядом с EXE. Закройте другие экземпляры FORMA перед запуском. Исходный `.ahk` тоже можно запустить через AutoHotkey v2.
 
 ## Главная панель
 
