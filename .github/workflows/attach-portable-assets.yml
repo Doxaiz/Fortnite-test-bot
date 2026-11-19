@@ -34,7 +34,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORMA_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --check
+        run: |
+          if ! output=$(bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --check 2>&1); then
+            message=${output//%/%25}
+            message=${message//$'\r'/%0D}
+            message=${message//$'\n'/%0A}
+            printf '::error title=Release files verification failed::%s\n' "$message"
+            exit 1
+          fi
+          printf '%s\n' "$output"
 
   attach:
     name: Attach missing files to the existing release
@@ -53,4 +61,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FORMA_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --attach
+        run: |
+          if ! output=$(bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --attach 2>&1); then
+            message=${output//%/%25}
+            message=${message//$'\r'/%0D}
+            message=${message//$'\n'/%0A}
+            printf '::error title=Release attachment failed::%s\n' "$message"
+            exit 1
+          fi
+          printf '%s\n' "$output"
