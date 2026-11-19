@@ -1,0 +1,11 @@
+# Local portable builds and FORMA data (not part of a release).
+/dist/
+/FORMA.exe
+/forma.ini
+/run.log
+/run.log.prev
+/run.log.resume
+/ЖЕТОН_НАЙДЕН.txt
+/macro.txt
+
+__pycache__/
