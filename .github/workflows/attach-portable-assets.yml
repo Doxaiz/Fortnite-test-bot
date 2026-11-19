@@ -1,0 +1,56 @@
+name: Attach portable assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag of the existing Latest release, e.g. v11.0.13'
+        required: true
+        type: string
+      attach:
+        description: 'Attach missing ZIP and SHA256SUMS.txt (otherwise only verify)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forma-attach-portable-assets
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the files at the release tag
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify without writing to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORMA_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --check
+
+  attach:
+    name: Attach missing files to the existing release
+    if: github.ref == 'refs/heads/main' && inputs.attach
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify again and attach missing files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORMA_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash tools/attach-release-assets.sh "$FORMA_RELEASE_TAG" --attach
