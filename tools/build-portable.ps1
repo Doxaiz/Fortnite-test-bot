@@ -1,5 +1,6 @@
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist\portable')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist\portable'),
+    [switch]$SmokeTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +17,7 @@ if (!$versionMatch.Success) {
 }
 $version = $versionMatch.Groups[1].Value
 
-# Hashes published by AutoHotkey/Ahk2Exe and AutoHotkey/AutoHotkey.
+# Pin the release binaries and the corresponding AutoHotkey source archive.
 $compilerTag = 'Ahk2Exe1.1.37.02a2'
 $compilerHash = 'c29b8c3a5124850d79fc9e66e2ca79677c377d7f31631ad3022ba159c5d9e3be'
 $runtimeVersion = '2.0.18'
@@ -51,11 +52,13 @@ try {
 
     $compilerDir = Join-Path $temp 'compiler'
     $runtimeDir = Join-Path $temp 'runtime'
+    $runtimeSourceDir = Join-Path $temp 'runtime-source'
     Expand-Archive -LiteralPath $compilerZip -DestinationPath $compilerDir
     Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeDir
+    Expand-Archive -LiteralPath $runtimeSource -DestinationPath $runtimeSourceDir
     $compiler = Find-UniqueFile $compilerDir 'Ahk2Exe.exe'
     $runtime = Find-UniqueFile $runtimeDir 'AutoHotkey64.exe'
-    $runtimeLicense = Find-UniqueFile $runtimeDir 'license.txt'
+    $runtimeLicense = Find-UniqueFile $runtimeSourceDir 'license.txt'
 
     $packageDir = Join-Path $temp 'package'
     $licensesDir = Join-Path $packageDir 'licenses'
@@ -76,17 +79,49 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'docs\portable.txt') -Destination (Join-Path $packageDir 'README.txt')
     Copy-Item -LiteralPath $runtimeLicense -Destination (Join-Path $licensesDir 'AutoHotkey-GPL-2.0.txt')
 
-    $archive = Join-Path $temp "FORMA-v$version-windows-x64.zip"
+    $archiveName = "FORMA-v$version-windows-x64.zip"
+    $archive = Join-Path $temp $archiveName
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archive -CompressionLevel Optimal
-    $digests = foreach ($file in @($archive, $runtimeSource)) {
-        '{0}  {1}' -f (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant(), (Split-Path -Leaf $file)
+    if ($SmokeTest) {
+        $archivesToTest = [ordered]@{ built = $archive }
+        $published = Join-Path $repo "portable\$archiveName"
+        if (Test-Path -LiteralPath $published -PathType Leaf) {
+            # Verify and run the exact download linked from the repository, too.
+            $manifest = Get-Content -LiteralPath (Join-Path $repo 'portable\SHA256SUMS.txt')
+            $hash = (Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($manifest -notcontains "$hash  $archiveName") {
+                throw "SHA-256 mismatch for repository archive $archiveName."
+            }
+            $archivesToTest['repository'] = $published
+        }
+        $smokeScript = Join-Path $repo 'tests\portable_startup.ahk'
+        foreach ($item in $archivesToTest.GetEnumerator()) {
+            Write-Host "Smoke test: $($item.Key) $archiveName"
+            $extracted = Join-Path $temp "extracted-$($item.Key)"
+            Expand-Archive -LiteralPath $item.Value -DestinationPath $extracted
+            $smokeExe = Join-Path $extracted 'FORMA.exe'
+            $smokeArgs = '/ErrorStdOut=UTF-8 "{0}" "{1}"' -f $smokeScript, $smokeExe
+            $stdout = Join-Path $extracted 'smoke-stdout.log'
+            $stderr = Join-Path $extracted 'smoke-stderr.log'
+            $smoke = Start-Process -FilePath $runtime -ArgumentList $smokeArgs -WorkingDirectory $temp -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
+            if ($smoke.ExitCode -ne 0) {
+                throw "The $($item.Key) portable startup test failed (exit code $($smoke.ExitCode))."
+            }
+        }
     }
-    $hashFile = Join-Path $temp 'SHA256SUMS.txt'
-    Set-Content -LiteralPath $hashFile -Value $digests -Encoding Ascii
     New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
-    foreach ($file in @($archive, $runtimeSource, $hashFile)) {
-        Copy-Item -LiteralPath $file -Destination $OutputDirectory -Force
+    $checksums = foreach ($file in @($archive, $runtimeSource)) {
+        $name = Split-Path -Leaf $file
+        $copy = Join-Path $OutputDirectory $name
+        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+        Copy-Item -LiteralPath $file -Destination $copy -Force
+        if ((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash -ne $hash) {
+            throw "SHA-256 mismatch after staging $name."
+        }
+        '{0}  {1}' -f $hash.ToLowerInvariant(), $name
     }
+    Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Value $checksums -Encoding Ascii
     Write-Host "Portable FORMA v$version built in $OutputDirectory"
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force
