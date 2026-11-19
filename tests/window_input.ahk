@@ -1,0 +1,407 @@
+#Requires AutoHotkey v2.0
+#NoTrayIcon
+#Include ../fortnite_bot.ahk
+#SingleInstance Off
+
+; Интеграционный тест: отдельный процесс рисует HWND и считает WM_KEYDOWN/UP.
+; Init() не вызывается; ввод разрешается только для двух известных тестовых окон.
+if (A_Args.Length = 2 && A_Args[1] = "--receiver") {
+    ServeReceiver(A_Args[2])
+    return
+}
+ExitApp(RunWindowTests())
+
+RunWindowTests() {
+    global CFG, ST
+    stem := A_Temp "\forma-window-test-" ProcessExist() "-" A_TickCount
+    CFG.logFile := stem ".log", CFG.iniFile := stem ".ini"
+    CFG.winTitle := "ahk_class FORMA_NoSuchWindow_ForTest"
+    CFG.winExe := "ahk_exe FORMA_NoSuchProcess_ForTest.exe"
+    CFG.cloudGaming := false, CFG.smartRestore := false, CFG.bgMode := true, CFG.dryRun := true
+    CFG.botMode := "auto", CFG.keepAwake := false, CFG.audioAlert := false
+    CFG.webhookStop := false, CFG.webhookRound := false
+    for name in ["featCombat", "featLoot", "featMove", "featWeaponPick", "featReward", "featToken"
+        , "featPlayAgain", "featAutoQueue", "featParkour", "featSound", "featFightBack", "featHeal", "featProStyle"
+        , "featFirstSlot", "featReload", "featHarvest", "squadAutoLeave", "sprint"]
+        CFG.%name% := false
+    CFG.featChest := true, CFG.teamSafe := false
+    CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
+    CFG.fwdMinMs := 8000, CFG.fwdMaxMs := 8000
+    tag := "FORMA fixture " ProcessExist() " " A_TickCount
+    pid := 0, code := 0
+    try {
+        Check(!UI.gui && !ST.running, "#Include не запускает рабочий интерфейс")
+        SetDpiAware()
+        SetWinDelay(0)
+        Run('"' A_AhkPath '" /ErrorStdOut=UTF-8 "' A_ScriptFullPath '" --receiver "' tag '"', , , &pid)
+        a := WinWait(tag " A ahk_pid " pid, , 6)
+        b := WinWait(tag " B ahk_pid " pid, , 6)
+        Check(a && b && a != b, "два окна отдельного процесса")
+        ST.running := true, ST.state := "GAME", ST.phase := "roam", ST.matchStarted := true
+        ST.matchStartT := A_TickCount
+        SelectFixture(a)
+        Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
+        CFG.dryRun := false
+        for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
+            , TestSavedWindowFrame] {
+            test(a, b)
+            FileAppend("OK: " test.Name "`n", "*", "UTF-8")
+        }
+    } catch as e {
+        FileAppend("FAIL: " e.Message " (line " e.Line ")`n", "**", "UTF-8")
+        code := 1
+    } finally {
+        ST.running := false
+        try ReleaseKeysSafe()
+        if pid
+            try ProcessClose(pid)
+        for ext in [".log", ".ini"]
+            try FileDelete(stem ext)
+    }
+    return code
+}
+
+TestPromptRoundTrip(a, b) {
+    global ST, SC
+    SetFixtureFrame(a, 1)
+    first := TickFixture(a)
+    Check(ReadInteractPrompt(first) && ST.promptConfirm.hits = 1 && !ST.promptN, "первая плашка: доставлять E рано")
+    ExpectKey(a, SC.e, 0, 0)
+    second := TickFixture(a)
+    Check(second.captureId > first.captureId && ST.promptN = 1 && ST.held.Has(SC.e)
+        && ST.held[SC.e].target = a, "вторая плашка запустила E")
+    ExpectKey(a, SC.e, 1, 0)
+    ExpectKey(a, SC.e, 1, 1, 2000)
+    ExpectKey(b, SC.e, 0, 0)
+    Check(!ST.held.Has(SC.e) && !ST.chests, "отпускание не считается открытием сундука")
+    FileAppend("  захват 480×288: " ST.capSource "`n", "*", "UTF-8")
+}
+
+TestMinimizedMove(a, b) {
+    global CFG, ST, SC
+    CFG.featChest := false, CFG.featMove := true
+    SetFixtureFrame(a, 0)
+    shot := TickFixture(a)
+    ExpectKey(a, SC.w, 1, 0)
+    Check(ST.held.Has(SC.w) && ST.held[SC.w].target = a && ST.segUntil > A_TickCount, "W удерживается до сворачивания")
+    untilWalk := ST.segUntil, epoch := ST.inputEpoch, started := ST.matchStartT
+    WinMinimize("ahk_id " a)
+    minimizeBy := A_TickCount + 1000
+    while (WinGetMinMax("ahk_id " a) != -1) {
+        Check(A_TickCount < minimizeBy, "тестовое окно не свернулось")
+        Sleep(10)
+    }
+    Tick()
+    Check(A_TickCount < untilWalk && !ST.held.Count && !ST.segUntil && !WorldFrameCurrent(shot)
+        , "сворачивание прервало W до конца отрезка")
+    Check(ST.state = "GAME" && ST.matchStartT = started && ST.inputEpoch = epoch + 1
+        , "сменилось поколение ввода, не матч")
+    Check(!KeyDown(SC.w), "новое W запрещено, пока окно свёрнуто")
+    ExpectKey(a, SC.w, 1, 1)
+    ExpectKey(b, SC.w, 0, 0)
+    Tick()
+    Check(ST.inputEpoch = epoch + 1 && !ST.held.Count, "нет повторного сброса без кадра")
+    CFG.featMove := false
+    ; SW_SHOWNOACTIVATE: WinRestore может заодно активировать окно.
+    DllCall("user32\ShowWindow", "Ptr", a, "Int", 4)
+    SetFixtureFrame(a, 0)
+    TickFixture(a)
+    Check(!ST.playInputSuspended, "получен новый кадр после восстановления")
+}
+
+TestWindowHandoff(a, b) {
+    global CFG, ST, SC
+    CFG.featChest := true, CFG.chestHoldMs := 1100
+    SetFixtureFrame(a, 1)
+    TickFirstPrompt(a)
+    old := TickFixture(a)
+    Check(ST.tgt && ST.held.Has(SC.e), "E удерживается в A перед сменой окна")
+    deadline := ST.tgt.until
+    ExpectKey(a, SC.e, 2, 1)
+
+    SelectFixture(b)
+    CFG.chestHoldMs := 2000
+    SetFixtureFrame(b, 1)
+    fresh := TickFirstPrompt(b)
+    Check(A_TickCount < deadline && fresh.inputEpochAtCapture > old.inputEpochAtCapture
+        && !WorldFrameCurrent(old), "смена HWND до дедлайна отменила старое удержание и кадр")
+    ExpectKey(a, SC.e, 2, 2)
+    ExpectKey(b, SC.e, 0, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.e, 1, 0)
+    holdB := ST.held[SC.e]
+    Check(holdB.target = b && ST.tgt.until > deadline + 250, "новое E принадлежит B и имеет более поздний дедлайн")
+    Sleep(Max(0, deadline + 120 - A_TickCount))
+    Check(ST.held.Has(SC.e) && ST.held[SC.e] = holdB, "дедлайн A не оборвал удержание B")
+    ExpectKey(b, SC.e, 1, 0)
+    ExpectKey(b, SC.e, 1, 1, 2400)
+    ExpectKey(a, SC.e, 2, 2)
+}
+
+TestActualFocus(a, b) {
+    global CFG, ST, SC
+    SelectFixture(a)
+    SetFixtureFrame(a, 1)
+    TickFirstPrompt(a)
+    TickFixture(a)
+    ExpectKey(a, SC.e, 3, 2)
+    deadline := ST.tgt.until, epoch := ST.inputEpoch, lastE := ST.lastPromptE
+    ; Меняем реальный фокус, но новых системных down тест не делает.
+    CFG.dryRun := true
+    for h in [a, b]
+        WinSetExStyle("-0x08000000", "ahk_id " h)
+    FocusFixture(a)
+    before := TickFirstPrompt(a)
+    Check(A_TickCount < deadline && ST.inputEpoch = epoch + 1, "переход фон → фокус снял старое E")
+    ExpectKey(a, SC.e, 3, 3)
+
+    CFG.bgMode := false
+    FocusFixture(b)
+    TickFixture(a)
+    Check(!WorldFrameCurrent(before) && !ST.promptConfirm.hits && ST.playInputSuspended
+        , "реальная потеря фокуса сбросила первый кадр подсказки")
+    Check(ST.lastPromptE = lastE && ST.state = "GAME" && ST.promptAttempts.Length = 4
+        , "сцена, счётчик и ограничение новых попыток E сохранены")
+    FocusFixture(a)
+    TickFirstPrompt(a)
+    Check(ST.lastPromptE = lastE, "первый кадр после возврата не разрешает E")
+    TickFixture(a)
+    Check(InStr(ST.lastAction, "DryRun: E") && ST.promptN = 4, "второй кадр разрешает только DryRun")
+    ExpectKey(a, SC.e, 3, 3)
+    ExpectKey(b, SC.e, 1, 1)
+}
+
+TestCapturedBody(a, b) {
+    global CFG, ST, VIS
+    Check(CFG.dryRun && WinActive("ahk_id " a), "бой тестируется только в DryRun")
+    CFG.featChest := false, CFG.featCombat := true, CFG.featMotionEnemy := true
+    CFG.enemyFastMs := 0, CFG.aimReactMs := 0, CFG.skinWideMs := 60000
+    ResetCaches()
+    ST.scanWideAt := A_TickCount, ST.stepBoost := 0
+    SetFixtureFrame(a, 2)
+    TickFixture(a)
+    shot := TickFixture(a)
+    Check(!shot.enemyReading && !ST.enemySeenSeq && !ST.shots && !ST.leftDown
+        , "два кадра с опорой и красным прицелом без фигуры не запускают бой")
+    BuildVisionGui() ; проверяем подпись и отрисовку, не показывая окно поверх приёмника
+    try {
+        SetFixtureFrame(a, 3)
+        shot := TickFixture(a)
+        Check(shot.enemyReading && shot.enemyReading.src = "движение" && !ST.enemySeenSeq && !ST.shots
+            , "захваченный первый кандидат виден, но ещё не подтверждён")
+        DrawVisionFrame()
+        Check(VIS.lastId = shot.captureId && InStr(VIS.txt.Value, "первый: движение"), "F3 показывает первый замер на этом кадре")
+        SetFixtureFrame(a, 4)
+        shot := TickFixture(a)
+        Check(ST.enemySeenSeq = shot.captureId && ST.enemySrc = "движение" && ST.shots = 1
+            && !ST.leftDown && !ST.adsOn && !ST.held.Count
+            , "тот же цвет прицела, второй кадр фигуры → виртуальная очередь без мыши")
+        DrawVisionFrame()
+        Check(VIS.lastId = shot.captureId && InStr(VIS.txt.Value, "повтор: движение"), "F3 показывает подтверждение")
+        SetFixtureFrame(a, 2)
+        shot := TickFixture(a)
+        Check(!shot.enemyReading && ST.enemySeenSeq != shot.captureId && ST.shots = 1
+            , "пустое место под тем же прицелом не подтверждает фигуру")
+        DrawVisionFrame()
+        Check(InStr(VIS.txt.Value, "кандидата нет"), "F3 не переносит рамку на кадр с одной опорой")
+        report := BuildCalibrationReport(shot)
+        reasonShown := false
+        for line in report.lines
+            if InStr(line, "фигура: нет: плотное тёплое пятно, рамка растянута фоном")
+                reasonShown := true
+        Check(reasonShown, "F5 отвергает опору на том же захваченном кадре и объясняет причину")
+    } finally {
+        VisionHide()
+        VIS.gui.Destroy()
+        VIS.gui := 0
+    }
+}
+
+TestSavedWindowFrame(a, b) {
+    global CFG, ST, SC
+    Check(CFG.dryRun && GetGameWindow() = a, "экспорт проверяется на выбранном тестовом окне")
+    SetFixtureFrame(a, 1)
+    live := ST.lastShot, epoch := ST.inputEpoch
+    shot := CaptureCalibrationFrame()
+    Check(shot && shot.hwnd = a && shot.captureId > live.captureId && shot.source != ""
+        , "экспорт получает отдельный реальный кадр окна")
+    folder := A_Temp "\forma-window-export-" ProcessExist() "-" A_TickCount
+    try {
+        saved := SaveCalibrationPair(shot, folder)
+        report := FileRead(saved.txt, "UTF-8")
+        Check(FileGetSize(saved.bmp) = 54 + shot.buf.Size && InStr(report, "плашка E: кандидат")
+            && InStr(report, "кадр #" shot.captureId) && InStr(report, "источник: " shot.source)
+            , "на диске кадр GDI и его отчёт о плашке")
+        Check(ST.lastShot = live && ST.inputEpoch = epoch && !ST.held.Count
+            , "диагностический кадр не подменяет рабочий и не даёт ввода")
+        ExpectKey(a, SC.e, 3, 3)
+        ExpectKey(b, SC.e, 1, 1)
+    } finally {
+        try DirDelete(folder, true)
+    }
+}
+
+SelectFixture(h) {
+    global CFG
+    CFG.winTitle := "ahk_id " h
+    Check(GetGameWindow() = h, "выбрано именно тестовое окно")
+}
+
+FocusFixture(h) {
+    WinActivate("ahk_id " h)
+    Check(WinWaitActive("ahk_id " h, , 1), "не удалось активировать тестовое окно")
+}
+
+TickFixture(h) {
+    global CFG, ST
+    Check(GetGameWindow() = h && (CFG.dryRun || (CFG.bgMode && !WinActive("ahk_id " h)))
+        , "без DryRun допустим только фоновый ввод в выбранный приёмник")
+    seq := ST.captureSeq
+    Tick()
+    shot := ST.lastShot
+    Check(shot && shot.captureId > seq && shot.hwnd = h && shot.w = 480 && shot.h = 288 && FrameHasMatchHud(shot)
+        , "нет нового кадра с тестовым HUD; исход: " ST.tickProfile.outcome)
+    Check(ST.tickProfile.outcome = "завершён", "ошибка цикла: " TickProfileText(ST.tickProfile))
+    return shot
+}
+
+TickFirstPrompt(h) {
+    global ST, SC
+    shot := TickFixture(h)
+    Check(ST.promptConfirm.hits = 1 && !ST.held.Has(SC.e) && !ST.tgt, "нужен второй кадр из этого окна и вида")
+    return shot
+}
+
+Check(ok, description) {
+    if !ok
+        throw Error(description, -1)
+}
+
+SetFixtureFrame(h, scene) {
+    Check(SendMessage(0x8020, scene, 0, , "ahk_id " h, , , , 1000) = 1, "приёмник не сменил сцену")
+}
+
+ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
+    vk := VkFromScan(scanCode), deadline := A_TickCount + waitMs
+    Check(vk, "неизвестная клавиша " scanCode)
+    loop {
+        count := SendMessage(0x8021, vk, 0, , "ahk_id " h, , , , 1000)
+        d := count & 0xFFFF, u := count >> 16
+        if (d = downs && u = ups)
+            return
+        if (d > downs || u > ups || A_TickCount >= deadline)
+            throw Error(WinGetTitle("ahk_id " h) " · " scanCode ": down/up = " d "/" u
+                . ", ожидалось " downs "/" ups, -1)
+        Sleep(10)
+    }
+}
+
+ServeReceiver(tag) {
+    global rx := Map(), fixtureFrames := []
+    SetDpiAware()
+    Loop 5
+        fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
+    OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
+    OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
+    OnMessage(0x0318, ReceiverPrint)     ; WM_PRINTCLIENT
+    OnMessage(0x0100, ReceiverKey)       ; WM_KEYDOWN
+    OnMessage(0x0101, ReceiverKey)       ; WM_KEYUP
+    OnMessage(0x8020, ReceiverFrame)
+    OnMessage(0x8021, ReceiverCounts)
+    for label in ["A", "B"] {
+        win := Gui("+ToolWindow -Caption -DPIScale +E0x08000000", tag " " label)
+        rx[win.Hwnd] := {gui:win, scene:0, counts:Map()}
+        win.Show("NA x" (label = "A" ? 16 : 512) " y40 w480 h288")
+    }
+    SetTimer(ExitApp, -30000)
+}
+
+ReceiverFrame(w, l, msg, h) {
+    global rx, fixtureFrames
+    if (!rx.Has(h) || w < 0 || w >= fixtureFrames.Length)
+        return 0
+    rx[h].scene := w
+    DllCall("user32\RedrawWindow", "Ptr", h, "Ptr", 0, "Ptr", 0, "UInt", 0x0101)
+    return 1
+}
+
+ReceiverPrint(dc, l, msg, h) {
+    global rx, fixtureFrames
+    if rx.Has(h) {
+        DrawFixture(dc, fixtureFrames[rx[h].scene + 1])
+        return 1
+    }
+}
+
+ReceiverPaint(w, l, msg, h) {
+    global rx, fixtureFrames
+    if !rx.Has(h)
+        return
+    ps := Buffer(A_PtrSize = 8 ? 72 : 64, 0)
+    dc := DllCall("user32\BeginPaint", "Ptr", h, "Ptr", ps, "Ptr")
+    if dc {
+        try DrawFixture(dc, fixtureFrames[rx[h].scene + 1])
+        finally DllCall("user32\EndPaint", "Ptr", h, "Ptr", ps)
+    }
+    return 0
+}
+
+DrawFixture(dc, f) {
+    DllCall("gdi32\StretchDIBits", "Ptr", dc, "Int", 0, "Int", 0, "Int", f.w, "Int", f.h
+        , "Int", 0, "Int", 0, "Int", f.w, "Int", f.h, "Ptr", f.buf, "Ptr", f.info
+        , "UInt", 0, "UInt", 0x00CC0020, "Int")
+}
+
+ReceiverKey(vk, l, msg, h) {
+    global rx
+    if rx.Has(h) {
+        counts := rx[h].counts
+        counts[vk] := counts.Get(vk, 0) + (msg = 0x0100 ? 1 : 0x10000)
+    }
+}
+
+ReceiverCounts(vk, l, msg, h) {
+    global rx
+    return rx.Has(h) ? rx[h].counts.Get(vk, 0) : -1
+}
+
+BuildFixtureFrame(scene) {
+    w := 480, h := 288, buf := Buffer(w * h * 4)
+    ; Текстура, а не заливка: защита захвата от однотонного кадра остаётся включена.
+    Loop 24 {
+        row := A_Index - 1
+        Loop 24 {
+            col := A_Index - 1, shade := 63 + Mod(col + row * 3, 42)
+            PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
+        }
+    }
+    PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
+    PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
+    PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
+    if (scene = 1) {
+        PaintFixture(buf, w, 242, 134, 58, 21, 0x282828) ; тёмная плашка
+        PaintFixture(buf, w, 245, 142, 3, 4, 0xEEEEEE)    ; значок
+        Loop 9
+            PaintFixture(buf, w, 257 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
+    }
+    if (scene >= 2) {
+        ; Неизменная оранжевая опора и отдельная полоса продолжали её рамку в v11.0.8.
+        PaintFixture(buf, w, 96, 40, 24, 72, 0xDA8848)
+        PaintFixture(buf, w, 120, 103, 9, 9, 0xCF7C39)
+        PaintFixture(buf, w, 379, 111, 15, 30, 0xC78343)
+        if (scene >= 3)
+            PaintFixture(buf, w, 233, 124, 16, 32, scene = 3 ? 0xDDDDDD : 0x202020)
+        PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727)     ; один и тот же цвет на трёх сценах
+    }
+    info := Buffer(40, 0)
+    NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)
+    return {w:w, h:h, buf:buf, info:info}
+}
+
+PaintFixture(buf, stride, x, y, w, h, color) {
+    Loop h {
+        offset := ((y + A_Index - 1) * stride + x) * 4
+        Loop w
+            NumPut("UInt", color, buf, offset + (A_Index - 1) * 4)
+    }
+}
