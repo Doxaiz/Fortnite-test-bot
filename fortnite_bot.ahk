@@ -4,14 +4,13 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.12.0
+;@Ahk2Exe-SetVersion          11.0.13.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.12 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.13 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
-;  ТОЛЬКО ОБЫЧНЫЙ AUTOHOTKEY v2 — БЕЗ МОДЕЛЕЙ, БЕЗ PYTHON, БЕЗ ONNX/YOLO.
-;  Один файл .ahk (EXE не входит в репозиторий):
+;  Встроенный анализ пикселей на AutoHotkey v2. Среда включена в переносимый EXE:
 ;    • GDI-захват клиентской области игры (PrintWindow + резерв DC окна),
 ;      поддержка нативного Fortnite и облачного гейминга (GeForce NOW,
 ;      GeForce Infinity, Xbox Cloud Gaming, Amazon Luna);
@@ -70,7 +69,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.12"
+global FORMA_VERSION := "11.0.13"
 
 global CFG := {
     ; ---- окно игры ----
@@ -10378,7 +10377,7 @@ BuildVisionGui() {
     g.SetFont("s8 c" "A9B4C4", "Consolas")
     VIS.txt := g.AddEdit("x12 y480 w720 h96 ReadOnly -Wrap +Background151E2A cC9D4E0", "")
     g.SetFont("s7 c5A6772", "Consolas")
-    g.AddText("x12 y580 w440 h14", "F3 — скрыть · чистый GDI-анализ AutoHotkey v2 (без моделей)")
+    g.AddText("x12 y580 w440 h14", "F3 — скрыть · встроенный анализ кадров GDI")
     g.SetFont("s8 cC9D4E0", "Segoe UI")
     VIS.btnCal := g.AddButton("x472 y574 w260 h24", "Диагностика HUD (F5)")
     VIS.btnCal.OnEvent("Click", (*) => OnCalibrate())
@@ -12610,7 +12609,7 @@ OnResetSettings() {
 }
 
 OnShowHelp() {
-    msg := FormaTitle() " — 100% чистый AutoHotkey v2 (без моделей, Python, ONNX и DLL)"
+    msg := FormaTitle() " — встроенный анализ изображения окна на AutoHotkey v2"
         . "`n`nЧЕТЫРЕ РЕЖИМА РАБОТЫ:"
         . "`n1. Авто-игра (Zero Build) — очередь, автобус, сундуки [E], обход и бой."
         . "`n2. AFK-очередь — цикл матчей по таймеру, авто-выход без отряда, ожидание"
@@ -14681,7 +14680,6 @@ Init() {
     A_IconTip := FormaTitle() " — Fortnite AFK, Queue & XP (AHK v2)"
     TrayTip("F8 старт/стоп · F4 пропуск · F2 мини-HUD · F9 DryRun · F3 зрение · F7 окно · F1 в трей", FormaTitle(), 1)
     Log("=== Запуск: " FormaBuildInfo()
-        . " · чистый AHK v2 (0 моделей/Python)"
         . " · режим: " ModeRu(CFG.botMode)
         . " · ЦП: " PerfRu(CFG.perfProfile)
         . " · " (CFG.dryRun ? "DryRun (без нажатий)" : "БОЕВОЙ")

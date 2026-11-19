@@ -2,7 +2,7 @@
 #NoTrayIcon
 #Include ../fortnite_bot.ahk
 
-; Самостоятельный тест. Не запускает Init(), Fortnite или модель.
+; Самостоятельный тест на синтетических кадрах. Не запускает Init() или Fortnite.
 exitCode := 0
 try {
     Check(!UI.gui && !ST.running && !UI.hkKeys.Length, "при #Include интерфейс и хоткеи не запускаются")
