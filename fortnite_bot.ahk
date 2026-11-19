@@ -4,11 +4,11 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.11.0
+;@Ahk2Exe-SetVersion          11.0.12.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.11 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.12 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
 ;  ТОЛЬКО ОБЫЧНЫЙ AUTOHOTKEY v2 — БЕЗ МОДЕЛЕЙ, БЕЗ PYTHON, БЕЗ ONNX/YOLO.
 ;  Один файл .ahk (EXE не входит в репозиторий):
@@ -70,7 +70,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.11"
+global FORMA_VERSION := "11.0.12"
 
 global CFG := {
     ; ---- окно игры ----
@@ -10964,6 +10964,7 @@ PanelNavIcon(dc, view, x, y, s, color) {
         case "home": shapes := [[0,0,5,5], [7,0,5,5], [0,7,5,5], [7,7,5,5]]
         case "log": shapes := [[0,1,2,2], [4,1,8,2], [0,5,2,2], [4,5,8,2], [0,9,2,2], [4,9,8,2]]
         case "settings": shapes := [[0,2,12,2], [3,0,3,6], [0,9,12,2], [8,7,3,6]]
+        case "startup": shapes := [[0,0,12,2], [0,0,2,9], [10,0,2,9], [0,7,12,2], [4,10,4,2]]
         default: shapes := [[5,0,2,12], [0,5,12,2], [3,3,6,6]]
     }
     for b in shapes
@@ -11239,6 +11240,9 @@ PanelBackdrop() {
             for x in [434, 628, 822]
                 art.Card(x, 432, 182, 61, 10, c.well, c.line)
             art.Card(206, 603, 852, 63, 15, c.card, c.line)
+        case "startup":
+            art.Card(206, 85, 852, 378, 15, c.card, c.line)
+            art.Card(206, 475, 852, 191, 15, c.card, c.line)
         case "log", "finds":
             art.Card(206, 85, 852, 581, 15, c.card, c.line)
             if (p.view = "finds") {
@@ -11303,6 +11307,8 @@ PanelGo(view) {
         RefreshPanelFindings(true)
     else if (view = "settings")
         PanelUpdateCoords(true)
+    else if (view = "startup")
+        RefreshStartupReport()
     UpdateUiStatus()
 }
 
@@ -11395,17 +11401,18 @@ PanelBuildSidebar() {
     PanelText([68, 23, 105, 24], "FORMA", 15, "bold", "ink", "side")
     PanelText([69, 49, 106, 17], "Управление", 9, "norm", "muted", "side")
     PanelText([20, 92, 140, 18], "МЕНЮ", 8, "bold", "muted", "side")
-    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"], ["finds", "Находки"]]
+    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"], ["finds", "Находки"], ["startup", "Проверка запуска"]]
         p.nav[item[1]] := PanelButton([14, 116 + (i - 1) * 47, 156, 40], item[2]
-            , PanelGo.Bind(item[1]), "nav", "side", item[1], 11)
-    PanelText([20, 334, 144, 20], "ГОРЯЧИЕ КЛАВИШИ", 8, "bold", "muted", "side")
+            , PanelGo.Bind(item[1]), "nav", "side", item[1], item[1] = "startup" ? 9 : 11)
+    PanelText([20, 368, 144, 20], "ГОРЯЧИЕ КЛАВИШИ", 8, "bold", "muted", "side")
     for i, label in ["Старт / стоп", "DryRun", "В трей", "Аварийный стоп", "Кадр и отчёт"] {
-        y := 362 + (i - 1) * 30
+        y := 396 + (i - 1) * 30
         p.keys.Push(PanelText([20, y, 59, 22], "", 8, "bold", i = 4 ? "danger" : "accent", "chip", "Center +0x200 0xC000"))
         PanelText([85, y, 91, 22], label, 8, "norm", "muted", "side", "+0x200")
     }
     PanelText([20, 633, 147, 20], "ЛОКАЛЬНАЯ ПАНЕЛЬ", 8, "bold", "muted", "side")
-    PanelText([20, 655, 143, 20], "v" FORMA_VERSION "  /  AHK v2", 9, "norm", "ink", "side")
+    PanelText([20, 655, 143, 20], "v" FORMA_VERSION "  /  " (A_IsCompiled ? "EXE " (8 * A_PtrSize) " бит" : "AHK v2")
+        , 9, "norm", "ink", "side")
 
     p.heading := PanelText([206, 15, 193, 43], "", 21, "bold", "ink", "canvas")
     PanelText([403, 29, 39, 24], "ТЕМА", 8, "bold", "muted", "canvas", "+0x200")
@@ -11550,6 +11557,61 @@ PanelBuildFinds() {
     UI.findingsEdit := PanelAdd("Edit", [224, 252, 816, 396], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
 }
 
+PanelBuildStartup() {
+    global UI
+    p := UI.panel, p.buildView := "startup"
+    PanelText([224, 101, 374, 28], "Сводка запуска", 13, "bold")
+    PanelText([224, 133, 816, 22], "Проверяет состояние FORMA без захвата экрана, ввода и отправки данных.", 9, "norm", "muted")
+    PanelButton([638, 100, 111, 30], "Обновить", RefreshStartupReport, , , , 9, "StartupRefresh")
+    p.startupLog := PanelButton([759, 100, 131, 30], "Найти run.log", OnOpenFolder, , , , 9)
+    PanelButton([900, 100, 140, 30], "Скопировать", CopyStartupReport, "primary", , , 9, "StartupCopy")
+    p.startupReport := PanelAdd("Edit", [224, 161, 816, 253], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200 vStartupReport")
+    p.startupNote := PanelText([224, 428, 816, 20], "", 9, "norm", "muted")
+
+    PanelText([224, 491, 720, 25], "Если программа не запускает сеанс", 11, "bold")
+    PanelText([224, 526, 816, 28], "1. Для проверки запуска оставьте DryRun включённым. Без игры отсутствие окна Fortnite — это нормально.", 9)
+    PanelText([224, 560, 816, 27], "2. Если run.log не появился, распакуйте FORMA в папку с правом записи и запустите EXE снова.", 9)
+    PanelText([224, 594, 816, 43], "3. Для разбора ошибки скопируйте сводку. Если прикладываете свежий run.log, сначала проверьте его на личные данные.", 9)
+}
+
+BuildStartupReport() {
+    global CFG, ST, UI
+    ; Ищем только размер окна, без захвата и без изменения состояния движка.
+    area := 0
+    try area := PanelClientPreview()
+    game := area ? "найдено, " area.w " × " area.h : "не найдено или свёрнуто"
+    registered := UI.hkKeys.Length
+    escapeBound := UI.HasOwnProp("hkReport") && UI.hkReport.Has("~ESC")
+    return FormaTitle() " · " (A_IsCompiled ? "EXE" : "AHK") " · " (8 * A_PtrSize) " бит`n"
+        . "Windows: " A_OSVersion " · AutoHotkey: " A_AhkVersion " · админ: " (A_IsAdmin ? "да" : "нет") "`n"
+        . "Экран: " A_ScreenWidth " × " A_ScreenHeight " · " A_ScreenDPI " DPI`n"
+        . "Режим: " ModeRu(CFG.botMode) " · DryRun: " (CFG.dryRun ? "включён" : "выключен") "`n"
+        . "Сеанс: " PanelBadge() "`n"
+        . "Окно Fortnite: " game "`n"
+        . "Горячие клавиши: " registered " зарегистрировано · аварийный Esc: " (escapeBound ? "да" : "нет") "`n"
+        . "run.log: " (FileExist(CFG.logFile) ? "найден" : "не найден") "`n"
+        . "forma.ini: " (FileExist(IniPath()) ? "найден" : "пока не создан")
+}
+
+RefreshStartupReport(*) {
+    global CFG, UI
+    p := UI.panel
+    p.startupReport.Value := BuildStartupReport()
+    p.startupLog.Enabled := !!FileExist(CFG.logFile)
+    PanelPut(p.startupNote, "Текст можно скопировать. Ничего не отправляется автоматически.")
+}
+
+CopyStartupReport(*) {
+    global UI
+    p := UI.panel
+    try {
+        A_Clipboard := p.startupReport.Value
+        PanelPut(p.startupNote, "Сводка скопирована в буфер обмена.")
+    } catch {
+        PanelPut(p.startupNote, "Не удалось скопировать. Выделите текст сводки и нажмите Ctrl+C.")
+    }
+}
+
 BuildGui() {
     global CFG, UI
     PanelRelease()
@@ -11558,8 +11620,8 @@ BuildGui() {
     UI.gui := g, UI.visible := false, UI.status := 0
     UI.mainSize := "w" Round(w * scale) " h" Round(h * scale)
     p := {gui:g, w:w, h:h, scale:scale, colors:PanelPalette(CFG.panelTheme), view:"", buildView:"", token:0, gdiModule:0
-        , views:Map("home", [], "log", [], "settings", [], "finds", [])
-        , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки")
+        , views:Map("home", [], "log", [], "settings", [], "finds", [], "startup", [])
+        , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
         , coordChoice:0, preview:0, ringKey:-1, logDirty:false, themeWarning:""}
     UI.panel := p, UI.findingsKey := ""
@@ -11571,6 +11633,7 @@ BuildGui() {
     PanelBuildLog()
     PanelBuildSettings()
     PanelBuildFinds()
+    PanelBuildStartup()
     p.buildView := ""
     g.OnEvent("Close", OnGuiClose)
     g.OnEvent("Escape", (*) => HideGui())
@@ -13361,6 +13424,8 @@ ShowGui() {
             RefreshLog()
             if (UI.panel && UI.panel.view = "finds")
                 RefreshPanelFindings(true)
+            else if (UI.panel && UI.panel.view = "startup")
+                RefreshStartupReport()
         } else {
             UI.gui.Show()
         }

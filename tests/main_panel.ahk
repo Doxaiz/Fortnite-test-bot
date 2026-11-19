@@ -38,7 +38,7 @@ RunPanelTests() {
         ShowGui()
         FileAppend("DPI: " A_ScreenDPI " · scale: " UI.panel.scale "`n", "*", "UTF-8-RAW")
         for test in [TestPanelNavigation, TestPanelTheme, TestPanelSettings, TestPanelClock
-            , TestPanelFinds, TestPanelActions, TestPanelFallback] {
+            , TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8-RAW")
         }
@@ -378,6 +378,39 @@ TestPanelActions() {
     PanelClick(UI.btnEmergency)
     PanelCheck(!ST.running && UI.btnEmergency.Enabled && InStr(UI.logEdit.Value, "СТОП (аварийный стоп)")
         , "аварийный стоп доступен и из журнала")
+}
+
+TestPanelStartupReport() {
+    global CFG, ST, UI
+    p := UI.panel, logPath := CFG.logFile, webhook := CFG.webhookUrl
+    ; Сводка проверяет наличие файлов, но не читает историю и не копирует настройки.
+    Log("ПРИВАТНЫЙ_МАРКЕР_В_ЖУРНАЛЕ")
+    beforeLog := FileRead(logPath, "UTF-8"), beforeIni := FileRead(CFG.iniFile)
+    CFG.webhookUrl := "TEST_PRIVATE_URL_NOT_FOR_REPORT"
+    savedClipboard := ClipboardAll()
+    try {
+        PanelSelectView("startup")
+        report := p.startupReport.Value
+        for expected in [FormaTitle(), "AHK · " (A_PtrSize*8) " бит", "DryRun: включён", "Окно Fortnite: не найдено"
+            , "run.log: найден", "forma.ini: найден", "аварийный Esc: нет"]
+            PanelCheck(InStr(report, expected), "поле сводки: " expected)
+        PanelCheck(PanelIsVisible(p.startupReport) && (WinGetStyle("ahk_id " p.startupReport.Hwnd) & 0x800)
+            && !PanelIsVisible(UI.logEdit) && p.startupLog.Enabled, "сводка только для чтения, журнал доступен")
+        for private in [logPath, CFG.iniFile, CFG.webhookUrl, "ПРИВАТНЫЙ_МАРКЕР_В_ЖУРНАЛЕ"]
+            PanelCheck(!InStr(report, private), "сводка не захватывает пути, webhook или содержание журнала")
+        PanelClick(UI.gui["StartupCopy"])
+        PanelCheck(StrReplace(A_Clipboard, "`r") == StrReplace(report, "`r") && InStr(p.startupNote.Value, "скопирована")
+            , "в буфере точно показанный текст")
+        CFG.logFile := logPath ".missing"
+        PanelClick(UI.gui["StartupRefresh"])
+        PanelCheck(InStr(p.startupReport.Value, "run.log: не найден") && !p.startupLog.Enabled && !FileExist(CFG.logFile)
+            , "обновление указывает на отсутствие файла и не создаёт его")
+        PanelCheck(FileRead(logPath, "UTF-8") == beforeLog && FileRead(CFG.iniFile) == beforeIni
+            && !ST.running && !ST.captureSeq && !ST.hwnd, "сводка не пишет настройки и не захватывает кадр")
+    } finally {
+        CFG.logFile := logPath, CFG.webhookUrl := webhook
+        A_Clipboard := savedClipboard
+    }
 }
 
 TestPanelFallback() {
