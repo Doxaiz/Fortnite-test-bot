@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build ZIP and start the extracted EXE
+      - name: Build ZIP and smoke-test portable archives
         shell: pwsh
         run: .\tools\build-portable.ps1 -SmokeTest
       - name: Save verified portable package

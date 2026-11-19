@@ -79,21 +79,35 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'docs\portable.txt') -Destination (Join-Path $packageDir 'README.txt')
     Copy-Item -LiteralPath $runtimeLicense -Destination (Join-Path $licensesDir 'AutoHotkey-GPL-2.0.txt')
 
-    $archive = Join-Path $temp "FORMA-v$version-windows-x64.zip"
+    $archiveName = "FORMA-v$version-windows-x64.zip"
+    $archive = Join-Path $temp $archiveName
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archive -CompressionLevel Optimal
     if ($SmokeTest) {
-        # Test the extracted payload, rather than the compiler output on disk.
-        $extracted = Join-Path $temp 'extracted'
-        Expand-Archive -LiteralPath $archive -DestinationPath $extracted
+        $archivesToTest = [ordered]@{ built = $archive }
+        $published = Join-Path $repo "portable\$archiveName"
+        if (Test-Path -LiteralPath $published -PathType Leaf) {
+            # Verify and run the exact download linked from the repository, too.
+            $manifest = Get-Content -LiteralPath (Join-Path $repo 'portable\SHA256SUMS.txt')
+            $hash = (Get-FileHash -LiteralPath $published -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($manifest -notcontains "$hash  $archiveName") {
+                throw "SHA-256 mismatch for repository archive $archiveName."
+            }
+            $archivesToTest['repository'] = $published
+        }
         $smokeScript = Join-Path $repo 'tests\portable_startup.ahk'
-        $smokeExe = Join-Path $extracted 'FORMA.exe'
-        $smokeArgs = '/ErrorStdOut=UTF-8 "{0}" "{1}"' -f $smokeScript, $smokeExe
-        $stdout = Join-Path $temp 'smoke-stdout.log'
-        $stderr = Join-Path $temp 'smoke-stderr.log'
-        $smoke = Start-Process -FilePath $runtime -ArgumentList $smokeArgs -WorkingDirectory $temp -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
-        if ($smoke.ExitCode -ne 0) {
-            throw "The portable startup test failed (exit code $($smoke.ExitCode))."
+        foreach ($item in $archivesToTest.GetEnumerator()) {
+            Write-Host "Smoke test: $($item.Key) $archiveName"
+            $extracted = Join-Path $temp "extracted-$($item.Key)"
+            Expand-Archive -LiteralPath $item.Value -DestinationPath $extracted
+            $smokeExe = Join-Path $extracted 'FORMA.exe'
+            $smokeArgs = '/ErrorStdOut=UTF-8 "{0}" "{1}"' -f $smokeScript, $smokeExe
+            $stdout = Join-Path $extracted 'smoke-stdout.log'
+            $stderr = Join-Path $extracted 'smoke-stderr.log'
+            $smoke = Start-Process -FilePath $runtime -ArgumentList $smokeArgs -WorkingDirectory $temp -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
+            if ($smoke.ExitCode -ne 0) {
+                throw "The $($item.Key) portable startup test failed (exit code $($smoke.ExitCode))."
+            }
         }
     }
     New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
