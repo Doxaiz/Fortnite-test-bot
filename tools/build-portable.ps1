@@ -1,6 +1,7 @@
 param(
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist\portable'),
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    [string]$ExpectedTag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,9 @@ if (!$versionMatch.Success) {
     throw 'Could not read FORMA_VERSION from fortnite_bot.ahk.'
 }
 $version = $versionMatch.Groups[1].Value
+if ($PSBoundParameters.ContainsKey('ExpectedTag') -and $ExpectedTag -cne "v$version") {
+    throw "Tag '$ExpectedTag' does not match FORMA_VERSION; expected 'v$version'."
+}
 
 # Pin the release binaries and the corresponding AutoHotkey source archive.
 $compilerTag = 'Ahk2Exe1.1.37.02a2'
