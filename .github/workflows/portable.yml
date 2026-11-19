@@ -1,0 +1,40 @@
+name: Portable Windows build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Pack and smoke-test Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build ZIP and start the extracted EXE
+        shell: pwsh
+        run: .\tools\build-portable.ps1 -SmokeTest
+      - name: Save verified portable package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: FORMA-portable-windows-x64
+          path: |
+            dist/portable/FORMA-v*-windows-x64.zip
+            dist/portable/AutoHotkey-v*-source.zip
+            dist/portable/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
