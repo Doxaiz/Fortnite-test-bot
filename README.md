@@ -6,9 +6,9 @@
 
 ## Скачать для Windows x64
 
-[**Скачать FORMA v11.0.13 для Windows x64 (.zip)**](portable/FORMA-v11.0.13-windows-x64.zip?raw=true) · [SHA-256](portable/SHA256SUMS.txt)
+[**Скачать FORMA v11.0.13 для Windows x64 (.zip)**](https://github.com/Doxaiz/Fortnite-test-bot/raw/refs/tags/v11.0.13/portable/FORMA-v11.0.13-windows-x64.zip) · [SHA-256](https://github.com/Doxaiz/Fortnite-test-bot/blob/v11.0.13/portable/SHA256SUMS.txt) · [Актуальный релиз](https://github.com/Doxaiz/Fortnite-test-bot/releases/latest)
 
-В `portable/` хранится только текущий ZIP. Старые архивы доступны на страницах своих релизов, например [v11.0.12](https://github.com/Doxaiz/Fortnite-test-bot/releases/tag/v11.0.12).
+В `portable/` хранится только текущий ZIP. [История релизов](https://github.com/Doxaiz/Fortnite-test-bot/releases) содержит ссылки на ZIP и контрольные суммы прежних версий. Пункты **Source code** — архивы исходников, а не готовая программа.
 
 Распакуйте архив в обычную папку с правом записи и запустите `FORMA.exe`. Установщика нет, AutoHotkey уже встроен. `forma.ini` и `run.log` хранятся рядом с EXE. Закройте другие экземпляры FORMA перед запуском. Исходный `.ahk` тоже можно запустить через AutoHotkey v2.
 
@@ -130,7 +130,7 @@ foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_pan
 
 1. Перед новым релизом обновите `FORMA_VERSION` и директиву `Ahk2Exe-SetVersion` в `fortnite_bot.ahk` (`X.Y.Z` и `X.Y.Z.0`). Для проверки без создания тега выберите **Run workflow**, нужную ветку и укажите `expected_tag` (например, `v11.0.13` для текущих исходников). Можно проверить версию локально командой `.\tools\build-portable.ps1 -SmokeTest -ExpectedTag v11.0.13`.
 2. После проверки отправьте тег `vX.Y.Z` на проверенном коммите. При несовпадении тега и `FORMA_VERSION` сборка остановится **до загрузки зависимостей**. При успехе на странице прогона появится артефакт `FORMA-vX.Y.Z-windows-x64` (на обычных прогонах без тега — `FORMA-portable-windows-x64`, срок хранения — 14 дней).
-3. Скачайте и распакуйте артефакт. Для черновика релиза вручную прикрепите **из одного прогона** три файла: ZIP с `FORMA.exe`, ZIP с исходниками AutoHotkey и `SHA256SUMS.txt`. Проверьте суммы ZIP (`Get-FileHash *.zip -Algorithm SHA256`) и опубликуйте релиз вручную. Workflow не создаёт релизов и не меняет уже опубликованные архивы.
+3. Скачайте и распакуйте артефакт. Для черновика релиза вручную прикрепите **из одного прогона** три файла: ZIP с `FORMA.exe`, ZIP с исходниками AutoHotkey и `SHA256SUMS.txt`. Проверьте суммы ZIP (`Get-FileHash *.zip -Algorithm SHA256`) и опубликуйте релиз вручную. Если публикуете ZIP из `portable/` ссылкой в описании релиза, берите и ZIP, и `SHA256SUMS.txt` из тега этого выпуска, а не из `main`. Workflow не создаёт релизов и не меняет уже опубликованные архивы.
 
 ## Лицензия
 
