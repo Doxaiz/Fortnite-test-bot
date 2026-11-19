@@ -45,7 +45,13 @@ jobs:
           FORMA_TEST_TAG: ${{ steps.tag_gate.outputs.tag }}
         run: |
           $tag = if ($env:FORMA_EXPECTED_TAG) { $env:FORMA_EXPECTED_TAG } else { $env:FORMA_TEST_TAG }
-          .\tools\build-portable.ps1 -SmokeTest -ExpectedTag $tag
+          try {
+            .\tools\build-portable.ps1 -SmokeTest -ExpectedTag $tag
+          } catch {
+            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Portable build failed::$message"
+            throw
+          }
       - name: Save verified portable package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -110,7 +110,8 @@ try {
             $smoke = Start-Process -FilePath $runtime -ArgumentList $smokeArgs -WorkingDirectory $temp -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
             if ($smoke.ExitCode -ne 0) {
-                throw "The $($item.Key) portable startup test failed (exit code $($smoke.ExitCode))."
+                $reason = Get-Content -LiteralPath $stderr -Encoding UTF8 -TotalCount 1
+                throw "The $($item.Key) portable startup test failed (exit code $($smoke.ExitCode)). $reason"
             }
         }
     }
