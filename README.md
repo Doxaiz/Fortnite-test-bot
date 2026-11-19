@@ -6,9 +6,19 @@
 
 ## Скачать для Windows x64
 
-[**Скачать FORMA v11.0.13 для Windows x64 (.zip)**](https://github.com/Doxaiz/Fortnite-test-bot/raw/refs/tags/v11.0.13/portable/FORMA-v11.0.13-windows-x64.zip) · [SHA-256](https://github.com/Doxaiz/Fortnite-test-bot/blob/v11.0.13/portable/SHA256SUMS.txt) · [Актуальный релиз](https://github.com/Doxaiz/Fortnite-test-bot/releases/latest)
+[**Скачать FORMA v11.0.13 для Windows x64 (.zip)**](https://github.com/Doxaiz/Fortnite-test-bot/releases/download/v11.0.13/FORMA-v11.0.13-windows-x64.zip) · [SHA256SUMS.txt](https://github.com/Doxaiz/Fortnite-test-bot/releases/download/v11.0.13/SHA256SUMS.txt) · [Актуальный релиз](https://github.com/Doxaiz/Fortnite-test-bot/releases/latest)
+
+Если загрузка из **Assets** недоступна, возьмите [тот же ZIP](https://github.com/Doxaiz/Fortnite-test-bot/raw/refs/tags/v11.0.13/portable/FORMA-v11.0.13-windows-x64.zip) и [его контрольную сумму](https://github.com/Doxaiz/Fortnite-test-bot/blob/v11.0.13/portable/SHA256SUMS.txt) из тега `v11.0.13`.
 
 В `portable/` хранится только текущий ZIP. [История релизов](https://github.com/Doxaiz/Fortnite-test-bot/releases) содержит ссылки на ZIP и контрольные суммы прежних версий. Пункты **Source code** — архивы исходников, а не готовая программа.
+
+Для проверки ZIP откройте PowerShell в папке загрузки:
+
+```powershell
+Get-FileHash -LiteralPath .\FORMA-v11.0.13-windows-x64.zip -Algorithm SHA256
+```
+
+Сравните `Hash` с суммой для этого ZIP в `SHA256SUMS.txt`. Регистр букв не важен. Если суммы не совпадают, не запускайте `FORMA.exe`.
 
 Распакуйте архив в обычную папку с правом записи и запустите `FORMA.exe`. Установщика нет, AutoHotkey уже встроен. `forma.ini` и `run.log` хранятся рядом с EXE. Закройте другие экземпляры FORMA перед запуском. Исходный `.ahk` тоже можно запустить через AutoHotkey v2.
 
