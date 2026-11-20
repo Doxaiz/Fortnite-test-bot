@@ -11226,13 +11226,14 @@ PanelBackdrop() {
                 art.Ribbon(x + 18, 113, 240, i = 1 ? c.cyan : (i = 2 ? c.violet : c.peach)
                     , i = 1 ? c.violet : c.pink, i = 2 ? -0.6 : 0.5)
             }
-            art.Card(206, 196, 852, 76, 15, c.card, c.line)
-            art.Card(222, 214, 39, 39, 10, c.mark, c.line)
-            art.Card(229, 221, 25, 25, 12, c.chip, c.accent)
-            art.Card(590, 207, 117, 53, 10, c.chip)
-            art.Card(717, 207, 117, 53, 10, c.chip)
-            art.Card(206, 284, 268, 236, 15, c.card, c.line)
-            art.Card(486, 284, 572, 236, 15, c.card, c.violet)
+            art.Card(206, 196, 852, 103, 15, c.card, c.line)
+            art.Card(222, 205, 39, 39, 10, c.mark, c.line)
+            art.Card(229, 212, 25, 25, 12, c.chip, c.accent)
+            art.Card(590, 203, 117, 45, 10, c.chip)
+            art.Card(717, 203, 117, 45, 10, c.chip)
+            art.Rect(222, 253, 820, 1, c.line)
+            art.Card(206, 309, 268, 213, 15, c.card, c.line)
+            art.Card(486, 309, 572, 213, 15, c.card, c.violet)
             art.Card(206, 532, 268, 134, 15, c.card, c.line)
             art.Card(486, 532, 572, 134, 15, c.card, c.line)
             art.Card(504, 576, 536, 73, 9, c.well, c.line)
@@ -11297,6 +11298,8 @@ PanelGo(view) {
                 control.Visible := false
         }
         p.view := view
+        if (view = "home")
+            p.findingsOverviewAt := -1
         PanelBackdrop()
         PanelPut(p.heading, p.titles[view])
         for control in p.views[view]
@@ -11394,6 +11397,49 @@ ReadPanelFindingRows(path) {
     return rows
 }
 
+PanelLoadFindings(force := false) {
+    global CFG, UI
+    p := UI.panel
+    size := -1
+    try size := FileGetSize(CFG.tokenFile)
+    key := CFG.tokenFile "|" size
+    if (!force && key = p.findingsKey)
+        return false
+    failed := false
+    try rows := ReadPanelFindingRows(CFG.tokenFile)
+    catch {
+        rows := [], failed := true
+    }
+    counts := Map("all", rows.Length, "token", 0, "banner", 0, "other", 0)
+    for row in rows
+        counts[row.kind] += 1
+    p.findingsRows := rows, p.findingsCounts := counts, p.findingsError := failed, p.findingsKey := key
+    return true
+}
+
+PanelUpdateFindingButtons(buttons) {
+    global UI
+    p := UI.panel
+    for kind, item in buttons {
+        text := item.label " · " (p.findingsError ? "—" : p.findingsCounts[kind])
+        if (item.control.Text != text)
+            item.control.Text := text
+    }
+}
+
+PanelRefreshHomeFindings(now := A_TickCount) {
+    global UI
+    p := UI.panel, last := p.findingsOverviewAt
+    ; Не проверяем файл на каждом тике панели. Сам хвост читается при
+    ; входе на обзор или после изменения длины журнала.
+    if (last >= 0 && now >= last && now - last < 1200)
+        return
+    p.findingsOverviewAt := now
+    PanelLoadFindings(last < 0)
+    PanelUpdateFindingButtons(p.homeFindingsButtons)
+    PanelPut(p.homeFindingsHint, p.findingsError ? "ИСТОРИЯ НЕДОСТУПНА" : "ИЗ ПОСЛЕДНИХ 80 СТРОК")
+}
+
 RefreshPanelFindings(force := false) {
     global CFG, ST, UI
     p := UI.panel
@@ -11401,19 +11447,14 @@ RefreshPanelFindings(force := false) {
         return
     PanelPut(UI.findingsSession, "За сеанс: " ST.tokensFound)
     PanelPut(UI.findingsTotal, "Всего: " CFG.totalTokens)
-    size := -1
-    try size := FileGetSize(CFG.tokenFile)
-    key := CFG.tokenFile "|" size
-    if (!force && key = p.findingsKey)
-        return
-    p.findingsKey := key
-    p.findingsError := false
-    try p.findingsRows := ReadPanelFindingRows(CFG.tokenFile)
-    catch {
-        p.findingsRows := []
-        p.findingsError := true
-    }
-    PanelRenderFindings()
+    if PanelLoadFindings(force)
+        PanelRenderFindings()
+}
+
+PanelOpenFindings(kind, *) {
+    global UI
+    UI.panel.findingsFilter := kind
+    PanelGo("finds")
 }
 
 PanelSetFindingsFilter(kind, *) {
@@ -11429,20 +11470,14 @@ PanelSetFindingsFilter(kind, *) {
 
 PanelRenderFindings() {
     global UI
-    p := UI.panel, text := "", shown := 0
-    counts := Map("all", p.findingsRows.Length, "token", 0, "banner", 0, "other", 0)
+    p := UI.panel, text := "", shown := 0, counts := p.findingsCounts
     for row in p.findingsRows {
-        counts[row.kind] += 1
         if (p.findingsFilter = "all" || p.findingsFilter = row.kind) {
             text .= row.text "`n"
             shown += 1
         }
     }
-    for kind, item in p.findingsButtons {
-        label := item.label " · " (p.findingsError ? "—" : counts[kind])
-        if (item.control.Text != label)
-            item.control.Text := label
-    }
+    PanelUpdateFindingButtons(p.findingsButtons)
     if p.findingsError
         text := "Не удалось прочитать ЖЕТОН_НАЙДЕН.txt. Повторите попытку кнопкой «Обновить»."
     else if !counts["all"]
@@ -11500,35 +11535,40 @@ PanelBuildHome() {
     PanelText([511, 158, 240, 18], "Раунды за сеанс", 9, "norm", "muted")
     PanelText([799, 158, 240, 18], "В работе · без пауз", 9, "norm", "muted")
 
-    PanelText([234, 226, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
-    PanelText([274, 208, 303, 25], "Находки FORMA", 11, "bold")
-    PanelText([274, 236, 303, 20], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
-    PanelText([597, 212, 103, 16], "ЗА СЕАНС", 8, "bold", "muted", "chip", "Center")
-    PanelText([724, 212, 103, 16], "ВСЕГО", 8, "bold", "muted", "chip", "Center")
-    p.homeFound := PanelText([597, 228, 103, 25], "0", 14, "bold", "accent", "chip", "Center +0x200")
-    p.homeTotal := PanelText([724, 228, 103, 25], "0", 14, "bold", "accent", "chip", "Center +0x200")
-    PanelButton([844, 215, 106, 37], "История  ›", PanelGo.Bind("finds"))
-    p.resetFinds := PanelButton([959, 215, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
+    PanelText([234, 217, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
+    PanelText([274, 203, 303, 23], "Находки FORMA", 11, "bold")
+    PanelText([274, 229, 303, 17], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
+    PanelText([597, 207, 103, 14], "ЗА СЕАНС", 8, "bold", "muted", "chip", "Center")
+    PanelText([724, 207, 103, 14], "ВСЕГО", 8, "bold", "muted", "chip", "Center")
+    p.homeFound := PanelText([597, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
+    p.homeTotal := PanelText([724, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
+    p.homeFindingsHistory := PanelButton([844, 207, 106, 37], "История  ›", PanelOpenFindings.Bind("all"))
+    p.resetFinds := PanelButton([959, 207, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
+    p.homeFindingsHint := PanelText([222, 265, 216, 20], "", 8, "bold", "muted")
+    for spec in [["token", "Жетоны", 444, 193], ["banner", "Редкие баннеры", 645, 195], ["other", "Прочие записи", 848, 194]] {
+        control := PanelButton([spec[3], 260, spec[4], 30], spec[2], PanelOpenFindings.Bind(spec[1]), , , , 9)
+        p.homeFindingsButtons[spec[1]] := {control:control, label:spec[2]}
+    }
 
-    PanelText([223, 298, 235, 22], "До выхода из матча", 11, "bold")
-    p.ring := PanelAdd("Picture", [271, 328, 138, 138], "", , , , "")
-    p.clockLabel := PanelText([298, 367, 84, 16], "", 7, "bold", "muted", "card", "Center")
-    p.clockValue := PanelText([288, 384, 104, 32], "", 18, "bold", "ink", "card", "Center +0x200")
-    p.clockNote := PanelText([222, 476, 130, 34], "", 8, "norm", "muted")
-    PanelButton([354, 475, 103, 30], "Настроить", PanelGo.Bind("settings"), , , , 9)
+    PanelText([223, 319, 235, 22], "До выхода из матча", 11, "bold")
+    p.ring := PanelAdd("Picture", [271, 343, 138, 138], "", , , , "")
+    p.clockLabel := PanelText([298, 382, 84, 16], "", 7, "bold", "muted", "card", "Center")
+    p.clockValue := PanelText([288, 399, 104, 32], "", 18, "bold", "ink", "card", "Center +0x200")
+    p.clockNote := PanelText([222, 483, 130, 34], "", 8, "norm", "muted")
+    PanelButton([354, 483, 103, 30], "Настроить", PanelGo.Bind("settings"), , , , 9)
 
-    PanelText([504, 298, 272, 22], "Управление сеансом", 11, "bold")
-    p.inputLabel := PanelText([870, 300, 169, 19], "", 9, "bold", "accent", "card", "Right")
-    UI.btnStart := PanelButton([504, 328, 169, 38], "Старт", (*) => OnStart(), "primary", , , 11)
-    UI.btnPause := PanelButton([683, 328, 170, 38], "Пауза", OnPause, , , , 11)
-    UI.btnStop := PanelButton([863, 328, 177, 38], "Стоп", (*) => OnStop(), , , , 11)
-    PanelText([504, 379, 220, 18], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
-    UI.ddMode := PanelCombo([504, 399, 258, 26]
+    PanelText([504, 319, 272, 22], "Управление сеансом", 11, "bold")
+    p.inputLabel := PanelText([870, 321, 169, 19], "", 9, "bold", "accent", "card", "Right")
+    UI.btnStart := PanelButton([504, 346, 169, 38], "Старт", (*) => OnStart(), "primary", , , 11)
+    UI.btnPause := PanelButton([683, 346, 170, 38], "Пауза", OnPause, , , , 11)
+    UI.btnStop := PanelButton([863, 346, 177, 38], "Стоп", (*) => OnStop(), , , , 11)
+    PanelText([504, 391, 220, 18], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
+    UI.ddMode := PanelCombo([504, 411, 258, 26]
         , ["Авто-игра (Zero Build)", "AFK-очередь (цикл матчей)", "Только Анти-АФК (движение)", "AFK XP (LEGO / Creative)"])
     UI.ddMode.OnEvent("Change", PanelInvoke.Bind(OnBotModeChange))
-    UI.cbDry := PanelAdd("CheckBox", [780, 399, 260, 25], "Тест: без нажатий (DryRun)", 10, "bold", "accent")
+    UI.cbDry := PanelAdd("CheckBox", [780, 411, 260, 25], "Тест: без нажатий (DryRun)", 10, "bold", "accent")
     UI.cbDry.OnEvent("Click", PanelInvoke.Bind(OnModeOptionsChange))
-    p.action := PanelText([504, 438, 530, 27], "", 9, "norm", "muted", "card", "0xC000")
+    p.action := PanelText([504, 443, 530, 27], "", 9, "norm", "muted", "card", "0xC000")
     UI.btnCont := PanelButton([504, 477, 196, 30], "Возобновить очередь", OnResumeQueue, , , , 9)
     p.detail := PanelButton([711, 477, 141, 30], "Сводка", ShowPanelStatus, , , , 9)
     UI.btnBypass := PanelButton([863, 477, 177, 30], "Пропустить матч", RequestBypassMatch, , , , 9)
@@ -11706,7 +11746,8 @@ BuildGui() {
         , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
         , coordChoice:0, preview:0, customSize:0, ringKey:-1, logDirty:false, homeLogDirty:true, themeWarning:""
-        , findingsButtons:Map(), findingsFilter:"all", findingsKey:"", findingsRows:[], findingsError:false}
+        , findingsButtons:Map(), findingsFilter:"all", findingsKey:"", findingsRows:[], findingsCounts:Map(), findingsError:false
+        , homeFindingsButtons:Map(), findingsOverviewAt:-1}
     UI.panel := p
     g.BackColor := p.colors.canvas
     PanelArtStart(p)
@@ -11946,6 +11987,7 @@ PanelUpdateHome() {
     PanelPut(p.homeFound, ST.tokensFound)
     PanelPut(p.homeTotal, CFG.totalTokens)
     p.resetFinds.Enabled := PanelCanEditTimers() && (ST.tokensFound || CFG.totalTokens)
+    PanelRefreshHomeFindings()
     PanelUpdateRecentLog()
     PanelPut(p.inputLabel, CFG.dryRun ? "DRYRUN  /  БЕЗ ВВОДА" : "РЕАЛЬНЫЙ ВВОД")
     note := ST.lastAction

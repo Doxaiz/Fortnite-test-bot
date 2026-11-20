@@ -354,8 +354,11 @@ TestPanelAutoStop() {
 
 TestPanelFinds() {
     global CFG, ST, UI
+    PanelSelectView("home")
+    p := UI.panel, filters := p.findingsButtons, shortcuts := p.homeFindingsButtons
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 0" && InStr(p.homeFindingsHint.Value, "80 СТРОК")
+        && !FileExist(CFG.tokenFile), "на обзоре пустая история не создаёт файл")
     PanelSelectView("finds")
-    p := UI.panel, filters := p.findingsButtons
     PanelCheck(p.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет") && filters["all"].control.Text = "Все · 0"
         && !FileExist(CFG.tokenFile), "пустая история не создаёт файл")
     a := "2026-11-18 12:30:15  Жетон пиратского магазина (0.5, 0.4) (сессия: 1, всего: 8)"
@@ -391,6 +394,29 @@ TestPanelFinds() {
     PanelCheck(UI.findingsEdit.Value == d "`n" c "`n" b "`n" a && FileRead(CFG.tokenFile, "UTF-8") == history
         && FileRead(CFG.iniFile) == ini && ST.tokensFound = 2 && CFG.totalTokens = 9
         , "фильтры не меняют историю, профиль или общие счётчики")
+
+    PanelSelectView("home")
+    for kind, item in shortcuts
+        PanelCheck(item.control.Text == filters[kind].control.Text, "на обзоре то же количество недавних записей: " kind)
+    PanelPress(shortcuts["banner"].control, 0x20)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "banner" && UI.findingsEdit.Value == b && PanelIsVisible(UI.btnEmergency)
+        , "быстрая кнопка открывает историю на нужной категории, в том числе с клавиатуры")
+    PanelSelectView("home")
+    at := p.findingsOverviewAt
+    e := "2026-11-18 13:30:50  Жетон пиратского магазина (0, 1) (сессия: 3, всего: 10)"
+    FileAppend(e "`n", CFG.tokenFile, "UTF-8-RAW")
+    PanelRefreshHomeFindings(at + 1199)
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 1", "обзор не читает хвост при каждом обновлении панели")
+    PanelRefreshHomeFindings(at + 1200)
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 2" && p.homeTotal.Value = "9", "новая запись видна отдельно от общих счётчиков")
+    PanelClick(shortcuts["token"].control)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "token" && UI.findingsEdit.Value == e "`n" a
+        , "открытая категория показывает тот же хвост в порядке от новых к старым")
+    PanelSelectView("home")
+    PanelClick(p.homeFindingsHistory)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "all" && UI.findingsEdit.Value == e "`n" d "`n" c "`n" b "`n" a
+        && FileRead(CFG.tokenFile, "UTF-8") == history e "`n" && FileRead(CFG.iniFile) == ini
+        , "«История» открывает все записи, быстрые переходы ничего не записывают")
     FileDelete(CFG.tokenFile)
     payload := "", want := "", row := "  Жетон " Rep("я", 240)
     Loop 160 {
@@ -408,7 +434,11 @@ TestPanelFinds() {
     PanelClick(UI.gui["FindRefresh"])
     PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать") && filters["all"].control.Text = "Все · —"
         && UI.findingsTotal.Value = "Всего: 9", "ошибка файла не выдаёт устаревшие числа и не меняет счётчик")
+    PanelSelectView("home")
+    PanelCheck(shortcuts["other"].control.Text = "Прочие записи · —" && p.homeFindingsHint.Value = "ИСТОРИЯ НЕДОСТУПНА"
+        , "обзор тоже отличает ошибку чтения от нуля записей")
     CFG.tokenFile := original
+    PanelSelectView("finds")
     PanelSelectView("home")
     PanelCheck(p.homeFound.Value = "2" && p.homeTotal.Value = "9" && p.resetFinds.Enabled
         , "лента обзора показывает те же реальные счётчики")
