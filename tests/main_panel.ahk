@@ -37,8 +37,8 @@ RunPanelTests() {
         BuildGui()
         ShowGui()
         FileAppend("DPI: " A_ScreenDPI " · scale: " UI.panel.scale "`n", "*", "UTF-8-RAW")
-        for test in [TestPanelNavigation, TestPanelTheme, TestPanelSettings, TestPanelClock
-            , TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
+        for test in [TestPanelNavigation, TestPanelTheme, TestPanelSettings, TestPanelCoordinates
+            , TestPanelClock, TestPanelAutoStop, TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8-RAW")
         }
@@ -110,16 +110,22 @@ TestPanelNavigation() {
     PanelCheck(UI.visible && p.view = "home" && PanelIsVisible(UI.ddMode), "главный обзор")
     PanelCheck(UI.ddMode.Value = 2 && UI.cbDry.Value && UI.cbTeam.Value && p.keys[1].Value = "F10"
         , "режим, тест, защита команды и переназначенная клавиша из старого INI")
-    PanelCheck(!PanelIsVisible(UI.logEdit) && !PanelIsVisible(UI.findingsEdit), "другие страницы скрыты")
+    PanelCheck(!PanelIsVisible(UI.logEdit) && !PanelIsVisible(UI.findingsEdit) && !PanelIsVisible(UI.btnCheck)
+        && UI.btnStart.Text = "Старт · F10", "на обзоре только основные действия и актуальная клавиша")
     WinGetClientPos(, , &w, &h, "ahk_id " UI.gui.Hwnd)
     PanelCheck(Abs(w - Round(p.w * p.scale)) <= 1 && Abs(h - Round(p.h * p.scale)) <= 1, "размер клиента соответствует DPI")
     WinGetPos(, , &outerW, &outerH, "ahk_id " UI.gui.Hwnd)
     MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
     PanelCheck(outerW <= r-l && outerH <= b-t, "панель помещается на рабочем столе")
 
+    Log("запись вне превью")
     Log("пробная запись панели")
+    Log("средняя строка & детали`nпродолжение многострочного события")
+    Log("последняя строка обзора")
     UpdateUiStatus()
-    PanelCheck(UI.logEdit.Value = "" && InStr(p.lastLog.Value, "пробная запись"), "скрытый журнал не рисуется, а обзор показывает последнее событие")
+    PanelCheck(UI.logEdit.Value = "" && InStr(p.homeLogRows[1].Value, "последняя строка")
+        && InStr(p.homeLogRows[2].Value, "строка & детали …") && !InStr(p.homeLogRows[2].Value, "продолжение")
+        && InStr(p.homeLogRows[3].Value, "пробная запись"), "три последних события в обзоре, скрытый журнал не рисуется")
     PanelPress(p.nav["settings"], 0x20) ; Space: владелец рисует кнопку, но Win32 обрабатывает клавиши
     PanelCheck(p.view = "settings" && !PanelIsVisible(UI.ddMode) && PanelIsVisible(p.themes["dark"])
         && PanelIsVisible(UI.btnEmergency) && Number(p.timers[1].edit.Value) = CFG.matchMaxMin, "клавиатурный переход в настройки")
@@ -145,6 +151,10 @@ TestPanelNavigation() {
     PanelClick(UI.gui["ClearView"])
     PanelCheck(InStr(UI.logEdit.Value, "Новых событий пока нет") && FileRead(CFG.logFile, "UTF-8") == disk
         , "очищается только экран, не run.log")
+    PanelSelectView("home")
+    PanelCheck(p.homeLogRows[1].Value = "Новых событий пока нет." && p.homeLogRows[2].Value = "" && p.homeLogRows[3].Value = ""
+        , "очистка журнала также освобождает предпросмотр обзора")
+    PanelSelectView("log")
     Log("событие после очистки")
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "событие после очистки") && !InStr(UI.logEdit.Value, "пробная запись")
@@ -243,6 +253,39 @@ TestPanelSettings() {
     PanelChooseCombo(p.coordPick, 1)
 }
 
+TestPanelCoordinates() {
+    global CFG, ST, UI
+    PanelSelectView("settings")
+    p := UI.panel, ini := FileRead(CFG.iniFile), log := FileRead(CFG.logFile, "UTF-8"), before := CFG.Clone()
+    PanelChooseCombo(p.coordPick, 7)
+    PanelCheck(InStr(p.coordHint.Value, "показана база"), "пустой свой размер не считается рассчитанным")
+    for value in ["1600x900", " 1600 X 900 ", "1600 × 900", "1600 х 900"] {
+        PanelType(p.coordSize, value)
+        PanelClick(p.coordCalc)
+        PanelCheck(p.coordPick.Value = 7 && p.coordSize.Value = "1600 × 900"
+            && InStr(p.coordHint.Value, "1600 × 900") && !p.coordError.Value, "свой размер: " value)
+        for i, point in [[CFG.playNormX, CFG.playNormY], [CFG.optNormX, CFG.optNormY], [CFG.leaveNormX, CFG.leaveNormY]]
+            PanelCheck(p.coordValues[i].Value = Round(point[1] * 1600) "  /  " Round(point[2] * 900), "пересчитана точка " i)
+    }
+    for value in ["", "0x900", "-1x900", "1.5x900", "900", "20000x900", "1600x900 тест"] {
+        PanelType(p.coordSize, value)
+        PanelClick(p.coordCalc)
+        PanelCheck(InStr(p.coordError.Value, "Введите") && p.coordPick.Value = 7 && InStr(p.coordHint.Value, "1600 × 900")
+            , "неверный размер не меняет предыдущий расчёт: " value)
+    }
+    PanelClick(p.coordDesktop)
+    size := A_ScreenWidth " × " A_ScreenHeight
+    PanelCheck(p.coordPick.Value = 5 && p.coordSize.Value = size && InStr(p.coordHint.Value, size) && !p.coordError.Value
+        , "кнопка использует реальный размер экрана")
+    PanelChooseCombo(p.coordPick, 7)
+    PanelCheck(p.coordSize.Value = "1600 × 900" && InStr(p.coordHint.Value, "1600 × 900"), "свой размер восстанавливается в поле")
+    for key, value in before.OwnProps()
+        PanelCheck(CFG.%key% == value, "предпросмотр не меняет CFG." key)
+    PanelCheck(FileRead(CFG.iniFile) == ini && FileRead(CFG.logFile, "UTF-8") == log && !ST.hwnd && !ST.captureSeq
+        , "подгонка не сохраняет профиль, не захватывает игру и не пишет журнал")
+    PanelChooseCombo(p.coordPick, 1)
+}
+
 TestPanelClock() {
     global CFG, ST, UI
     PanelSelectView("home")
@@ -275,6 +318,36 @@ TestPanelClock() {
         CFG.botMode := oldMode, CFG.matchMaxMin := oldLimit
         ST.running := false, ST.state := "UNKNOWN", ST.matchStartT := 0
         ST.paused := false, ST.cancelHold := false, ST.leaveActive := false
+        UpdateUiStatus()
+    }
+}
+
+TestPanelAutoStop() {
+    global CFG, ST, UI
+    PanelSelectView("home")
+    p := UI.panel, saved := CFG.stopAfterMin, elapsed := ST.sessionActiveSec
+    try {
+        CFG.stopAfterMin := 0
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "Без лимита", "отключённый автостоп")
+        CFG.stopAfterMin := 2.5
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "02:30" && InStr(p.stopNote.Value, "после старта"), "лимит до запуска")
+        ST.running := true, ST.sessionActiveSec := 60
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "01:30" && p.elapsed.Value = "00:01:00", "отсчёт от активного времени движка")
+        ST.paused := true
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "01:30" && InStr(p.stopNote.Value, "на паузе"), "на паузе отсчёт отмечен как замороженный")
+        ST.paused := false, ST.sessionActiveSec := 151
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "00:00" && InStr(p.stopNote.Value, "достигнут"), "отсчёт не уходит в минус")
+        ST.finishMatchArmed := true
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "Доигрываю" && InStr(p.stopNote.Value, "после матча"), "видна отложенная остановка")
+    } finally {
+        CFG.stopAfterMin := saved, ST.sessionActiveSec := elapsed
+        ST.running := false, ST.paused := false, ST.finishMatchArmed := false
         UpdateUiStatus()
     }
 }
@@ -313,7 +386,7 @@ TestPanelFinds() {
     CFG.tokenFile := original
     PanelSelectView("home")
     p := UI.panel
-    PanelCheck(p.homeFound.Value = "Сеанс: 2" && p.homeTotal.Value = "Всего: 9" && p.resetFinds.Enabled
+    PanelCheck(p.homeFound.Value = "2" && p.homeTotal.Value = "9" && p.resetFinds.Enabled
         , "лента обзора показывает те же реальные счётчики")
     CFG.totalRounds := 13, ST.rounds := 3
     PanelClickReset(p.resetFinds, 7) ; IDNO
@@ -321,7 +394,7 @@ TestPanelFinds() {
     PanelClickReset(p.resetFinds, 6) ; IDYES
     PanelCheck(!CFG.totalTokens && !ST.tokensFound && CFG.totalRounds = 13 && ST.rounds = 3
         && IniRead(CFG.iniFile, "stats", "totalTokens") = "0" && FileRead(CFG.tokenFile, "UTF-8") == payload
-        && p.homeTotal.Value = "Всего: 0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
+        && p.homeTotal.Value = "0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
 }
 
 PanelClickReset(control, answer) {
@@ -396,6 +469,8 @@ TestPanelStartupReport() {
             PanelCheck(InStr(report, expected), "поле сводки: " expected)
         PanelCheck(PanelIsVisible(p.startupReport) && (WinGetStyle("ahk_id " p.startupReport.Hwnd) & 0x800)
             && !PanelIsVisible(UI.logEdit) && p.startupLog.Enabled, "сводка только для чтения, журнал доступен")
+        for control in [UI.btnCheck, UI.btnCal, UI.btnVision, UI.btnHud, UI.btnHelp, UI.btnEmergency]
+            PanelCheck(PanelIsVisible(control), "диагностика и аварийный стоп доступны в проверке запуска")
         for private in [logPath, CFG.iniFile, CFG.webhookUrl, "ПРИВАТНЫЙ_МАРКЕР_В_ЖУРНАЛЕ"]
             PanelCheck(!InStr(report, private), "сводка не захватывает пути, webhook или содержание журнала")
         PanelClick(UI.gui["StartupCopy"])

@@ -4,11 +4,11 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.13.0
+;@Ahk2Exe-SetVersion          11.0.14.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.13 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.14 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
 ;  Встроенный анализ пикселей на AutoHotkey v2. Среда включена в переносимый EXE:
 ;    • GDI-захват клиентской области игры (PrintWindow + резерв DC окна),
@@ -69,7 +69,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.13"
+global FORMA_VERSION := "11.0.14"
 
 global CFG := {
     ; ---- окно игры ----
@@ -984,6 +984,7 @@ Log(msg) {
     }
     try {
         if (UI.panel) {
+            UI.panel.homeLogDirty := true
             if (UI.visible && UI.panel.view = "log")
                 UI.panel.logDirty := true
         } else if (UI.logEdit && UI.visible) {
@@ -11223,12 +11224,13 @@ PanelBackdrop() {
             art.Card(206, 196, 852, 76, 15, c.card, c.line)
             art.Card(222, 214, 39, 39, 10, c.mark, c.line)
             art.Card(229, 221, 25, 25, 12, c.chip, c.accent)
-            art.Card(590, 215, 117, 37, 10, c.chip)
-            art.Card(717, 215, 117, 37, 10, c.chip)
+            art.Card(590, 207, 117, 53, 10, c.chip)
+            art.Card(717, 207, 117, 53, 10, c.chip)
             art.Card(206, 284, 268, 236, 15, c.card, c.line)
             art.Card(486, 284, 572, 236, 15, c.card, c.violet)
-            art.Card(206, 532, 852, 69, 15, c.card, c.line)
-            art.Card(206, 612, 852, 54, 15, c.card, c.line)
+            art.Card(206, 532, 268, 134, 15, c.card, c.line)
+            art.Card(486, 532, 572, 134, 15, c.card, c.line)
+            art.Card(504, 576, 536, 73, 9, c.well, c.line)
         case "settings":
             for x in [206, 638] {
                 art.Card(x, 109, 420, 111, 15, c.card, c.line)
@@ -11236,8 +11238,8 @@ PanelBackdrop() {
                 art.Card(x, 525, 420, 66, 15, c.card, c.line)
             }
             art.Card(206, 355, 852, 158, 15, c.card, c.line)
-            for x in [434, 628, 822]
-                art.Card(x, 432, 182, 61, 10, c.well, c.line)
+            for x in [536, 706, 876]
+                art.Card(x, 425, 164, 54, 10, c.well, c.line)
             art.Card(206, 603, 852, 63, 15, c.card, c.line)
         case "startup":
             art.Card(206, 85, 852, 378, 15, c.card, c.line)
@@ -11400,9 +11402,13 @@ PanelBuildSidebar() {
     PanelText([68, 23, 105, 24], "FORMA", 15, "bold", "ink", "side")
     PanelText([69, 49, 106, 17], "Управление", 9, "norm", "muted", "side")
     PanelText([20, 92, 140, 18], "МЕНЮ", 8, "bold", "muted", "side")
-    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"], ["finds", "Находки"], ["startup", "Проверка запуска"]]
-        p.nav[item[1]] := PanelButton([14, 116 + (i - 1) * 47, 156, 40], item[2]
-            , PanelGo.Bind(item[1]), "nav", "side", item[1], item[1] = "startup" ? 9 : 11)
+    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"]]
+        p.nav[item[1]] := PanelButton([14, 116 + (i - 1) * 43, 156, 37], item[2]
+            , PanelGo.Bind(item[1]), "nav", "side", item[1], 11)
+    PanelText([20, 253, 144, 18], "ДАННЫЕ И ПРОВЕРКА", 8, "bold", "muted", "side")
+    for i, item in [["finds", "Находки"], ["startup", "Проверка запуска"]]
+        p.nav[item[1]] := PanelButton([14, 277 + (i - 1) * 39, 156, 35], item[2]
+            , PanelGo.Bind(item[1]), "nav", "side", item[1], 9)
     PanelText([20, 368, 144, 20], "ГОРЯЧИЕ КЛАВИШИ", 8, "bold", "muted", "side")
     for i, label in ["Старт / стоп", "DryRun", "В трей", "Аварийный стоп", "Кадр и отчёт"] {
         y := 396 + (i - 1) * 30
@@ -11438,8 +11444,10 @@ PanelBuildHome() {
     PanelText([234, 226, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
     PanelText([274, 208, 303, 25], "Находки FORMA", 11, "bold")
     PanelText([274, 236, 303, 20], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
-    p.homeFound := PanelText([596, 220, 105, 26], "", 10, "bold", "accent", "chip", "Center +0x200")
-    p.homeTotal := PanelText([723, 220, 105, 26], "", 10, "bold", "accent", "chip", "Center +0x200")
+    PanelText([597, 212, 103, 16], "ЗА СЕАНС", 8, "bold", "muted", "chip", "Center")
+    PanelText([724, 212, 103, 16], "ВСЕГО", 8, "bold", "muted", "chip", "Center")
+    p.homeFound := PanelText([597, 228, 103, 25], "0", 14, "bold", "accent", "chip", "Center +0x200")
+    p.homeTotal := PanelText([724, 228, 103, 25], "0", 14, "bold", "accent", "chip", "Center +0x200")
     PanelButton([844, 215, 106, 37], "История  ›", PanelGo.Bind("finds"))
     p.resetFinds := PanelButton([959, 215, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
 
@@ -11466,17 +11474,16 @@ PanelBuildHome() {
     p.detail := PanelButton([711, 477, 141, 30], "Сводка", ShowPanelStatus, , , , 9)
     UI.btnBypass := PanelButton([863, 477, 177, 30], "Пропустить матч", RequestBypassMatch, , , , 9)
 
-    PanelText([222, 543, 360, 22], "Последнее событие", 11, "bold")
-    p.lastLog := PanelText([222, 574, 674, 17], "", 9, "norm", "muted", "card", "0xC000")
-    p.openLog := PanelButton([908, 549, 134, 36], "Весь журнал  ›", PanelGo.Bind("log"))
+    PanelText([223, 543, 230, 23], "Автостоп сеанса", 11, "bold")
+    p.stopTime := PanelText([223, 571, 232, 31], "", 16, "bold", "accent")
+    p.stopNote := PanelText([223, 610, 232, 42], "", 9, "norm", "muted")
 
-    PanelText([222, 619, 800, 16], "ДИАГНОСТИКА И ИНСТРУМЕНТЫ", 8, "bold", "muted")
-    UI.btnCheck := PanelButton([222, 637, 146, 23], "Проверить окно", OnCheckCapture, , , , 9)
-    UI.btnCal := PanelButton([378, 637, 139, 23], "Проверить HUD", OnCalibrate, , , , 9)
-    UI.btnVision := PanelButton([527, 637, 109, 23], "Зрение", ToggleVision, , , , 9)
-    UI.btnHud := PanelButton([646, 637, 112, 23], "Мини-HUD", ToggleMiniHud, , , , 9)
-    PanelButton([768, 637, 160, 23], "Кадр и отчёт", OnSaveCalibration, , , , 9)
-    UI.btnHelp := PanelButton([938, 637, 104, 23], "Справка", OnShowHelp, , , , 9)
+    PanelText([504, 543, 352, 24], "Журнал действий", 11, "bold")
+    p.openLog := PanelButton([908, 542, 132, 26], "Весь журнал  ›", PanelGo.Bind("log"), , , , 9)
+    p.homeLogRows := []
+    Loop 3
+        p.homeLogRows.Push(PanelText([515, 582 + (A_Index - 1) * 21, 514, 18], "", 9, "norm"
+            , A_Index = 1 ? "ink" : "muted", "well", "+0x80 0xC000"))
 }
 
 PanelBuildSettings() {
@@ -11501,18 +11508,24 @@ PanelBuildSettings() {
     }
 
     PanelText([224, 367, 530, 24], "Координаты мыши и экран", 11, "bold")
-    PanelText([224, 398, 816, 21], "Подгонка под размер клиентской области · X / Y. Предпросмотр не меняет точки."
+    PanelText([224, 399, 816, 20], "Подгонка под экран · только предпросмотр X / Y, сохранённые точки не меняются."
         , 9, "norm", "muted")
-    p.refreshCoords := PanelButton([766, 367, 104, 29], "Обновить", (*) => PanelUpdateCoords(true), , , , 9)
+    p.refreshCoords := PanelButton([766, 367, 104, 29], "Обновить", PanelSelectCoords, , , , 9)
     UI.btnAfk := PanelButton([880, 367, 160, 29], "Изменить точки…", ShowAfkSettings, , , , 9)
-    PanelText([224, 431, 200, 17], "РАЗРЕШЕНИЕ", 8, "bold", "muted")
-    p.coordPick := PanelCombo([224, 451, 189, 25], ["База FORMA", "1920 × 1080", "2560 × 1440", "3840 × 2160", "Мой экран", "Окно Fortnite"])
-    p.coordPick.OnEvent("Change", (*) => PanelUpdateCoords(true))
-    p.coordHint := PanelText([224, 484, 200, 19], "", 8, "norm", "muted")
+    p.coordPick := PanelCombo([224, 425, 295, 25], ["База FORMA", "1920 × 1080", "2560 × 1440", "3840 × 2160"
+        , "Мой экран", "Окно Fortnite", "Свой размер"])
+    p.coordPick.OnEvent("Change", PanelSelectCoords)
+    p.coordSize := PanelAdd("Edit", [224, 460, 111, 26], "", 9, "norm", "ink", "well", "Center -E0x200 +Border Limit24")
+    cue := "1600 × 900"
+    SendMessage(0x1501, 0, StrPtr(cue), p.coordSize) ; EM_SETCUEBANNER
+    p.coordDesktop := PanelButton([341, 459, 80, 28], "Мой экран", OnPanelDesktopCoords, , , , 8)
+    p.coordCalc := PanelButton([427, 459, 92, 28], "Рассчитать", OnPanelCalculateCoords, "primary", , , 8)
+    p.coordHint := PanelText([536, 484, 504, 19], "", 8, "norm", "muted")
+    p.coordError := PanelText([224, 488, 300, 16], "", 8, "norm", "danger")
     for i, label in ["Играть", "Параметры", "В лобби"] {
-        x := [448, 642, 836][i]
-        PanelText([x, 443, 153, 18], label, 9, "norm", "muted", "well")
-        p.coordValues.Push(PanelText([x, 462, 153, 22], "", 11, "bold", "ink", "well"))
+        x := [548, 718, 888][i]
+        PanelText([x, 432, 141, 17], label, 9, "norm", "muted", "well")
+        p.coordValues.Push(PanelText([x, 451, 141, 22], "", 11, "bold", "ink", "well"))
     }
 
     PanelText([224, 533, 380, 22], "Управление окном", 11, "bold")
@@ -11567,10 +11580,15 @@ PanelBuildStartup() {
     p.startupReport := PanelAdd("Edit", [224, 161, 816, 253], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200 vStartupReport")
     p.startupNote := PanelText([224, 428, 816, 20], "", 9, "norm", "muted")
 
-    PanelText([224, 491, 720, 25], "Если программа не запускает сеанс", 11, "bold")
-    PanelText([224, 526, 816, 28], "1. Для проверки запуска оставьте DryRun включённым. Без игры отсутствие окна Fortnite — это нормально.", 9)
-    PanelText([224, 560, 816, 27], "2. Если run.log не появился, распакуйте FORMA в папку с правом записи и запустите EXE снова.", 9)
-    PanelText([224, 594, 816, 43], "3. Для разбора ошибки скопируйте сводку. Если прикладываете свежий run.log, сначала проверьте его на личные данные.", 9)
+    PanelText([224, 490, 720, 25], "Диагностика и инструменты", 11, "bold")
+    UI.btnCheck := PanelButton([224, 527, 143, 32], "Проверить окно", OnCheckCapture, , , , 9)
+    UI.btnCal := PanelButton([377, 527, 137, 32], "Проверить HUD", OnCalibrate, , , , 9)
+    UI.btnVision := PanelButton([524, 527, 106, 32], "Зрение", ToggleVision, , , , 9)
+    UI.btnHud := PanelButton([640, 527, 108, 32], "Мини-HUD", ToggleMiniHud, , , , 9)
+    PanelButton([758, 527, 170, 32], "Кадр и отчёт", OnSaveCalibration, , , , 9)
+    UI.btnHelp := PanelButton([938, 527, 102, 32], "Справка", OnShowHelp, , , , 9)
+    PanelText([224, 573, 816, 40], "Начните с DryRun. Без игры отсутствие окна Fortnite — это нормально. Если run.log не появился, запустите EXE из распакованной папки с правом записи.", 9)
+    PanelText([224, 623, 816, 32], "Перед отправкой run.log проверьте его на личные данные.", 9, "norm", "muted")
 }
 
 BuildStartupReport() {
@@ -11622,7 +11640,7 @@ BuildGui() {
         , views:Map("home", [], "log", [], "settings", [], "finds", [], "startup", [])
         , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
-        , coordChoice:0, preview:0, ringKey:-1, logDirty:false, themeWarning:""}
+        , coordChoice:0, preview:0, customSize:0, ringKey:-1, logDirty:false, homeLogDirty:true, themeWarning:""}
     UI.panel := p, UI.findingsKey := ""
     g.BackColor := p.colors.canvas
     PanelArtStart(p)
@@ -11742,10 +11760,40 @@ PanelClientPreview() {
     return 0
 }
 
+PanelSelectCoords(*) {
+    global UI
+    p := UI.panel
+    if (p.coordPick.Value = 7 && p.customSize)
+        p.coordSize.Value := p.customSize.w " × " p.customSize.h
+    PanelPut(p.coordError, "")
+    PanelUpdateCoords(true)
+}
+
+OnPanelDesktopCoords(*) {
+    global UI
+    p := UI.panel
+    p.coordSize.Value := A_ScreenWidth " × " A_ScreenHeight
+    p.coordPick.Value := 5
+    PanelSelectCoords()
+}
+
+OnPanelCalculateCoords(*) {
+    global UI
+    p := UI.panel
+    if (!RegExMatch(p.coordSize.Value, "i)^\h*([0-9]{1,5})\h*[x×х]\h*([0-9]{1,5})\h*$", &size)
+        || Integer(size[1]) < 1 || Integer(size[1]) > 16384 || Integer(size[2]) < 1 || Integer(size[2]) > 16384) {
+        PanelPut(p.coordError, "Введите Ш × В от 1 до 16384, например 1600 × 900.")
+        return
+    }
+    p.customSize := {w:Integer(size[1]), h:Integer(size[2])}
+    p.coordPick.Value := 7
+    PanelSelectCoords()
+}
+
 PanelUpdateCoords(force := false) {
     global CFG, UI
     p := UI.panel, choice := p.coordPick.Value
-    if (choice < 1 || choice > 6)
+    if (choice < 1 || choice > 7)
         choice := 1
     if (force || p.coordChoice != choice) {
         p.coordChoice := choice, p.preview := 0
@@ -11757,10 +11805,17 @@ PanelUpdateCoords(force := false) {
                 p.preview := {w:A_ScreenWidth, h:A_ScreenHeight}
             case 6:
                 try p.preview := PanelClientPreview()
+            case 7:
+                p.preview := p.customSize
         }
     }
     ref := p.preview ? p.preview : {w:CFG.coordRefW, h:CFG.coordRefH}
-    PanelPut(p.coordHint, (choice = 6 && !p.preview) ? "Нет окна · показана база" : ref.w " × " ref.h " · X / Y")
+    hint := ref.w " × " ref.h " · X / Y"
+    if (!p.preview && choice = 6)
+        hint := "Нет окна · показана база"
+    else if (!p.preview && choice = 7)
+        hint := "Введите размер и нажмите «Рассчитать» · показана база"
+    PanelPut(p.coordHint, hint)
     for i, point in [[CFG.playNormX, CFG.playNormY], [CFG.optNormX, CFG.optNormY], [CFG.leaveNormX, CFG.leaveNormY]]
         PanelPut(p.coordValues[i], Round(point[1] * ref.w) "  /  " Round(point[2] * ref.h))
 }
@@ -11784,23 +11839,54 @@ PanelMatchClock(now) {
         , percent:Round(100 * remaining / limit), note:"Лимит: " FmtCountdown(limit) (CFG.dryRun ? "`nDryRun" : "")}
 }
 
+PanelAutoStopClock(elapsed) {
+    global CFG, ST
+    if (CFG.stopAfterMin <= 0)
+        return {text:"Без лимита", note:"Остановка по времени выключена."}
+    limit := Round(CFG.stopAfterMin * 60)
+    if !ST.running
+        return {text:FmtCountdown(limit * 1000), note:"Лимит активного времени. Отсчёт после старта."}
+    if ST.finishMatchArmed
+        return {text:"Доигрываю", note:"Лимит истёк. Стоп после матча."}
+    remaining := Max(0, limit - elapsed)
+    return {text:FmtCountdown(remaining * 1000)
+        , note:remaining = 0 ? "Лимит времени достигнут." : (ST.paused ? "Отсчёт на паузе." : "До остановки · без учёта пауз.")}
+}
+
+PanelUpdateRecentLog() {
+    global UI, LogBuf
+    p := UI.panel
+    if !p.homeLogDirty
+        return
+    p.homeLogDirty := false
+    lines := LogBuf, count := lines.Length
+    for i, row in p.homeLogRows {
+        text := i <= count ? RegExReplace(lines[count - i + 1], "[\r\n][\s\S]*", " …")
+            : (i = 1 ? "Новых событий пока нет." : "")
+        PanelPut(row, text)
+    }
+}
+
 PanelUpdateHome() {
-    global CFG, ST, UI, LogBuf
+    global CFG, ST, UI
     p := UI.panel
     PanelPut(p.scene, !ST.running ? (ST.startWorkers ? "Запуск…" : "Ожидание")
         : (ST.paused ? "Пауза" : (ST.cancelHold ? "Жду игрока" : StateRu(ST.leaveActive ? "LEAVING" : ST.state))))
     PanelPut(p.rounds, ST.rounds (CFG.maxRounds > 0 ? " / " CFG.maxRounds : ""))
-    PanelPut(p.elapsed, FmtClock(SessionElapsedSec()))
-    PanelPut(p.homeFound, "Сеанс: " ST.tokensFound)
-    PanelPut(p.homeTotal, "Всего: " CFG.totalTokens)
+    elapsed := SessionElapsedSec(), autoStop := PanelAutoStopClock(elapsed)
+    PanelPut(p.elapsed, FmtClock(elapsed))
+    PanelPut(p.stopTime, autoStop.text)
+    PanelPut(p.stopNote, autoStop.note)
+    PanelPut(p.homeFound, ST.tokensFound)
+    PanelPut(p.homeTotal, CFG.totalTokens)
     p.resetFinds.Enabled := PanelCanEditTimers() && (ST.tokensFound || CFG.totalTokens)
-    PanelPut(p.lastLog, LogBuf.Length ? RegExReplace(LogBuf[-1], "[\r\n].*", " …") : "Новых событий пока нет.")
+    PanelUpdateRecentLog()
     PanelPut(p.inputLabel, CFG.dryRun ? "DRYRUN  /  БЕЗ ВВОДА" : "РЕАЛЬНЫЙ ВВОД")
     note := ST.lastAction
     if ST.cancelHold
         note := "Подбор приостановлен. Возобновите очередь вручную."
     else if (note = "")
-        note := "Проверьте окно и HUD, затем нажмите «Старт»."
+        note := "Окно и HUD можно проверить на вкладке «Проверка запуска»."
     PanelPut(p.action, note)
     PanelUpdateRing()
 }
@@ -11858,6 +11944,9 @@ UpdateUiStatus() {
     switch p.view {
         case "home":
             UI.btnStart.Enabled := PanelCanEditTimers() && !ST.macroRec && !ST.macroCountdown && !ST.pickActive
+            startText := (!ST.running && CFG.hkStart != "" && StrLen(CFG.hkStart) <= 12) ? "Старт · " CFG.hkStart : "Старт"
+            if (UI.btnStart.Text != startText)
+                UI.btnStart.Text := startText
             UI.btnPause.Enabled := ST.running || ST.mouseCalActive
             text := ST.mouseCalActive ? "Отменить тест" : (ST.paused ? "Снять паузу" : "Пауза")
             if (UI.btnPause.Text != text)
@@ -11893,8 +11982,10 @@ OnPanelResetFinds(*) {
 }
 
 OnPanelClearLog(*) {
-    global LogBuf
+    global LogBuf, UI
     LogBuf := []
+    if UI.panel
+        UI.panel.homeLogDirty := true
     RefreshLog()
 }
 
