@@ -11673,7 +11673,8 @@ PanelRenderLog() {
     snapshot := p.logSnapshot, lines := snapshot ? snapshot : LogBuf.Clone()
     raw := p.logSearch.Value, query := Trim(raw), shown := 0, text := ""
     for line in lines {
-        if (query = "" || InStr(line, query, false)) {
+        ; Locale учитывает регистр кириллицы, в отличие от режима false.
+        if (query = "" || InStr(line, query, "Locale")) {
             text .= line "`n"
             shown += 1
         }

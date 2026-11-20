@@ -175,8 +175,9 @@ TestPanelJournal() {
     PanelType(p.logSearch, SubStr(first, 1, 8))
     PanelCheck(InStr(UI.logEdit.Value, first), "поиск находит отображаемое время события")
     PanelType(p.logSearch, "  [проверка+1]  ")
-    PanelCheck(UI.logEdit.Value == first "`n" && p.logScope.Value = "Показано: 1 из 2" && p.logReset.Enabled
-        , "поиск сравнивает текст без учёта регистра и сохраняет многострочное событие целиком")
+    PanelCheck(p.logScope.Value = "Показано: 1 из 2" && p.logReset.Enabled
+        , "поиск не зависит от регистра кириллицы и пробелов по краям: " p.logScope.Value)
+    PanelCheck(UI.logEdit.Value == first "`n", "поиск сохраняет многострочное событие целиком")
     PanelType(p.logSearch, ".*")
     PanelCheck(UI.logEdit.Value = "По запросу ничего не найдено." && p.logScope.Value = "Показано: 0 из 2"
         && FileRead(CFG.logFile, "UTF-8") == disk && LogBuf.Length = 2, "запрос буквальный, фильтр ничего не записывает")
