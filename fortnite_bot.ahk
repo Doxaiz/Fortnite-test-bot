@@ -10862,17 +10862,17 @@ PanelPalette(theme) {
             return {canvas:"EEF1FA", side:"E4E9F7", card:"FCFDFF", well:"F1F4FC", line:"CFD8ED"
                 , chip:"E8EDFC", mark:"DDE4FC", primary:"3F50B8", onPrimary:"FFFFFF"
                 , ink:"212A47", muted:"535F7C", accent:"384CB0", danger:"A6224A", quiet:"7D89A4"
-                , violet:"6878DF", cyan:"278CA6", pink:"B854A8", peach:"BF6849"}
+                , violet:"6878DF", cyan:"278CA6", pink:"B854A8", peach:"BF6849", calc:"18765B", onCalc:"FFFFFF"}
         case "gray":
             return {canvas:"292D36", side:"22262F", card:"343945", well:"262B34", line:"4C5364"
                 , chip:"3D4454", mark:"454E65", primary:"52638F", onPrimary:"FFFFFF"
                 , ink:"F3F5FC", muted:"B8C0D1", accent:"B5C7FA", danger:"F7A5B8", quiet:"8C95A9"
-                , violet:"A8A9EF", cyan:"82D4DB", pink:"DC9FCC", peach:"EDAE95"}
+                , violet:"A8A9EF", cyan:"82D4DB", pink:"DC9FCC", peach:"EDAE95", calc:"7AD2B4", onCalc:"17332C"}
         default:
             return {canvas:"1C2030", side:"171B29", card:"272C40", well:"1D2233", line:"383F58"
                 , chip:"303751", mark:"323E69", primary:"485DC0", onPrimary:"FFFFFF"
                 , ink:"F1F3FF", muted:"AFB8D3", accent:"BCC8FF", danger:"FFA7BA", quiet:"8791AC"
-                , violet:"8395FF", cyan:"69C7E3", pink:"E38ED9", peach:"F1A68B"}
+                , violet:"8395FF", cyan:"69C7E3", pink:"E38ED9", peach:"F1A68B", calc:"72D8B5", onCalc:"17332C"}
     }
 }
 
@@ -11029,6 +11029,8 @@ PanelDrawButton(id, info, msg, hwnd) {
             fill := c.mark, border := c.line, color := c.accent
     } else if (kind = "primary") {
         fill := c.primary, border := c.violet, color := c.onPrimary
+    } else if (kind = "calc") {
+        fill := c.calc, border := c.calc, color := c.onCalc
     } else if (kind = "danger") {
         fill := base, border := c.danger, color := c.danger
     }
@@ -11063,7 +11065,7 @@ PanelDrawButton(id, info, msg, hwnd) {
         DllCall("gdi32\SetBkMode", "Ptr", dc, "Int", 1)
         DllCall("gdi32\SetTextColor", "Ptr", dc, "UInt", PanelRgb(color))
         textRect := Buffer(16)
-        NumPut("Int", l + Round((kind = "nav" ? 39 : 6) * p.scale), "Int", t, "Int", r - Round(6 * p.scale), "Int", b, textRect)
+        NumPut("Int", l + Round((kind = "nav" ? 36 : 6) * p.scale), "Int", t, "Int", r - Round(4 * p.scale), "Int", b, textRect)
         ; DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS
         flags := 0x8824 | (kind = "nav" ? 0 : 1)
         DllCall("user32\DrawTextW", "Ptr", dc, "Str", data.control.Text, "Int", -1, "Ptr", textRect, "UInt", flags)
@@ -11403,11 +11405,11 @@ PanelBuildSidebar() {
     PanelText([69, 49, 106, 17], "Управление", 9, "norm", "muted", "side")
     PanelText([20, 92, 140, 18], "МЕНЮ", 8, "bold", "muted", "side")
     for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"]]
-        p.nav[item[1]] := PanelButton([14, 116 + (i - 1) * 43, 156, 37], item[2]
+        p.nav[item[1]] := PanelButton([12, 116 + (i - 1) * 43, 160, 37], item[2]
             , PanelGo.Bind(item[1]), "nav", "side", item[1], 11)
     PanelText([20, 253, 144, 18], "ДАННЫЕ И ПРОВЕРКА", 8, "bold", "muted", "side")
     for i, item in [["finds", "Находки"], ["startup", "Проверка запуска"]]
-        p.nav[item[1]] := PanelButton([14, 277 + (i - 1) * 39, 156, 35], item[2]
+        p.nav[item[1]] := PanelButton([12, 277 + (i - 1) * 39, 160, 35], item[2]
             , PanelGo.Bind(item[1]), "nav", "side", item[1], 9)
     PanelText([20, 368, 144, 20], "ГОРЯЧИЕ КЛАВИШИ", 8, "bold", "muted", "side")
     for i, label in ["Старт / стоп", "DryRun", "В трей", "Аварийный стоп", "Кадр и отчёт"] {
@@ -11519,7 +11521,7 @@ PanelBuildSettings() {
     cue := "1600 × 900"
     SendMessage(0x1501, 0, StrPtr(cue), p.coordSize) ; EM_SETCUEBANNER
     p.coordDesktop := PanelButton([341, 459, 80, 28], "Мой экран", OnPanelDesktopCoords, , , , 8)
-    p.coordCalc := PanelButton([427, 459, 92, 28], "Рассчитать", OnPanelCalculateCoords, "primary", , , 8)
+    p.coordCalc := PanelButton([427, 459, 92, 28], "Рассчитать", OnPanelCalculateCoords, "calc", , , 8)
     p.coordHint := PanelText([536, 484, 504, 19], "", 8, "norm", "muted")
     p.coordError := PanelText([224, 488, 300, 16], "", 8, "norm", "danger")
     for i, label in ["Играть", "Параметры", "В лобби"] {
@@ -11554,7 +11556,7 @@ PanelBuildLog() {
     PanelButton([620, 100, 130, 30], "Кадр и отчёт", OnSaveCalibration, , , , 9)
     PanelButton([760, 100, 134, 30], "Найти run.log", OnOpenFolder, , , , 9)
     PanelButton([904, 100, 136, 30], "Очистить экран", OnPanelClearLog, , , , 9, "ClearView")
-    UI.logEdit := PanelAdd("Edit", [224, 159, 816, 489], "", 10, "norm", "ink", "well", "ReadOnly -Wrap VScroll HScroll -E0x200")
+    UI.logEdit := PanelAdd("Edit", [224, 159, 816, 489], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
 }
 
 PanelBuildFinds() {
