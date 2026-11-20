@@ -11021,12 +11021,15 @@ PanelDrawButton(id, info, msg, hwnd) {
     dc := NumGet(info, offset + A_PtrSize, "Ptr"), rect := info + offset + 2 * A_PtrSize
     state := NumGet(info, 16, "UInt"), c := p.colors, kind := data.style
     picked := (kind = "nav" && p.view = data.key) || (kind = "theme" && CFG.panelTheme = data.key)
+        || (kind = "filter" && p.findingsFilter = data.key)
     disabled := state & 0x4, pressed := state & 0x1, focus := state & 0x10
     base := c.%data.surface%, fill := c.chip, border := c.line, color := c.ink
     if (kind = "nav" || kind = "theme") {
         fill := base, border := base, color := c.muted
         if picked
             fill := c.mark, border := c.line, color := c.accent
+    } else if (kind = "filter" && picked) {
+        fill := c.mark, border := c.violet, color := c.accent
     } else if (kind = "primary") {
         fill := c.primary, border := c.violet, color := c.onPrimary
     } else if (kind = "calc") {
@@ -11344,16 +11347,27 @@ OnPanelThemeChange(theme, *) {
         p.themeWarning := "Тема применена, но не записалась в forma.ini. Попробуйте выбрать её ещё раз."
 }
 
-ReadPanelFindings(path) {
+PanelFindingKind(line) {
+    ; Опознаём только штатные формулировки RecordTokenFound/CheckToken.
+    ; Старый формат не сохраняет DryRun. Тип сигнала не подтверждает предмет.
+    if !RegExMatch(line, "^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  (.+) \(сессия: \d+, всего: \d+\)$", &match)
+        return "other"
+    if (match[1] == "Баннер редкой находки (скин/машина/жетон)")
+        return "banner"
+    return RegExMatch(match[1], "^Жетон пиратского магазина \(\d+(?:\.\d+)?, \d+(?:\.\d+)?\)$") ? "token" : "other"
+}
+
+ReadPanelFindingRows(path) {
     ; Не грузим старый журнал целиком и не показываем обрезанную UTF-8 строку.
+    rows := []
     if !FileExist(path)
-        return ""
+        return rows
     file := FileOpen(path, "r", "UTF-8-RAW")
     try {
         length := file.Length
         size := Min(length, 48 * 1024)
         if !size
-            return ""
+            return rows
         raw := Buffer(size + 1, 0), start := length - size
         file.Pos := start
         count := file.RawRead(raw, size), skip := 0
@@ -11366,35 +11380,78 @@ ReadPanelFindings(path) {
             skip := 3
         }
         if (skip >= count)
-            return ""
+            return rows
         text := StrGet(raw.Ptr + skip, "UTF-8")
     } finally {
         file.Close()
     }
-    lines := StrSplit(RTrim(text, "`r`n"), "`n", "`r"), result := ""
-    Loop Min(lines.Length, 80)
-        result .= lines[lines.Length - A_Index + 1] "`n"
-    return RTrim(result, "`n")
+    lines := StrSplit(RTrim(text, "`r`n"), "`n", "`r")
+    Loop Min(lines.Length, 80) {
+        line := lines[lines.Length - A_Index + 1]
+        if (Trim(line) != "")
+            rows.Push({text:line, kind:PanelFindingKind(line)})
+    }
+    return rows
 }
 
 RefreshPanelFindings(force := false) {
     global CFG, ST, UI
-    if !UI.panel
+    p := UI.panel
+    if (!p || p.view != "finds")
         return
-    size := ""
+    PanelPut(UI.findingsSession, "За сеанс: " ST.tokensFound)
+    PanelPut(UI.findingsTotal, "Всего: " CFG.totalTokens)
+    size := -1
     try size := FileGetSize(CFG.tokenFile)
-    key := ST.tokensFound "|" CFG.totalTokens "|" size
-    if (!force && key = UI.findingsKey)
+    key := CFG.tokenFile "|" size
+    if (!force && key = p.findingsKey)
         return
-    UI.findingsKey := key
-    UI.findingsSession.Value := "За сеанс: " ST.tokensFound
-    UI.findingsTotal.Value := "Всего: " CFG.totalTokens
-    try {
-        text := ReadPanelFindings(CFG.tokenFile)
-        UI.findingsEdit.Value := text != "" ? text : "Записей пока нет. Источник: ЖЕТОН_НАЙДЕН.txt рядом с FORMA."
-    } catch {
-        UI.findingsEdit.Value := "Не удалось прочитать ЖЕТОН_НАЙДЕН.txt. Повторите попытку кнопкой «Обновить»."
+    p.findingsKey := key
+    p.findingsError := false
+    try p.findingsRows := ReadPanelFindingRows(CFG.tokenFile)
+    catch {
+        p.findingsRows := []
+        p.findingsError := true
     }
+    PanelRenderFindings()
+}
+
+PanelSetFindingsFilter(kind, *) {
+    global UI
+    p := UI.panel, previous := p.findingsFilter
+    if (kind = previous)
+        return
+    p.findingsFilter := kind
+    PanelRenderFindings()
+    p.findingsButtons[previous].control.Redraw()
+    p.findingsButtons[kind].control.Redraw()
+}
+
+PanelRenderFindings() {
+    global UI
+    p := UI.panel, text := "", shown := 0
+    counts := Map("all", p.findingsRows.Length, "token", 0, "banner", 0, "other", 0)
+    for row in p.findingsRows {
+        counts[row.kind] += 1
+        if (p.findingsFilter = "all" || p.findingsFilter = row.kind) {
+            text .= row.text "`n"
+            shown += 1
+        }
+    }
+    for kind, item in p.findingsButtons {
+        label := item.label " · " (p.findingsError ? "—" : counts[kind])
+        if (item.control.Text != label)
+            item.control.Text := label
+    }
+    if p.findingsError
+        text := "Не удалось прочитать ЖЕТОН_НАЙДЕН.txt. Повторите попытку кнопкой «Обновить»."
+    else if !counts["all"]
+        text := "Записей пока нет. Источник: ЖЕТОН_НАЙДЕН.txt рядом с FORMA."
+    else if !shown
+        text := "В выбранной категории нет записей. Нажмите «Все», чтобы вернуться к журналу."
+    PanelPut(UI.findingsEdit, RTrim(text, "`n"))
+    PanelPut(p.findingsScope, p.findingsError ? "История недоступна · общие счётчики не изменены."
+        : "Показано " shown " из " counts["all"] " · до 80 строк из последних 48 КиБ · новые сверху")
 }
 
 PanelBuildSidebar() {
@@ -11566,9 +11623,15 @@ PanelBuildFinds() {
     UI.findingsSession := PanelText([235, 148, 184, 32], "За сеанс: 0", 12, "bold", "accent", "chip", "Center +0x200")
     UI.findingsTotal := PanelText([453, 148, 184, 32], "Всего: 0", 12, "bold", "accent", "chip", "Center +0x200")
     PanelButton([900, 148, 140, 32], "Обновить", (*) => RefreshPanelFindings(true), , , , 9, "FindRefresh")
-    PanelText([224, 208, 816, 42], "ЖЕТОН_НАЙДЕН.txt · новые сверху. Это сигналы FORMA, включая DryRun и редкие баннеры, а не инвентарь Epic или подтверждение предмета."
+    PanelText([224, 203, 816, 36], "ЖЕТОН_НАЙДЕН.txt · сигналы с экрана, в том числе DryRun. Это не инвентарь Epic и не подтверждение получения предмета."
         , 10, "norm", "muted")
-    UI.findingsEdit := PanelAdd("Edit", [224, 252, 816, 396], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
+    for spec in [["all", "Все", 224, 162], ["token", "Жетоны", 398, 210]
+        , ["banner", "Редкие баннеры", 620, 210], ["other", "Прочие записи", 842, 198]] {
+        control := PanelButton([spec[3], 245, spec[4], 33], spec[2], PanelSetFindingsFilter.Bind(spec[1]), "filter", , spec[1])
+        p.findingsButtons[spec[1]] := {control:control, label:spec[2]}
+    }
+    p.findingsScope := PanelText([224, 289, 816, 20], "", 9, "norm", "muted")
+    UI.findingsEdit := PanelAdd("Edit", [224, 314, 816, 334], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
 }
 
 PanelBuildStartup() {
@@ -11642,8 +11705,9 @@ BuildGui() {
         , views:Map("home", [], "log", [], "settings", [], "finds", [], "startup", [])
         , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
-        , coordChoice:0, preview:0, customSize:0, ringKey:-1, logDirty:false, homeLogDirty:true, themeWarning:""}
-    UI.panel := p, UI.findingsKey := ""
+        , coordChoice:0, preview:0, customSize:0, ringKey:-1, logDirty:false, homeLogDirty:true, themeWarning:""
+        , findingsButtons:Map(), findingsFilter:"all", findingsKey:"", findingsRows:[], findingsError:false}
+    UI.panel := p
     g.BackColor := p.colors.canvas
     PanelArtStart(p)
     p.background := PanelAdd("Picture", [0, 0, w, h], "", , , , "")

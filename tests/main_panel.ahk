@@ -355,7 +355,8 @@ TestPanelAutoStop() {
 TestPanelFinds() {
     global CFG, ST, UI
     PanelSelectView("finds")
-    PanelCheck(UI.panel.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет")
+    p := UI.panel, filters := p.findingsButtons
+    PanelCheck(p.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет") && filters["all"].control.Text = "Все · 0"
         && !FileExist(CFG.tokenFile), "пустая история не создаёт файл")
     a := "2026-11-18 12:30:15  Жетон пиратского магазина (0.5, 0.4) (сессия: 1, всего: 8)"
     b := "2026-11-18 13:00:50  Баннер редкой находки (скин/машина/жетон) (сессия: 2, всего: 9)"
@@ -364,10 +365,32 @@ TestPanelFinds() {
     UpdateUiStatus()
     PanelCheck(UI.findingsEdit.Value == b "`n" a && UI.findingsSession.Value = "За сеанс: 2"
         && UI.findingsTotal.Value = "Всего: 9", "BOM, кириллица, порядок и отдельные счётчики")
+    for kind, expected in Map("all", "Все · 2", "token", "Жетоны · 1", "banner", "Редкие баннеры · 1", "other", "Прочие записи · 0")
+        PanelCheck(filters[kind].control.Text == expected, "количество в хвосте: " kind)
+    ini := FileRead(CFG.iniFile)
+    PanelClick(filters["other"].control)
+    PanelCheck(InStr(UI.findingsEdit.Value, "В выбранной категории нет записей") && InStr(p.findingsScope.Value, "0 из 2")
+        , "пустая категория отличается от пустого файла")
+    PanelClick(filters["banner"].control)
+    PanelCheck(UI.findingsEdit.Value == b && InStr(p.findingsScope.Value, "1 из 2"), "баннер не смешивается с жетоном")
     c := "2026-11-18 13:10:50  Ещё одна тестовая находка"
-    FileAppend(c "`n", CFG.tokenFile, "UTF-8-RAW")
+    d := "2026-11-18 13:20:50  Жетон пиратского магазина (без координат) (сессия: 9, всего: 99)"
+    FileAppend(c "`n" d "`n", CFG.tokenFile, "UTF-8-RAW")
     UpdateUiStatus()
-    PanelCheck(UI.findingsEdit.Value == c "`n" b "`n" a, "новая строка подхватывается и без смены счётчиков")
+    PanelCheck(UI.findingsEdit.Value == b && p.findingsFilter = "banner" && InStr(p.findingsScope.Value, "1 из 4")
+        , "новые записи обновляют выборку без сброса текущего фильтра")
+    history := FileRead(CFG.tokenFile, "UTF-8")
+    PanelClick(filters["other"].control)
+    PanelCheck(UI.findingsEdit.Value == d "`n" c, "неизвестная и неполная записи остаются в истории")
+    PanelClick(filters["token"].control)
+    PanelCheck(UI.findingsEdit.Value == a, "видны только штатные сигналы о жетоне")
+    PanelSelectView("home")
+    PanelSelectView("finds")
+    PanelCheck(UI.findingsEdit.Value == a && p.findingsFilter = "token", "выбор сохраняется при переходе между вкладками")
+    PanelClick(filters["all"].control)
+    PanelCheck(UI.findingsEdit.Value == d "`n" c "`n" b "`n" a && FileRead(CFG.tokenFile, "UTF-8") == history
+        && FileRead(CFG.iniFile) == ini && ST.tokensFound = 2 && CFG.totalTokens = 9
+        , "фильтры не меняют историю, профиль или общие счётчики")
     FileDelete(CFG.tokenFile)
     payload := "", want := "", row := "  Жетон " Rep("я", 240)
     Loop 160 {
@@ -378,14 +401,15 @@ TestPanelFinds() {
     FileAppend(payload, CFG.tokenFile, "UTF-8-RAW")
     PanelClick(UI.gui["FindRefresh"])
     PanelCheck(FileGetSize(CFG.tokenFile) > 48 * 1024 && UI.findingsEdit.Value == RTrim(want, "`n")
+        && filters["other"].control.Text = "Прочие записи · 80" && InStr(p.findingsScope.Value, "80 из 80")
         && FileRead(CFG.tokenFile, "UTF-8") == payload, "большой журнал: до 80 последних строк без изменения файла")
     original := CFG.tokenFile
     CFG.tokenFile := A_Temp ; Каталог нельзя открыть как файл.
     PanelClick(UI.gui["FindRefresh"])
-    PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать"), "ошибка файла показана в панели")
+    PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать") && filters["all"].control.Text = "Все · —"
+        && UI.findingsTotal.Value = "Всего: 9", "ошибка файла не выдаёт устаревшие числа и не меняет счётчик")
     CFG.tokenFile := original
     PanelSelectView("home")
-    p := UI.panel
     PanelCheck(p.homeFound.Value = "2" && p.homeTotal.Value = "9" && p.resetFinds.Enabled
         , "лента обзора показывает те же реальные счётчики")
     CFG.totalRounds := 13, ST.rounds := 3
