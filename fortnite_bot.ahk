@@ -983,10 +983,11 @@ Log(msg) {
     } catch {
     }
     try {
-        if (UI.panel) {
-            UI.panel.homeLogDirty := true
-            if (UI.visible && UI.panel.view = "log")
-                UI.panel.logDirty := true
+        p := UI.panel
+        if p {
+            p.homeLogDirty := true
+            if (UI.visible && p.view = "log" && !p.logSnapshot)
+                p.logDirty := true
         } else if (UI.logEdit && UI.visible) {
             RefreshLog()
         }
@@ -996,16 +997,16 @@ Log(msg) {
 
 RefreshLog() {
     global LogBuf, UI
-    if (UI.panel) {
-        if (UI.panel.view != "log")
-            return
-        UI.panel.logDirty := false
+    if UI.panel {
+        if (UI.panel.view = "log")
+            PanelRenderLog()
+        return
     }
     try {
         txt := ""
         for line in LogBuf
             txt .= line "`n"
-        UI.logEdit.Value := (UI.panel && txt = "") ? "Новых событий пока нет." : txt
+        UI.logEdit.Value := txt
         SendMessage(0x115, 7, 0, UI.logEdit)
     } catch {
     }
@@ -11648,12 +11649,59 @@ PanelBuildLog() {
     global UI
     p := UI.panel, p.buildView := "log"
     PanelText([224, 101, 365, 27], "Журнал действий", 13, "bold")
-    PanelText([224, 133, 810, 20], "Время / событие · до 300 записей текущего запуска. Файл run.log остаётся на диске."
+    PanelText([224, 133, 810, 20], "До 300 событий текущего запуска. Очистка экрана не удаляет run.log."
         , 9, "norm", "muted")
     PanelButton([620, 100, 130, 30], "Кадр и отчёт", OnSaveCalibration, , , , 9)
     PanelButton([760, 100, 134, 30], "Найти run.log", OnOpenFolder, , , , 9)
     PanelButton([904, 100, 136, 30], "Очистить экран", OnPanelClearLog, , , , 9, "ClearView")
-    UI.logEdit := PanelAdd("Edit", [224, 159, 816, 489], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
+
+    PanelText([224, 164, 49, 26], "Поиск", 9, "bold", "muted", "card", "+0x200")
+    p.logSearch := PanelAdd("Edit", [280, 163, 395, 28], "", 10, "norm", "ink", "well", "-Multi -E0x200 +Border Limit128")
+    cue := "Время или текст события"
+    SendMessage(0x1501, 0, StrPtr(cue), p.logSearch) ; EM_SETCUEBANNER
+    p.logSearch.OnEvent("Change", PanelInvoke.Bind(RefreshLog))
+    p.logReset := PanelButton([685, 163, 152, 28], "Сбросить поиск", PanelResetLogSearch, , , , 9)
+    p.logLive := PanelAdd("CheckBox", [854, 163, 186, 28], "Автообновление", 10, "norm", "ink", "card", "Checked")
+    p.logLive.OnEvent("Click", PanelSetLogLive)
+    p.logScope := PanelText([224, 201, 816, 18], "", 9, "norm", "muted")
+    UI.logEdit := PanelAdd("Edit", [224, 225, 816, 423], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
+}
+
+PanelRenderLog() {
+    global LogBuf, UI
+    p := UI.panel, p.logDirty := false
+    snapshot := p.logSnapshot, lines := snapshot ? snapshot : LogBuf.Clone()
+    raw := p.logSearch.Value, query := Trim(raw), shown := 0, text := ""
+    for line in lines {
+        if (query = "" || InStr(line, query, false)) {
+            text .= line "`n"
+            shown += 1
+        }
+    }
+    if !shown
+        text := lines.Length ? "По запросу ничего не найдено." : "Новых событий пока нет."
+    PanelPut(p.logScope, "Показано: " shown " из " lines.Length
+        . (snapshot ? "  ·  Просмотр зафиксирован. Запись в run.log продолжается." : ""))
+    p.logReset.Enabled := (raw != "")
+    if !(p.logText == text) {
+        UI.logEdit.Value := text
+        p.logText := text
+        ; При просмотре всех событий следим за концом, при поиске читаем сверху.
+        SendMessage(0x115, !snapshot && query = "" ? 7 : 6, 0, UI.logEdit) ; WM_VSCROLL
+    }
+}
+
+PanelSetLogLive(source, *) {
+    global LogBuf, UI
+    UI.panel.logSnapshot := source.Value ? 0 : LogBuf.Clone()
+    RefreshLog()
+}
+
+PanelResetLogSearch(*) {
+    global UI
+    UI.panel.logSearch.Value := ""
+    RefreshLog()
+    UI.panel.logSearch.Focus()
 }
 
 PanelBuildFinds() {
@@ -11745,7 +11793,8 @@ BuildGui() {
         , views:Map("home", [], "log", [], "settings", [], "finds", [], "startup", [])
         , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
-        , coordChoice:0, preview:0, customSize:0, ringKey:-1, logDirty:false, homeLogDirty:true, themeWarning:""
+        , coordChoice:0, preview:0, customSize:0, ringKey:-1, themeWarning:""
+        , logDirty:false, homeLogDirty:true, logSnapshot:0, logText:""
         , findingsButtons:Map(), findingsFilter:"all", findingsKey:"", findingsRows:[], findingsCounts:Map(), findingsError:false
         , homeFindingsButtons:Map(), findingsOverviewAt:-1}
     UI.panel := p
@@ -12092,8 +12141,12 @@ OnPanelResetFinds(*) {
 OnPanelClearLog(*) {
     global LogBuf, UI
     LogBuf := []
-    if UI.panel
-        UI.panel.homeLogDirty := true
+    p := UI.panel
+    if p {
+        p.homeLogDirty := true
+        if p.logSnapshot
+            p.logSnapshot := []
+    }
     RefreshLog()
 }
 

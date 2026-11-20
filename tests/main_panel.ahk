@@ -37,7 +37,7 @@ RunPanelTests() {
         BuildGui()
         ShowGui()
         FileAppend("DPI: " A_ScreenDPI " · scale: " UI.panel.scale "`n", "*", "UTF-8-RAW")
-        for test in [TestPanelNavigation, TestPanelTheme, TestPanelSettings, TestPanelCoordinates
+        for test in [TestPanelNavigation, TestPanelJournal, TestPanelTheme, TestPanelSettings, TestPanelCoordinates
             , TestPanelClock, TestPanelAutoStop, TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8-RAW")
@@ -159,6 +159,81 @@ TestPanelNavigation() {
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "событие после очистки") && !InStr(UI.logEdit.Value, "пробная запись")
         , "после очистки новые события продолжают поступать")
+}
+
+TestPanelJournal() {
+    global CFG, ST, UI, LogBuf
+    PanelSelectView("log")
+    p := UI.panel, ini := FileRead(CFG.iniFile)
+    PanelClick(UI.gui["ClearView"])
+    PanelCheck(p.logLive.Value && !p.logReset.Enabled && p.logScope.Value = "Показано: 0 из 0"
+        && UI.logEdit.Value = "Новых событий пока нет.", "журнал открывается с живым обновлением и без фильтра")
+    Log("[input] Ожидание окна`nПодробности [ПРОВЕРКА+1]")
+    Log("[perf] Время захвата")
+    UpdateUiStatus()
+    first := LogBuf[1], disk := FileRead(CFG.logFile, "UTF-8")
+    PanelType(p.logSearch, SubStr(first, 1, 8))
+    PanelCheck(InStr(UI.logEdit.Value, first), "поиск находит отображаемое время события")
+    PanelType(p.logSearch, "  [проверка+1]  ")
+    PanelCheck(UI.logEdit.Value == first "`n" && p.logScope.Value = "Показано: 1 из 2" && p.logReset.Enabled
+        , "поиск сравнивает текст без учёта регистра и сохраняет многострочное событие целиком")
+    PanelType(p.logSearch, ".*")
+    PanelCheck(UI.logEdit.Value = "По запросу ничего не найдено." && p.logScope.Value = "Показано: 0 из 2"
+        && FileRead(CFG.logFile, "UTF-8") == disk && LogBuf.Length = 2, "запрос буквальный, фильтр ничего не записывает")
+
+    PanelType(p.logSearch, "проверка+1")
+    SendMessage(0xB1, 2, 11, UI.logEdit) ; EM_SETSEL
+    Log("[perf] Новое событие без совпадения")
+    UpdateUiStatus()
+    PanelCheck(UI.logEdit.Value == first "`n" && p.logScope.Value = "Показано: 1 из 3"
+        && SendMessage(0xB0, 0, 0, UI.logEdit) = (11 << 16 | 2), "несовпадающая запись не сбрасывает выделение")
+    Log("[input] Живое совпадение: проверка+1")
+    UpdateUiStatus()
+    PanelCheck(InStr(UI.logEdit.Value, "Живое совпадение") && p.logScope.Value = "Показано: 2 из 4"
+        , "новые совпадения появляются в открытом фильтре")
+
+    PanelPress(p.logLive, 0x20)
+    frozen := UI.logEdit.Value
+    Log("[input] После фиксации: проверка+1")
+    UpdateUiStatus()
+    disk := FileRead(CFG.logFile, "UTF-8")
+    PanelCheck(!p.logLive.Value && UI.logEdit.Value == frozen && InStr(p.logScope.Value, "2 из 4")
+        && InStr(p.logScope.Value, "Просмотр зафиксирован") && InStr(disk, "После фиксации")
+        , "пауза с клавиатуры удерживает список и не останавливает журнал на диске")
+    PanelSelectView("home")
+    PanelCheck(InStr(p.homeLogRows[1].Value, "После фиксации"), "обзор по-прежнему показывает новое событие")
+    PanelSelectView("log")
+    HideGui()
+    ShowGui()
+    PanelCheck(!p.logLive.Value && p.logSearch.Value = "проверка+1" && UI.logEdit.Value == frozen
+        && PanelIsVisible(UI.btnEmergency), "пауза и запрос сохраняются при переходах между разделами и скрытии окна")
+    PanelClick(p.logReset)
+    PanelCheck(p.logSearch.Focused && p.logSearch.Value = "" && !p.logReset.Enabled
+        && InStr(UI.logEdit.Value, "Время захвата") && !InStr(UI.logEdit.Value, "После фиксации")
+        && InStr(p.logScope.Value, "4 из 4"), "сброс только запроса показывает весь зафиксированный список")
+    PanelClick(p.logLive)
+    PanelCheck(p.logLive.Value && InStr(UI.logEdit.Value, "После фиксации") && p.logScope.Value = "Показано: 5 из 5"
+        && FileRead(CFG.logFile, "UTF-8") == disk && FileRead(CFG.iniFile) == ini && !ST.running && !ST.paused
+        , "возврат к живому списку не меняет профиль, журнал или состояние сеанса")
+
+    Loop 300
+        Log("Тест предела журнала " A_Index)
+    UpdateUiStatus()
+    PanelType(p.logSearch, "После фиксации")
+    PanelCheck(p.logScope.Value = "Показано: 0 из 300" && LogBuf.Length = 300
+        && InStr(FileRead(CFG.logFile, "UTF-8"), "После фиксации"), "поиск ограничен буфером, а не файлом run.log")
+    PanelClick(p.logLive)
+    disk := FileRead(CFG.logFile, "UTF-8")
+    PanelClick(UI.gui["ClearView"])
+    PanelCheck(!p.logLive.Value && p.logSearch.Value = "После фиксации" && UI.logEdit.Value = "Новых событий пока нет."
+        && InStr(p.logScope.Value, "0 из 0") && !LogBuf.Length && FileRead(CFG.logFile, "UTF-8") == disk
+        , "очистка экрана очищает и зафиксированный список, но не запрос и не файл")
+    PanelClick(p.logReset)
+    PanelClick(p.logLive)
+    Log("Событие после очистки зафиксированного списка")
+    UpdateUiStatus()
+    PanelCheck(p.logScope.Value = "Показано: 1 из 1" && InStr(UI.logEdit.Value, "Событие после очистки зафиксированного списка")
+        , "после очистки новые записи снова видны")
 }
 
 TestPanelTheme() {
