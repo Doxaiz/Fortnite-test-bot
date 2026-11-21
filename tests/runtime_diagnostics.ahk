@@ -25,7 +25,7 @@ try {
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
             , TestQueueOutcome, TestEndHandoff, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
-            , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach
+            , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
             , TestEnemyEvidence, TestCombatPreemption, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestLocalMotion, TestFireGate, TestSoundFrames
@@ -1053,13 +1053,19 @@ CheckChestApproach() {
     Check(!TryApproach(deferred, deferred.capturedAt) && ST.walkTarget.samples.hits = 2
         , "пропуск скана не считается исчезновением объекта")
     blank := WorldFixture(126), ST.scanWork := 0
-    Check(!TryApproach(blank, blank.capturedAt) && !ST.chest && !ST.loot && !ST.walkTarget && !ST.guidedUntil
-        , "полный отрицательный скан отменяет направленный шаг")
+    Check(TryApproach(blank, blank.capturedAt) && !ST.chest && !ST.loot && ST.walkTarget.missSeq = blank.captureId
+        && !ST.walkTarget.samples.hits && ST.guidedUntil && !ST.held.Count
+        , "один отрицательный скан останавливает W, но оставляет подсказку о месте свечения")
+    Check(TryApproach(blank, blank.capturedAt) && ST.walkTarget.missSeq = blank.captureId
+        , "переиспользование пустого кадра не считается потерей цели дважды")
+    blank := WorldFixture(127), ST.scanWork := 0
+    Check(!TryApproach(blank, blank.capturedAt) && !ST.walkTarget && !ST.guidedUntil
+        , "два полных отрицательных скана завершают подход")
     shot.capturedAt := A_TickCount
     Check(WalkTo(chest.x, chest.y, shot) && !ST.held.Count, "DryRun планирует подход без удержаний")
     shot.capturedAt -= 251
     Check(!WalkTo(chest.x, chest.y, shot), "устаревший кадр не начинает подход")
-    shifted := WorldFixture(127, "gold")
+    shifted := WorldFixture(128, "gold")
     shifted.cameraSeqAtCapture -= 1
     Check(!WalkTo(chest.x, chest.y, shifted), "нужен кадр после поворота")
 
@@ -1075,13 +1081,72 @@ CheckChestApproach() {
     Check(TryApproach(near, near.capturedAt) && ST.walkTarget.samples.hits = 1 && ST.walkTarget.at = oldAt
         , "после собственной коррекции зрения подтверждаем цель снова, не продлевая весь подход")
     near := WorldFixture(135, "center"), ST.scanWork := 0, ST.walkTarget.at := near.capturedAt - 8001
-    Check(TryApproach(near, near.capturedAt) && !ST.walkTarget && ST.blindChest && !ST.guidedUntil
+    Check(TryApproach(near, near.capturedAt) && !ST.walkTarget && ST.chestSkips.Length = 1 && !ST.guidedUntil
         , "вышло время подхода: не идём за одним свечением бесконечно")
     ResetCaches()
     late := WorldFixture(136, "gold"), buf := late.buf, changes := {count:0}, ST.scanWork := 0
     late.DefineProp("buf", {Get: ChangeDuringPixelScan.Bind(late, buf, changes, "age")})
     Check(!TryApproach(late, late.capturedAt) && changes.count && !ST.walkTarget && !ST.lootMasksSeq && !ST.chestCacheSeq
         , "маски, скан которых закончился после срока кадра, не запускают подход")
+}
+
+TwoChestFrame(id, w, h, brighterRight := false) {
+    shot := WorldFixture(id), shot.w := w, shot.h := h, shot.stride := (w + 3) * 4
+    shot.buf := Buffer(shot.stride * h, 0x60)
+    ; Оба пятна проходят одни и те же фильтры, меняется только яркость.
+    bw := Round(w * 0.075 / 18) * 18, bh := Round(h * 0.125 / 18) * 18, y := Round(h * 0.49 / 18) * 18
+    bright := 0xFFCB18, dim := 0xB58030
+    FixtureRect(shot, Round(w * 0.45 / 18) * 18, y, bw, bh, brighterRight ? dim : bright)
+    FixtureRect(shot, Round(w * 0.675 / 18) * 18, y, bw, bh, brighterRight ? bright : dim)
+    shot.capturedAt := A_TickCount
+    return shot
+}
+
+TestChestSelection() {
+    WithGroundFixture(CheckChestSelection)
+}
+
+CheckChestSelection() {
+    global CFG, ST
+    CFG.scanLootMs := 0
+    for size in [[480, 288], [1365, 767]] {
+        ResetCaches()
+        w := size[1], h := size[2], label := w "×" h
+        first := TwoChestFrame(350, w, h), ST.scanWork := 0
+        Check(TryApproach(first, first.capturedAt) && ST.chest.x < w * 0.6 && ST.walkTarget.samples.hits = 1
+            , label ": первичный выбор более заметной цели слева")
+        second := TwoChestFrame(351, w, h, true), ST.scanWork := 0
+        still := FindChest(second, ScanLootMasks(second)), second.capturedAt := A_TickCount
+        Check(still && still.x > w * 0.6, label ": на одиночном кадре сосед справа действительно сильнее")
+        Check(TryApproach(second, second.capturedAt) && ST.chest.x < w * 0.6 && ST.walkTarget.samples.hits = 2
+            && ST.lastAction = "объект у прицела: жду подсказку", label ": живой выбор держит ближайшее совпадение")
+
+        missed := second.Clone(), missed.captureId := 352, missed.capturedAt := A_TickCount
+        missed.buf := Buffer(missed.stride * h, 0x60), ST.scanWork := 0
+        Check(TryApproach(missed, missed.capturedAt) && !ST.walkTarget.samples.hits && !ST.chest
+            , label ": краткая потеря: помним место, но не разрешаем идти")
+        next := TwoChestFrame(353, w, h, true), ST.scanWork := 0
+        Check(TryApproach(next, next.capturedAt) && ST.chest.x < w * 0.6 && ST.walkTarget.samples.hits = 1
+            && ST.lastAction = "свечение: жду повторный кадр", label ": после появления не идём по одному замеру")
+        ST.walkTarget.at := A_TickCount - 8001
+        expired := TwoChestFrame(354, w, h, true), ST.scanWork := 0
+        Check(TryApproach(expired, expired.capturedAt) && ST.chestSkips.Length = 1 && !ST.walkTarget && !ST.guidedUntil
+            && ST.chestAudioCooldown > A_TickCount, label ": предел подхода блокирует конкретное пятно, звук не перебивает паузу")
+        again := TwoChestFrame(355, w, h), ST.scanWork := 0
+        raw := FindChest(again, ScanLootMasks(again)), again.capturedAt := A_TickCount
+        Check(raw && raw.x < w * 0.6, label ": одиночный отчёт не переносит исключение рабочего цикла")
+        Check(TryApproach(again, again.capturedAt) && ST.chest.x > w * 0.6 && ST.walkTarget.samples.hits = 1
+            && !ST.tgt && !ST.held.Count, label ": сосед доступен сразу, но ему нужен собственный повтор")
+        Check(!ChestSpotSkipped(ActiveChestSkips(again), "chestRare", raw.x, raw.y), label ": другое свечение не заблокировано по одному цвету")
+
+        ; Координаты экрана недействительны при любом изменении вида.
+        for field in ["hwnd", "inputEpochAtCapture", "cameraSeqAtCapture", "w", "h"] {
+            changed := again.Clone(), changed.%field% += 1
+            Check(!ActiveChestSkips(changed).Length, label ": старый пропуск не переносится: " field)
+        }
+        ST.chestSkips[1].until := A_TickCount
+        Check(!ActiveChestSkips(again).Length, label ": фильтр пятна не бессрочный")
+    }
 }
 
 PromptPixels(w, h, kind) {

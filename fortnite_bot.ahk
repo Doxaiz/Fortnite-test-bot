@@ -238,7 +238,8 @@ global CFG := {
     chestGoldMax:  32000,      ; золота больше — это свечение/здание, а не сундук
     chestMaxW:     290,        ; сундук не бывает шире (при 1280)
     chestMaxH:     240,
-    badSpotMs:     42000,      ; столько не трогаем уже открытый или недоступный сундук
+    chestSkipMs:   10000,      ; на тот же участок кадра после подхода без E
+    badSpotMs:     42000,      ; прежняя пауза для лута/проверок киркой
     badSpotPx:     135,        ; радиус «того же места», px
     breakMaxPerMin: 4,         ; подходов с киркой не больше N в минуту
     breakVerifySwings: 2,      ; столько ударов без изменений картинки — бросаем
@@ -592,7 +593,7 @@ global ST := {
     guidedUntil:  0,            ; не перебивать свой короткий направленный шаг
     playInputSuspended: false,  ; приостановлены действия по пикселям, но не сцена
     playFocused: -1,            ; фокус последнего тика для этого HWND, -1 = не проверен
-    blindChest:   0,            ; до этого времени сундуки игнорируем (ложное пятно)
+    chestSkips:   [],           ; временно пропускаемые пятна, только в том же виде окна
     hpPrev:       -1,           ; прошлый HP, чтобы заметить урон
     damagedAt:    0,            ; когда по нам попали
     engageAt:     0,            ; когда начали бой с текущим врагом
@@ -3034,14 +3035,18 @@ FindChest(shot, masks := 0) {
     ; Отсекаем небо, собственный аватар, плоские стены/крыши и плохие точки.
     global CFG
     live := !IsObject(masks)
-    if live
+    prefer := 0, skips := []
+    if live {
         masks := CachedLootMasks(shot)
+        prefer := ChestFollowHint(shot)
+        skips := ActiveChestSkips(shot)
+    }
     sc := Max(0.5, shot.w / 1280.0)
     minArea := Round(CFG.chestGoldArea * sc * sc)
     maxArea := Round(CFG.chestGoldMax * sc * sc)
     maxW := Round(CFG.chestMaxW * sc), maxH := Round(CFG.chestMaxH * sc)
     cxMid := shot.w * 0.5, cyMid := shot.h * 0.5
-    best := 0, bestScore := -1
+    best := 0, bestScore := -1, followed := 0, followDist := 1.0
     for mode in ["chestGold", "chestRare"] {
         isRare := (mode = "chestRare")
         for c in LootMask(masks, mode) {
@@ -3058,7 +3063,7 @@ FindChest(shot, masks := 0) {
                 continue
             if IsOwnPlayerZone(shot, c.cx, c.cy)
                 continue
-            if (live && SpotIsBad(c.cx, c.cy))
+            if (live && (ChestSpotSkipped(skips, mode, c.cx, c.cy) || SpotIsBad(c.cx, c.cy)))
                 continue
             glow := ChestGlowInfo(shot, c, isRare)
             if (glow.core < (isRare ? 125 : 118))
@@ -3068,15 +3073,23 @@ FindChest(shot, masks := 0) {
             dist := Hypot(c.cx - cxMid, c.cy - cyMid)
             prox := Max(0.2, 1.0 - dist / (shot.w * 0.85))
             score := (c.area * (isRare ? 1.25 : 1.0) + glow.contrast * 35.0) * prox
-            if (!best || score > bestScore) {
-                best := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area
+            ; Сначала сопоставляем текущую цель, а не перескакиваем на пятно,
+            ; которое стало ярче. Сопоставление только по свежим пикселям.
+            localDist := 1.0
+            if (prefer && mode = prefer.kind && CandidateNear(prefer.samples, c.cx, c.cy, shot.w, shot.h))
+                localDist := Hypot((c.cx - prefer.samples.x) / shot.w, (c.cy - prefer.samples.y) / shot.h)
+            if (!best || score > bestScore || localDist < followDist) {
+                item := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area
                     , kind: mode, score: score, glow: glow.core
                     , drawX: c.x, drawY: c.y}
-                bestScore := score
+                if (!best || score > bestScore)
+                    best := item, bestScore := score
+                if (localDist < followDist)
+                    followed := item, followDist := localDist
             }
         }
     }
-    return best
+    return followed ? followed : best
 }
 
 FindLoot(shot, masks := 0) {
@@ -3957,6 +3970,10 @@ NewCandidateTracker() {
     return {seq:0, at:0, hits:0, x:0, y:0, view:0}
 }
 
+CandidateNear(tr, x, y, w, h) {
+    return Abs(x - tr.x) <= w * 0.10 && Abs(y - tr.y) <= h * 0.10
+}
+
 ; Подтверждение не является распознаванием: два похожих наблюдения разных
 ; снимков могут повторить одну и ту же систематическую ошибку детектора.
 ConfirmCandidate(tr, item, frameId, width, height, now, needed := 2) {
@@ -3969,9 +3986,7 @@ ConfirmCandidate(tr, item, frameId, width, height, now, needed := 2) {
         tr.seq := frameId, tr.at := now, tr.hits := 0
         return 0
     }
-    nearby := (Abs(item.cx - tr.x) <= width * 0.10)
-        && (Abs(item.cy - tr.y) <= height * 0.10)
-    if (tr.hits && now - tr.at <= CFG.confirmGapMs && nearby)
+    if (tr.hits && now - tr.at <= CFG.confirmGapMs && CandidateNear(tr, item.cx, item.cy, width, height))
         tr.hits += 1
     else
         tr.hits := 1
@@ -6252,13 +6267,58 @@ StartPromptAttempt(shot, sender := 0) {
     return true
 }
 
+ChestFollowHint(shot) {
+    global CFG, ST
+    a := ST.walkTarget
+    if (!a || a.kind = "loot")
+        return 0
+    tr := a.samples, gap := shot.capturedAt - tr.at
+    return tr.seq && shot.captureId > Max(tr.seq, a.missSeq) && gap >= 0 && gap <= CFG.confirmGapMs
+        && SameFrameView(tr.view, shot) ? a : 0
+}
+
+ActiveChestSkips(shot) {
+    global ST
+    skips := [], now := A_TickCount
+    for spot in ST.chestSkips {
+        if (now < spot.until && SameFrameView(spot.view, shot))
+            skips.Push(spot)
+    }
+    return skips
+}
+
+ChestSpotSkipped(skips, kind, x, y) {
+    for spot in skips {
+        if (spot.kind = kind && Abs(x - spot.x) <= spot.rx && Abs(y - spot.y) <= spot.ry)
+            return true
+    }
+    return false
+}
+
+SkipChestSpot(shot, target) {
+    global CFG, ST
+    if !WorldFrameCurrent(shot)
+        return false
+    ; Это координаты на экране, не в мире. Не узнаём место после поворота,
+    ; смены размеров, окна или поколения ввода и не блокируем весь поиск.
+    spots := ActiveChestSkips(shot), now := A_TickCount
+    while (spots.Length >= 8)
+        spots.RemoveAt(1)
+    spots.Push({kind:target.kind, x:target.x, y:target.y, view:FrameView(shot), until:now + CFG.chestSkipMs
+        , rx:Max(6, Min(shot.w * 0.05, target.w * 0.6)), ry:Max(6, Min(shot.h * 0.06, target.h * 0.6))})
+    ST.chestSkips := spots
+    ; Не возвращаться сразу на тот же сигнал из-за другой ветки поиска.
+    ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := Max(ST.chestAudioCooldown, now + 2000)
+    LogThrottledKey("[chest-skip]", "[chest] Нет подсказки после подхода; пропускаю пятно в ("
+        . target.x "," target.y ") на " Round(CFG.chestSkipMs / 1000) " с в этом виде. Ищу дальше.")
+    return true
+}
+
 TryApproach(shot, now) {
     global CFG, ST
     if (!CFG.featMove || ST.enemy || ST.breakTarget || !WorldFrameCurrent(shot))
         return false
-    if (ST.blindChest && now >= ST.blindChest)
-        ST.blindChest := 0
-    chest := (CFG.featChest && !ST.blindChest) ? CachedChest(shot) : 0
+    chest := CFG.featChest ? CachedChest(shot) : 0
     if (ST.chestCacheSeq != shot.captureId)
         chest := 0
     loot := (!chest && CFG.featLoot && WorldFrameCurrent(shot)) ? CachedLoot(shot) : 0
@@ -6267,41 +6327,50 @@ TryApproach(shot, now) {
     if !WorldFrameCurrent(shot)
         return false
     ST.chest := chest, ST.loot := loot
-    target := chest ? chest : loot
+    target := chest ? chest : loot, approach := ST.walkTarget
+    tr := approach ? approach.samples : 0
+    if (approach && (shot.captureId <= Max(tr.seq, approach.missSeq) || shot.capturedAt < tr.at))
+        return !!target || ST.lootMasksSeq = shot.captureId
     if !target {
-        if (ST.lootMasksSeq = shot.captureId && ST.walkTarget) {
+        if (ST.lootMasksSeq = shot.captureId && approach) {
             HaltMatchMovement()
+            if (CFG.featChest && !approach.missSeq && ChestFollowHint(shot)) {
+                ; Краткое мерцание: W уже отпущена. Храним центр на один скан,
+                ; но два положительных замера придётся получить заново.
+                approach.missSeq := shot.captureId, tr.hits := 0
+                ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
+                ST.lastAction := "свечение пропало: жду следующий замер"
+                return true
+            }
             ST.walkTarget := 0
         }
         return false
     }
     kind := chest ? chest.kind : "loot"
-    approach := ST.walkTarget
-    if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd
+    otherSpot := tr && tr.seq && SameFrameView(tr.view, shot) && !CandidateNear(tr, target.x, target.y, shot.w, shot.h)
+    if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd || otherSpot
         || approach.epoch != shot.inputEpochAtCapture || approach.w != shot.w || approach.h != shot.h
         || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
         approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture
-            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false}
-        ST.walkTarget := approach
+            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false, missSeq:0}
+        ST.walkTarget := approach, tr := approach.samples
     }
-    tr := approach.samples
-    if (shot.captureId <= tr.seq || shot.capturedAt < tr.at)
-        return true
-    approach.last := now
+    approach.last := now, approach.missSeq := 0
+    ; Дважды видим похожий центр, прежде чем идти к нему. После поворота
+    ; подтверждаем снова, но 8-секундный предел всего подхода остаётся.
+    point := {cx:target.x, cy:target.y}
+    confirmed := ConfirmWorldCandidate(tr, shot, point, 2)
     if (now - approach.at > 8000) {
-        if chest
-            ST.blindChest := now + 10000
-        else
+        if (chest && confirmed)
+            SkipChestSpot(shot, target)
+        else if !chest
             MarkBadSpot(target.x, target.y, "подход без подсказки")
         ST.walkTarget := 0
         HaltMatchMovement()
         LogThrottledKey("[approach-limit]", "[~] Подход за 8 с не дал подсказку; прекращаю попытку.")
         return true
     }
-    ; Дважды видим похожий центр, прежде чем идти к нему. После поворота
-    ; подтверждаем снова, но 8-секундный предел всего подхода остаётся.
-    point := {cx:target.x, cy:target.y}
-    if !ConfirmWorldCandidate(tr, shot, point, 2) {
+    if !confirmed {
         HaltMatchMovement()
         ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
         ST.lastAction := "свечение: жду повторный кадр"
@@ -7081,7 +7150,7 @@ ResetCaches() {
     ST.scanDensityAt := 0, ST.scanSoundAt := 0
     ST.soundCache := 0, ST.sound := 0, ST.soundCacheSeq := 0, ST.soundRing := 0
     ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := 0
-    ST.walkTarget := 0, ST.blindChest := 0, ST.guidedUntil := 0
+    ST.walkTarget := 0, ST.chestSkips := [], ST.guidedUntil := 0
     CancelInteraction()
     ST.lootMasksAt := 0, ST.chestCacheAt := 0, ST.lootMasksSeq := 0, ST.lootCacheSeq := 0, ST.chestCacheSeq := 0
     ST.enemyCache := 0, ST.chestCache := 0, ST.lootCache := 0, ST.lootMasks := 0

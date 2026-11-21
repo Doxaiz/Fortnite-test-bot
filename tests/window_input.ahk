@@ -43,7 +43,7 @@ RunWindowTests() {
         Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
-            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestResultBlink] {
+            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestResultBlink] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -323,6 +323,27 @@ TestGuidedRecovery(a, b) {
     ExpectKey(b, SC.e, 1, 1)
 }
 
+TestChestFallback(a, b) {
+    global CFG, ST, SC
+    CFG.dryRun := true, CFG.featChest := true
+    ResetCaches()
+    SetFixtureFrame(b, 9)
+    shot := TickFixture(b)
+    Check(ST.chestCacheSeq = shot.captureId && ST.chest.x < shot.w * 0.6 && ST.walkTarget.samples.hits = 1
+        , "на первом реальном кадре выбирается яркое свечение у центра")
+    ST.walkTarget.at := A_TickCount - 8001
+    TickFixture(b)
+    Check(ST.chestSkips.Length = 1 && !ST.walkTarget, "срок подхода исключает только этот центр")
+    shot := TickFixture(b)
+    Check(ST.chestCacheSeq = shot.captureId && ST.chest.x > shot.w * 0.6 && ST.walkTarget.samples.hits = 1
+        , "на следующем захвате того же вида читается другой кандидат")
+    TickFixture(b)
+    Check(ST.walkTarget.samples.hits = 2 && ST.lastAction = "к свечению сундука" && !ST.tgt && !ST.held.Count
+        , "сосед подтверждён независимо; DryRun не нажимает E и не двигает мышь")
+    ExpectKey(b, SC.w, 3, 3)
+    ExpectKey(b, SC.e, 1, 1)
+}
+
 TestResultBlink(a, b) {
     global CFG, ST
     CFG.dryRun := true, CFG.featPlayAgain := true, CFG.featChest := false, CFG.endAction := "play_again"
@@ -407,7 +428,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 9
+    Loop 10
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -483,7 +504,7 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    if (scene < 7) {
+    if (scene < 7 || scene = 9) {
         PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -507,6 +528,10 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 6)
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
+    if (scene = 9) {
+        PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)
+        PaintFixture(buf, w, 324, 144, 36, 36, 0xB58030)
+    }
     if (scene = 7) {
         PaintFixture(buf, w, 288, 96, 112, 22, 0xCBCB00)
         PaintFixture(buf, w, 335, 104, 20, 8, 0x010101)
