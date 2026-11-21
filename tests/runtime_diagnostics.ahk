@@ -736,6 +736,10 @@ CheckNavigation() {
     second := NavFixture(61, "busy")
     Check(SteerOpenSpace(second, second.capturedAt) && ST.navSteerAt && ST.navTurnSign = -1
         && !ST.segUntil && !ST.lastObsJump, "плотная преграда: освобождаем W и выбираем боковой обзор вместо прыжка")
+    outdated := NavFixture(62, "lip"), buf := outdated.buf, changes := {count:0}, prior := ST.navInfo
+    outdated.DefineProp("buf", {Get: ChangeDuringPixelScan.Bind(outdated, buf, changes, "age")})
+    Check(!RefreshNavigation(outdated) && changes.count && ST.navInfo = prior
+        , "если кадр устарел во время скана, оценка и подтверждение не обновляются")
     ResetNavigation()
     Check(!ST.lastObsJump && !ST.navInfo && !ST.patrolLeaseAt, "у нового матча чистая навигация")
 }
@@ -1030,6 +1034,11 @@ CheckChestApproach() {
     near := WorldFixture(135, "center"), ST.scanWork := 0, ST.walkTarget.at := near.capturedAt - 8001
     Check(TryApproach(near, near.capturedAt) && !ST.walkTarget && ST.blindChest && !ST.guidedUntil
         , "вышло время подхода: не идём за одним свечением бесконечно")
+    ResetCaches()
+    late := WorldFixture(136, "gold"), buf := late.buf, changes := {count:0}, ST.scanWork := 0
+    late.DefineProp("buf", {Get: ChangeDuringPixelScan.Bind(late, buf, changes, "age")})
+    Check(!TryApproach(late, late.capturedAt) && changes.count && !ST.walkTarget && !ST.lootMasksSeq && !ST.chestCacheSeq
+        , "маски, скан которых закончился после срока кадра, не запускают подход")
 }
 
 PromptPixels(w, h, kind) {
