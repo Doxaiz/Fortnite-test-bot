@@ -91,11 +91,12 @@ global CFG := {
     featParkour:   true,    ; прыжок при низком уступе или метке выстрела
     featCrouchFight: true,  ; приседать в перестрелке и на дальней дистанции
     featAds:       true,    ; удерживать прицел (ПКМ) на средней и дальней дистанции
-    featProStyle:  true,    ; стиль про-игрока: укрытие, выход из Бури, смена оружия
-    featCover:     false,   ; ставить укрытие (стену) — включите, когда зададите клавишу
-    buildWall:     "",      ; клавиша «стена» в Fortnite (напр. F1 или Mouse4) — ПРОВЕРЬТЕ
-    proFightMaxMs: 12000,   ; при низком HP и затяжном бое — манёвр отхода
-    proRetreatHp:  42,      ; HP ниже этого под плотным огнём — уход за укрытие
+    featProStyle:  true,    ; разрешить короткий боковой отход в бою
+    buildWall:     "",      ; сохраняем ключ старого профиля, не ставим стену вслепую
+    proFightMaxMs: 12000,   ; при низком HP и затяжном бое — проба отхода
+    proRetreatHp:  42,      ; порог известного HP для решения об отходе
+    proRetreatMs:  420,     ; один боковой шаг без ожидания внутри тика
+    proRetreatGapMs: 5000,  ; не повторять сразу после предыдущего шага
     proHealPct:    75,      ; после боя уведомление о низком HP
     damageDrop:    6,       ; падение HP (%), при котором срабатывает разворот на атаку
     fightBackMs:   5500,    ; окно активного ответа на полученный урон
@@ -597,8 +598,8 @@ global ST := {
     chestSkips:   [],           ; временно пропускаемые пятна, только в том же виде окна
     hpPrev:       -1,           ; прошлый HP, чтобы заметить урон
     damagedAt:    0,            ; когда по нам попали
-    engageAt:     0,            ; когда начали бой с текущим врагом
-    retreatAt:    0,            ; когда ушли в укрытие
+    retreat:      0,            ; отдельное удержание бокового шага
+    retreatAt:    0,            ; начало последней попытки отхода
     lastTickAt:   0,            ; когда начался последний цикл (сторож)
     tickBusy:     false,        ; флаг может сбрасываться сторожем принудительно
     tickLiveCount: 0,           ; сколько вызовов Tick ещё не вернулись, включая старые поколения
@@ -686,7 +687,6 @@ global ST := {
     lastError:    0,            ; когда была последняя ошибка
     pendingSince: 0,            ; когда начали ждать подтверждения сцены
     focusLostAt:  0,            ; когда впервые заметили, что игра не в фокусе
-    coverCount:   0,            ; сколько раз ставили укрытие
     mmErrors:     0,
     endFirstSeen: 0,
     endRetry:     0,
@@ -4703,19 +4703,19 @@ ReadNavLane(shot, lo, hi) {
 
 ScanNavCorridors(shot, prefer := 1) {
     l := ReadNavLane(shot, 0.15, 0.34), c := ReadNavLane(shot, 0.39, 0.61), r := ReadNavLane(shot, 0.66, 0.85)
-    kind := c.kind, turn := 0
+    kind := c.kind
     ; Полоса поперёк всего обзора не похожа на локальный уступ.
     if (kind = "lip" && l.row && r.row && Abs(l.row - c.row) <= 1 && Abs(r.row - c.row) <= 1)
         kind := "busy"
-    if (kind = "busy" || kind = "lip") {
-        if (l.kind = "clear" && r.kind = "clear")
-            turn := Abs(l.score - r.score) < 8 ? prefer : (l.score > r.score ? -1 : 1)
-        else if (l.kind = "clear")
-            turn := -1
-        else if (r.kind = "clear")
-            turn := 1
-    }
-    return {kind:kind, row:c.row, turn:turn, left:l.score, center:c.score, right:r.score}
+    side := 0
+    if (l.kind = "clear" && r.kind = "clear")
+        side := Abs(l.score - r.score) < 8 ? prefer : (l.score > r.score ? -1 : 1)
+    else if (l.kind = "clear")
+        side := -1
+    else if (r.kind = "clear")
+        side := 1
+    turn := (kind = "busy" || kind = "lip") ? side : 0
+    return {kind:kind, row:c.row, turn:turn, side:side, left:l.score, center:c.score, right:r.score}
 }
 
 NavKindRu(kind) {
@@ -4743,8 +4743,9 @@ RefreshNavigation(shot) {
     try {
         if !WorldFrameCurrent(shot)
             return false
-        similar := same && shot.capturedAt - prior.at <= CFG.confirmGapMs && prior.kind = n.kind
-            && (n.kind != "lip" || Abs(prior.row - n.row) <= 1)
+        recent := same && shot.capturedAt - prior.at <= CFG.confirmGapMs
+        similar := recent && prior.kind = n.kind && (n.kind != "lip" || Abs(prior.row - n.row) <= 1)
+        n.sideStable := recent && n.side && prior.side = n.side
         ; Подтверждение уступа не теряется от смены предпочтительного обхода.
         stable := similar && (n.kind = "lip" || n.turn = prior.turn)
         n.hits := stable ? Min(2, prior.hits + 1) : 1
@@ -5458,7 +5459,7 @@ ReleaseKeys() {
     global ST
     for code, _ in ST.held.Clone()
         KeyUp(code)
-    ST.held := Map()
+    ST.held := Map(), ST.retreat := 0
     ReleaseMouseButtons()
     ST.sprintOn := false, ST.crouchOn := false
 }
@@ -5503,7 +5504,7 @@ ReleaseKeysSafe() {
                 ForceKeyUp(code)
         }
     }
-    ST.held := Map()
+    ST.held := Map(), ST.retreat := 0
     ST.sprintOn := false, ST.crouchOn := false
     ReleaseMouseButtons()
 }
@@ -5881,7 +5882,7 @@ StopMove() {
 ClearMatchStrafe() {
     global ST, SC
     KeyUp(SC.a), KeyUp(SC.s), KeyUp(SC.d)
-    ST.strafeKey := "", ST.strafeFlipAt := 0
+    ST.retreat := 0, ST.strafeKey := "", ST.strafeFlipAt := 0
     ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
 }
 
@@ -6703,7 +6704,7 @@ Combat(shot, now) {
         ST.enemyFirstAt := shot.capturedAt
     ST.combatAt := combatNow
     CancelInteraction()
-    if ProDecision(shot, combatNow)
+    if (TryCombatRetreat(shot, combatNow) || !WorldFrameCurrent(shot))
         return true
 
     ST.enemyHits := Max(ST.enemyConfirm.hits, ST.enemyWideConfirm.hits)
@@ -7169,6 +7170,7 @@ ResetCaches() {
     ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := 0
     ST.walkTarget := 0, ST.chestSkips := [], ST.guidedUntil := 0
     CancelInteraction()
+    CancelRetreatStep()
     ST.lootMasksAt := 0, ST.chestCacheAt := 0, ST.lootMasksSeq := 0, ST.lootCacheSeq := 0, ST.chestCacheSeq := 0
     ST.enemyCache := 0, ST.chestCache := 0, ST.lootCache := 0, ST.lootMasks := 0
     ST.scanEnemyFastAt := 0, ST.scanWideAt := 0, ST.scanDmgAt := 0
@@ -9048,89 +9050,94 @@ HandleMatchmaking(shot, now) {
 ; ============================================================================
 ;                            ПОВЕДЕНИЕ В МАТЧЕ
 ; ============================================================================
-; Логика «как играют про» — то, что реально переносится на бота, который видит
-; только цвета (по разборам игры Malibuca, Kiryache, Toose, Letw1k3, SwizzY):
-;   1) сначала оружие, потом всё остальное (без оружия в бой не лезем);
-;   2) материалы не копятся «на потом» — фармятся между боями;
-;   3) под огнём и с низким HP — укрытие и отход, а не размен;
-;   4) за киллами не гоняемся: бой дольше proFightMaxMs — уходим;
-;   5) не угадываем «чужой бой» по одному кандидату и низкому HP;
-;   6) автоматическое лечение приостановлено до распознавания предметов.
-ProDecision(shot, now) {
-    global CFG, ST, SC
-    TraceStep("про-решения")
-    if !CFG.featProStyle
-        return false
+RetreatModeAllowed() {
+    global CFG, ST
+    return CFG.botMode = "auto" && CFG.featProStyle && CFG.featCombat && CFG.featMove && !CFG.teamSafe
+        && ST.state = "GAME" && (ST.phase = "loot" || ST.phase = "roam")
+        && !ST.queuePending && !ST.cancelHold && !ST.leaveActive
+}
 
-    ; Один кандидат и низкий HP не доказывают, что это чужой бой.
-    ; ---- 1) бой затянулся -> выходим из него ----
-    ; v7.5: раньше «8 секунд в бою» считались от ПЕРВОГО кадра с врагом, и уход
-    ; срабатывал даже когда враг стоял прямо перед нами: бот разворачивался и
-    ; уходил вместо стрельбы (run-20.log: «бой идёт дольше 8 с — ухожу» восемь
-    ; раз подряд при «враг да»). Теперь уходим, только если бой не складывается:
-    ; нас сильно пробили.
-    if ST.enemy {
-        if !ST.engageAt
-            ST.engageAt := now
-        fightBad := ((ST.hpPercent >= 0) && (ST.hpPercent < CFG.proRetreatHp))
-        if ((now - ST.engageAt > CFG.proFightMaxMs) && fightBad) {
-            ST.engageAt := 0
-            Log("[i] бой идёт дольше " Round(CFG.proFightMaxMs / 1000) " с и HP "
-                . ST.hpPercent "% — отхожу (как делают про)")
-            StopMove()
-            TurnBy((Random(0, 1) ? 1 : -1) * RndF(360, 480), 0, 520)
-            KeyDown(SC.w)
-            if (Random(0, 99) < 60)
-                SprintSet(true)
-            SleepC(Random(900, 1400))
-            ReleaseKeys()
-            ST.segUntil := 0
-            ST.damagedAt := 0
-            return true
-        }
-    } else
-        ST.engageAt := 0, ST.enemyHits := 0
-    ; врага видно, HP в порядке, только что стреляли -> из боя не выходим
-    if (ST.enemy && (now - ST.combatAt < 1200))
+TryCombatRetreat(shot, now) {
+    global CFG, ST
+    if (!RetreatModeAllowed() || ST.retreat || !EnemyOnFrame(shot, ST.enemy)
+        || !FrameHasMatchHud(shot) || !shot.HasOwnProp("healthReading")
+        || (ST.retreatAt && now - ST.retreatAt < CFG.proRetreatGapMs))
         return false
+    hp := shot.healthReading.hp.pct
+    if (hp < 0 || hp >= CFG.proRetreatHp)
+        return false
+    dropped := ST.damagedAt && now >= ST.damagedAt && now - ST.damagedAt < 3000
+    longFight := ST.enemyFirstAt && now - ST.enemyFirstAt >= CFG.proFightMaxMs
+    if (!dropped && !longFight)
+        return false
+    ; Падение HP само по себе не причина для движения. При повторном
+    ; кандидате в бою используем только свежую согласованную оценку стороны.
+    RefreshNavigation(shot)
+    nav := ST.navInfo
+    if (!nav || nav.seq != shot.captureId || !nav.sideStable || !SameFrameView(nav.view, shot)
+        || !StartCombatRetreatStep(shot, nav.side))
+        return false
+    ST.moveMode := "боковой отход"
+    ST.lastAction := (CFG.dryRun ? "DryRun: " : "") "короткий шаг " (nav.side < 0 ? "влево" : "вправо")
+    Log("[retreat] " ST.lastAction " · HP " hp "% · " (dropped ? "недавнее снижение HP" : "затяжной бой")
+        . " · кадр #" shot.captureId "; укрытие не подтверждено.")
+    return true
+}
 
-    ; ---- 2) нас бьют, а HP низкий -> укрытие и отход ----
-    if (ST.damagedAt && now - ST.damagedAt < 3000 && ST.hpPercent >= 0 && ST.hpPercent < CFG.proRetreatHp) {
-        if (now - ST.retreatAt > 5000) {
-            ST.retreatAt := now
-            Log("[!] HP " ST.hpPercent "% под огнём — ухожу в укрытие")
-            StopMove()
-            if (CFG.zeroBuild) {
-                ; Zero Build: строить нельзя, укрытием служит рельеф и стрейф.
-                ; Раньше в этом режиме бот жал клавишу постройки и тратил
-                ; полсекунды на стену, которой не будет.
-                LogThrottledKey("[zerobuild]", "[i] Zero Build: стену не ставлю —"
-                    . " ухожу за естественное укрытие (стрейф/прыжок)")
-            } else if (CFG.featCover && CFG.buildWall != "" && !CFG.dryRun) {
-                TapKey(CFG.buildWall, 70)
-                Sleep(Random(140, 240))
-                if !MouseDown("стена укрытия") {
-                    LogThrottledKey("[bgcover]", "[i] фон-режим: стену мышью не поставить — убегаю")
-                } else {
-                    Sleep(90)
-                    MouseUp()
-                }
-                ST.coverCount += 1
-                Log("[+] Поставил стену укрытия (всего " ST.coverCount ")")
-            } else if (CFG.featCover) {
-                Log("[dry-run] поставил бы стену (" (CFG.buildWall = "" ? "клавиша не задана" : CFG.buildWall) ")")
-            }
-            TurnBy((Random(0, 1) ? 1 : -1) * RndF(300, 420), 0, 520)
-            KeyDown(SC.s)
-            SleepC(Random(700, 1100))
-            KeyUp(SC.s)
-            ST.segUntil := 0
-            return true
-        }
+StartCombatRetreatStep(shot, side) {
+    global CFG, SC, ST
+    if ((side != -1 && side != 1) || !RetreatModeAllowed() || ST.retreat
+        || !WorldFrameCurrent(shot) || !FrameHasMatchHud(shot))
+        return false
+    HaltMatchMovement()
+    ReleaseMouseButtons()
+    TickCheck("перед шагом отхода")
+    ; Отпускание ПКМ могло изменить поле зрения; нужен следующий кадр.
+    if (!WorldFrameCurrent(shot) || !RetreatModeAllowed())
+        return false
+    code := (side < 0) ? SC.a : SC.d
+    hold := 0, dry := CFG.dryRun, accepted := false
+    if !dry {
+        if !KeyDown(code, shot.inputEpochAtCapture, 0, shot)
+            return false
+        hold := ST.held.Get(code, 0)
     }
+    prev := Critical("On")
+    try {
+        if (!WorldFrameCurrent(shot) || !RetreatModeAllowed() || CFG.dryRun != dry
+            || (!dry && (!hold || ST.held.Get(code, 0) != hold || !InputReleaseLater("key", code, CFG.proRetreatMs))))
+            return false
+        ST.retreatAt := A_TickCount
+        ST.retreat := {key:code, hold:hold, until:ST.retreatAt + CFG.proRetreatMs, view:FrameView(shot)}
+        accepted := true
+        return true
+    } finally {
+        Critical(prev)
+        if (!accepted && hold)
+            KeyUp(code, hold)
+    }
+}
 
-    ; Лечение только через TryHeal: неизвестный слот может быть оружием.
-    return false
+CancelRetreatStep() {
+    global ST
+    step := ST.retreat, ST.retreat := 0
+    if (step && step.hold)
+        KeyUp(step.key, step.hold)
+}
+
+ContinueRetreatStep(shot) {
+    global CFG, ST
+    step := ST.retreat
+    if !step
+        return false
+    ; Не продлеваем удержание. Таймер отпустит клавишу даже без нового тика.
+    ownsKey := CFG.dryRun ? !step.hold : step.hold && ST.held.Get(step.key, 0) = step.hold
+    if (!ownsKey || A_TickCount >= step.until || !RetreatModeAllowed() || !WorldFrameCurrent(shot)
+        || !FrameHasMatchHud(shot) || !SameFrameView(step.view, shot)) {
+        CancelRetreatStep()
+        return false
+    }
+    return true
 }
 
 ; Снижение HP и красная дуга дают повод посмотреть в сторону звука,
@@ -9338,6 +9345,7 @@ EnsureWeapon(now) {
 Roam(shot, now) {
     global CFG, SC, ST
     if !WorldFrameCurrent(shot) {
+        CancelRetreatStep()
         LogThrottledKey("[world-late]", "[i] После захвата/сцены нет актуального кадра для матча ("
             . (A_TickCount - shot.capturedAt) " мс); жду следующий.", 5000)
         return
@@ -9356,6 +9364,8 @@ Roam(shot, now) {
         ST.lastAction := "жду подтверждение HUD матча"
         return
     }
+    if ContinueRetreatStep(shot)
+        return
     ; Первый поиск E не отбираем у подсказки. Во время удержания/проверки E
     ; остаётся шанс увидеть опасность, но прервать E может только свежий повтор.
     combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && (ST.tgt
@@ -9377,8 +9387,6 @@ Roam(shot, now) {
         return
     }
 
-    if ProDecision(shot, now)
-        return
     ; Следим за направленным W до его продления. Подтверждённые E и бой
     ; уже обработаны выше; они по-прежнему могут прервать обход.
     watchGuided := ST.guidedUntil || ST.stuckRecoverUntil
@@ -10002,8 +10010,9 @@ AbortCleanup() {
         try KeyUp(ST.tapKey)
         ST.tapKey := ""
     }
-    ; Ни E, ни очередь не остаются зажатыми при прерывании тика.
+    ; Ни E, ни боковой шаг отхода, ни очередь не оставляем при прерывании тика.
     try CancelInteraction()
+    try CancelRetreatStep()
     ReleaseMouseButtons()
 }
 
@@ -10394,7 +10403,7 @@ TickBody(profile) {
             AntiAfkReset()
             ST.phase := "", ST.phaseAt := 0, ST.busJumped := false, ST.glideDeploys := 0
             ST.weaponTries := 0, ST.lastWeaponT := 0
-            ST.hpPrev := -1, ST.damagedAt := 0, ST.tgt := 0
+            ST.hpPrev := -1, ST.damagedAt := 0, ST.tgt := 0, ST.retreatAt := 0
         }
         if (scene != "GAME") {
             AntiAfkReset()
@@ -10455,7 +10464,7 @@ TickBody(profile) {
             ST.hpPrev := -1
         } else {
             if (ST.hpPrev >= 0 && ST.hpPrev - hbNow.hp.pct >= CFG.damageDrop) {
-                ST.damagedAt := A_TickCount
+                ST.damagedAt := shot.capturedAt
                 LogThrottledKey("[hpdrop]", "[?] HP снизился " ST.hpPrev " -> " hbNow.hp.pct
                     . "; причина не установлена (противник, буря или ошибка оценки)")
             }
@@ -13210,7 +13219,7 @@ SetAutomaticFeatures() {
             , "featWeaponPick", "featFightBack", "featProStyle"
             , "featParkour", "featCrouchFight", "featAds", "sprint"]
         CFG.%k% := true
-    CFG.zeroBuild := true, CFG.featCover := false
+    CFG.zeroBuild := true
 }
 
 OnTeamModeChange() {
@@ -13219,6 +13228,7 @@ OnTeamModeChange() {
     ST.combatBrakeUntil := 0, ST.combatMoveUntil := 0
     SaveSettings()
     if CFG.teamSafe {
+        CancelRetreatStep()
         Log("[i] Команда: автоматическое наведение и огонь отключены.")
         Flash("Команда — бой вручную", 2500)
     } else {
@@ -13468,7 +13478,7 @@ ResetSceneEvidence() {
     ST.hudSlots := 0.0, ST.hudHp := 0
     ST.hpPercent := -1, ST.shPercent := -1
     ST.lastShot := 0, ST.lastShotAt := 0, ST.prevShot := 0
-    ST.deadSince := 0, ST.hpPrev := -1
+    ST.deadSince := 0, ST.hpPrev := -1, ST.retreatAt := 0
     ST.uiBoxCache := 0, ST.uiBoxSeq := 0
     ResetEndHandoff()
 }

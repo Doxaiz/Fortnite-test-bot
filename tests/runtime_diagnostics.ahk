@@ -27,7 +27,7 @@ try {
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
-            , TestEnemyEvidence, TestCombatPreemption, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
+            , TestEnemyEvidence, TestCombatPreemption, TestCombatRetreat, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
             test()
@@ -1574,6 +1574,84 @@ CheckCombatPreemption() {
     ST.enemyVelX := -100, ST.lastFire := 0
     Check(Combat(aim, aim.capturedAt) && ST.shots = shots && !ST.held.Count
         , "одного прогнозируемого попадания в прицел недостаточно для очереди")
+}
+
+TestCombatRetreat() {
+    WithGroundFixture(CheckCombatRetreat)
+}
+
+RetreatFixture(id, hp := 32, passage := "busy") {
+    global ST
+    shot := NavFixture(id, passage)
+    shot.hudEvidence := {confirmed:true}, shot.healthReading := {hp:{pct:hp}}
+    ; В этой проверке подаём уже подтверждённую цель. Пиксели пути
+    ; читаются реально; полный захват, HUD и бой проверяются на HWND.
+    enemy := {src:"движение", cx:shot.w / 2, cy:shot.h / 2, w:16, h:32, dist:0}
+    ST.enemy := enemy, ST.enemyCache := enemy, ST.enemySeenSeq := id, ST.enemySeenAt := shot.capturedAt
+    ST.enemyView := FrameView(shot), shot.enemyReading := enemy
+    return shot
+}
+
+CheckCombatRetreat() {
+    global CFG, ST, SC
+    CFG.featProStyle := true, CFG.navScanMs := 0, CFG.aimReactMs := 0
+    ST.enemyFirstAt := A_TickCount, ST.retreatAt := 0
+    ST.queuePending := false, ST.cancelHold := false, ST.leaveActive := false
+    id := 501, damage := A_TickCount
+    ST.damagedAt := damage
+    healthy := RetreatFixture(++id, 80)
+    Check(!TryCombatRetreat(healthy, healthy.capturedAt) && !ST.navInfo, "при достаточном HP не перебиваем бой")
+    unknown := RetreatFixture(++id, -1), ST.hpPercent := 25
+    Check(!TryCombatRetreat(unknown, unknown.capturedAt) && !ST.navInfo, "старый HP не заменяет чтение на кадре")
+    hudless := RetreatFixture(++id), hudless.hudEvidence := {confirmed:false}
+    Check(!TryCombatRetreat(hudless, hudless.capturedAt) && !ST.navInfo, "без подтверждения HUD не отходим")
+    dropOnly := RetreatFixture(++id), ST.enemySeenSeq -= 1
+    Check(!TryCombatRetreat(dropOnly, dropOnly.capturedAt) && !ST.navInfo, "падение HP и старая цель не дают отход")
+    ST.damagedAt := damage - 3001
+    low := RetreatFixture(++id)
+    Check(!TryCombatRetreat(low, low.capturedAt) && !ST.navInfo, "низкий HP без свежего события не отменяет бой")
+    ST.damagedAt := damage
+    Loop 2 {
+        flat := RetreatFixture(++id, 32, "flat")
+        Check(!TryCombatRetreat(flat, flat.capturedAt) && !ST.navInfo.side, "без видимого бокового прохода не шагаем вслепую")
+    }
+    first := RetreatFixture(++id)
+    Check(!TryCombatRetreat(first, first.capturedAt) && ST.navInfo.side = -1 && !ST.navInfo.sideStable
+        && !TryCombatRetreat(first, first.capturedAt), "одного кадра слева недостаточно, повтор чтения не считается")
+    ST.cameraSeq += 1
+    turned := RetreatFixture(++id)
+    Check(!TryCombatRetreat(turned, turned.capturedAt) && !ST.navInfo.sideStable, "после поворота нужен новый повтор прохода")
+    late := RetreatFixture(++id), late.capturedAt := A_TickCount - 251
+    Check(!TryCombatRetreat(late, A_TickCount) && ST.navInfo.seq = turned.captureId, "старый кадр не подтверждает проход")
+
+    current := RetreatFixture(++id)
+    CFG.teamSafe := true
+    Check(!TryCombatRetreat(current, current.capturedAt), "в Команде нет автоматического отхода")
+    CFG.teamSafe := false, CFG.featMove := false
+    Check(!TryCombatRetreat(current, current.capturedAt), "без ходьбы нет бокового шага")
+    CFG.featMove := true
+    ST.segUntil := A_TickCount + 3000
+    shots := ST.shots, camera := ST.cameraSeq
+    Check(Combat(current, current.capturedAt) && ST.retreat && ST.retreat.key = SC.a
+        && ST.navInfo.sideStable && ST.shots = shots && ST.cameraSeq = camera
+        && !ST.segUntil && !ST.held.Count, "две оценки дали короткий шаг вместо очереди, поворота и патруля")
+    step := ST.retreat, deadline := step.until, triedAt := ST.retreatAt
+    prompt := WorldFixture(++id, "prompt")
+    RunFixtureRoam(prompt)
+    Check(ST.retreat = step && step.until = deadline && !prompt.HasOwnProp("promptReading") && ST.shots = shots
+        , "короткий шаг не продлевается и не совмещается с E или боем")
+    noHud := WorldFixture(++id)
+    Check(!ContinueRetreatStep(noHud) && !ST.retreat && ST.retreatAt = triedAt, "при потере HUD шаг отменяется, пауза сохраняется")
+    next := RetreatFixture(++id)
+    Check(!TryCombatRetreat(next, next.capturedAt) && !ST.retreat && ST.retreatAt = triedAt, "не начинаем новую попытку подряд")
+
+    ST.retreatAt := 0, ST.damagedAt := 0, ST.enemyFirstAt := A_TickCount - CFG.proFightMaxMs - 1
+    next := RetreatFixture(++id)
+    Check(TryCombatRetreat(next, next.capturedAt) && ST.retreat, "затянувшийся бой с низким HP тоже разрешает шаг")
+    ST.inputEpoch += 1
+    renewed := RetreatFixture(++id)
+    Check(!ContinueRetreatStep(renewed) && !ST.retreat && !ST.held.Count
+        , "новое поколение кадра не продолжает старый шаг")
 }
 
 TestCombatScanFreshness() {

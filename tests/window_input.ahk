@@ -43,7 +43,8 @@ RunWindowTests() {
         Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
-            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestResultBlink
+            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
+            , TestResultBlink
             , TestReturnOnlyResults] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
@@ -345,6 +346,60 @@ TestChestFallback(a, b) {
     ExpectKey(b, SC.e, 1, 1)
 }
 
+TestCombatRetreat(a, b) {
+    global CFG, ST, SC
+    Check(CFG.dryRun && CFG.bgMode && GetGameWindow() = b && !WinActive("ahk_id " b)
+        , "боевое решение только в DryRun; позднее A только в тестовом фоне")
+    CFG.featCombat := true, CFG.featProStyle := true, CFG.featChest := false, CFG.featMove := true
+    CFG.featMotionEnemy := true, CFG.enemyFastMs := 0, CFG.skinWideMs := 60000, CFG.aimReactMs := 0
+    ; На кадре 480 px реальная полоса <42% короче общего порога 70 px.
+    hudRun := CFG.hudDetectRun, CFG.hudDetectRun := 26
+    CFG.navScanMs := 0, CFG.proRetreatMs := 600
+    ResetCaches()
+    ResetNavigation()
+    ST.hpPrev := -1, ST.damagedAt := 0, ST.retreatAt := 0, ST.prevShot := 0
+    ST.phase := "roam", ST.queuePending := false, ST.cancelHold := false
+    ST.scanWideAt := A_TickCount, ST.cameraAt := 0, ST.stepBoost := 0
+    shots := ST.shots
+    try {
+        SetFixtureFrame(b, 13)
+        TickFixture(b)
+        Check(ST.hpPercent = 100 && ST.navInfo.side = -1 && !ST.navInfo.sideStable && !ST.retreat
+            , "полная полоса HP и первая оценка боковых полос в окне")
+        SetFixtureFrame(b, 14)
+        first := TickFixture(b)
+        Check(first.enemyReading && ST.enemySeenSeq != first.captureId && ST.damagedAt = first.capturedAt
+            && ST.hpPercent >= 0 && ST.hpPercent < CFG.proRetreatHp && !ST.retreat && ST.shots = shots
+            , "падение HP и первый замер фигуры ещё не разрешают шаг или очередь")
+        SetFixtureFrame(b, 15)
+        second := TickFixture(b)
+        Check(ST.enemySeenSeq = second.captureId && ST.navInfo.sideStable && ST.navInfo.seq = second.captureId
+            && ST.retreat.key = SC.a && !ST.retreat.hold && ST.shots = shots && !ST.leftDown && !ST.held.Count
+            , "на повторе выбираем только боковой шаг в DryRun")
+        step := ST.retreat, deadline := step.until
+        newer := TickFixture(b)
+        Check(ST.retreat = step && step.until = deadline && !newer.HasOwnProp("enemyReading") && ST.shots = shots
+            , "ещё один тик захватил кадр, не блокировался и не продлил удержание")
+        ExpectKey(b, SC.a, 0, 0)
+
+        ; Проверяем отдельно исполнитель ограниченного шага. Ни наведение,
+        ; ни стрельба в живом режиме в этом тесте не вызываются.
+        CancelRetreatStep()
+        CFG.dryRun := false
+        Check(!WinActive("ahk_id " b) && StartCombatRetreatStep(newer, -1)
+            && ST.retreat.hold.target = b, "реальная клавиша A уходит только в заданный приёмник")
+        ExpectKey(b, SC.a, 1, 0)
+        ExpectKey(b, SC.a, 1, 1, 1600)
+        Check(!ST.held.Count && !ContinueRetreatStep(newer) && !ST.retreat, "таймер отпустил A без следующего тика")
+        ExpectKey(a, SC.a, 0, 0)
+        ExpectKey(b, SC.d, 1, 1)
+        ExpectKey(b, SC.w, 3, 3)
+    } finally {
+        CancelRetreatStep()
+        CFG.dryRun := true, CFG.featCombat := false, CFG.featProStyle := false, CFG.hudDetectRun := hudRun
+    }
+}
+
 TestResultBlink(a, b) {
     global CFG, ST
     CFG.dryRun := true, CFG.featPlayAgain := true, CFG.featChest := false, CFG.endAction := "play_again"
@@ -472,7 +527,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 13
+    Loop 16
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -548,8 +603,8 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    if (scene < 7 || scene = 9 || scene = 10) {
-        PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
+    if (scene < 7 || scene = 9 || scene = 10 || scene >= 13) {
+        PaintFixture(buf, w, 24, 256, scene >= 14 ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
     }
@@ -589,6 +644,19 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 156, 253, 104, 24, 0xF1F1F1) ; экран устранения поверх HUD
     if (scene = 12)
         PaintFixture(buf, w, 16, 224, 112, 32, 0xCBCB00) ; «Играть» в лобби
+    if (scene >= 13) {
+        ; Те же колонки, что в навигации: слева плавный перепад, справа плотные края.
+        Loop 17 {
+            col := A_Index - 1
+            x := Round(w * (0.15 + (0.34 - 0.15) * col / 16))
+            PaintFixture(buf, w, x, 117, 2, 88, (64 + col * 3) * 0x010101)
+            x := Round(w * (0.66 + (0.85 - 0.66) * col / 16))
+            PaintFixture(buf, w, x, 117, 2, 88, (Mod(col, 2) ? 52 : 206) * 0x010101)
+        }
+        if (scene >= 14)
+            PaintFixture(buf, w, 233, 124, 16, 32, scene = 14 ? 0xDDDDDD : 0x202020)
+        PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727) ; прицел не меняется
+    }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)
     return {w:w, h:h, buf:buf, info:info}
