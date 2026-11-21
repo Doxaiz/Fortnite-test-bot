@@ -43,7 +43,7 @@ RunWindowTests() {
         Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
-            , TestSavedWindowFrame] {
+            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestResultBlink] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -241,6 +241,114 @@ TestSavedWindowFrame(a, b) {
     }
 }
 
+TestPatrolLease(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featChest := false, CFG.featParkour := true, CFG.sprint := true
+    CFG.navScanMs := 0, CFG.patrolHoldMs := 1200
+    ResetNavigation()
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, 1, 0)
+    ExpectKey(b, SC.shift, 0, 0)
+    TickFixture(b)
+    Check(ST.sprintOn && ST.navInfo.hits = 2, "два открытых кадра ускоряют наземный шаг")
+    ExpectKey(b, SC.shift, 1, 0)
+
+    SetFixtureFrame(b, 5)
+    TickFixture(b)
+    Check(!ST.sprintOn && ST.navInfo.kind = "lip" && ST.navInfo.hits = 1
+        , "при первом крае убираем спринт, но ещё не прыгаем")
+    ExpectKey(b, SC.shift, 1, 1)
+    ExpectKey(b, SC.space, 0, 0)
+    TickFixture(b)
+    Check(ST.navInfo.jumped && ST.held.Has(SC.w), "прыжок подтверждён, прямая ходьба не рвётся")
+    ExpectKey(b, SC.space, 1, 0)
+    ExpectKey(b, SC.space, 1, 1, 600)
+    TickFixture(b)
+    ExpectKey(b, SC.space, 1, 1)
+    stepEnds := ST.segUntil
+    ; Больше нет тиков: отпускание не зависит от распознавания и нового кадра.
+    ExpectKey(b, SC.w, 1, 1, 2200)
+    Check(A_TickCount < stepEnds && !ST.held.Count, "W отпущена таймером раньше конца отрезка")
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, 2, 1)
+    ExpectKey(b, SC.shift, 1, 1)
+    beforePause := TickFixture(b)
+    ExpectKey(b, SC.shift, 2, 1)
+    OnPause()
+    Check(ST.paused && !WorldFrameCurrent(beforePause) && !ST.held.Count, "пауза снимает новый W/Shift и старый кадр")
+    ExpectKey(b, SC.w, 2, 2)
+    ExpectKey(b, SC.shift, 2, 2)
+    OnPause()
+    Check(!ST.paused && !WorldFrameCurrent(beforePause), "снятие паузы требует нового кадра")
+    ExpectKey(a, SC.w, 1, 1)
+    ExpectKey(a, SC.shift, 0, 0)
+    ExpectKey(a, SC.space, 0, 0)
+}
+
+TestGuidedRecovery(a, b) {
+    global CFG, ST, SC
+    CFG.featChest := true, CFG.featParkour := false, CFG.sprint := false, CFG.scanLootMs := 0
+    CFG.stuckSampleMs := 150, CFG.stuckMs := 260, CFG.stuckRecoveryMs := 900
+    ResetCaches()
+    ST.navTurnSign := 1
+    SetFixtureFrame(b, 6)
+    TickFixture(b)
+    Check(ST.walkTarget && ST.walkTarget.samples.hits = 1, "на кадре видно свечение")
+    ExpectKey(b, SC.w, 2, 2)
+    TickFixture(b)
+    Check(ST.lastAction = "объект у прицела: жду подсказку", "свечение у прицела не запускает E")
+    TickFixture(b)
+    Check(ST.guidedUntil && !ST.segUntil && ST.held.Has(SC.w), "повтор цели запускает короткий направленный шаг")
+    ExpectKey(b, SC.w, 3, 2)
+    Loop 10 {
+        TickFixture(b)
+        if ST.stuckRecoverUntil
+            break
+        Sleep(70)
+    }
+    Check(ST.stuckRecoverKey = SC.d && !ST.guidedUntil && ST.held.Has(SC.d)
+        , "подтверждённая цель не заставляет всё время идти в стену: переключаемся на обход")
+    ExpectKey(b, SC.w, 3, 3)
+    ExpectKey(b, SC.d, 1, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, 3, 3)
+    SetFixtureFrame(b, 1)
+    TickFixture(b)
+    Check(ST.promptConfirm.hits = 1 && !ST.stuckRecoverUntil, "появилась подсказка: обход прерывается")
+    ExpectKey(b, SC.d, 1, 1)
+    ExpectKey(b, SC.e, 1, 1)
+}
+
+TestResultBlink(a, b) {
+    global CFG, ST
+    CFG.dryRun := true, CFG.featPlayAgain := true, CFG.featChest := false, CFG.endAction := "play_again"
+    CFG.clickRetries := 1, CFG.verifyMs := 5000, CFG.retryAfterMs := 6000, CFG.endReturnAfterMs := 6000
+    CFG.sceneHoldMs := 0, CFG.stateConfirmFrames := 1, CFG.scanMenuMs := 0
+    ResetEndHandoff()
+    ST.queuePending := false, ST.cancelHold := false, ST.roundActive := true, ST.roundCounted := false
+    ST.inMatchT := 0, ST.lastLobbyAt := 0, ST.mmEnterAt := 0
+    clicks := ST.clickAgain, rounds := ST.rounds
+    SetFixtureFrame(b, 7)
+    TickFixture(b, false)
+    Check(ST.state = "END_SCREEN" && ST.endRetry = 1 && ST.clickAgain = clicks + 1 && ST.rounds = rounds + 1
+        , "первый реальный кадр итогов, клик только DryRun")
+    SetFixtureFrame(b, 8)
+    TickFixture(b, false)
+    Check(ST.state = "UNKNOWN" && ST.endRetry = 1 && ST.endClickAt, "загрузка не сбрасывает лимит повтора")
+    SetFixtureFrame(b, 7)
+    TickFixture(b, false)
+    Check(ST.state = "END_SCREEN" && ST.endRetry = 1 && !ST.endReturnRetry && ST.clickAgain = clicks + 1
+        , "вид грубой сцены сменился обратно, повтор не отправляется заново")
+    ST.endClickAt := A_TickCount - CFG.retryAfterMs, ST.endFirstSeen := A_TickCount - CFG.endReturnAfterMs
+    TickFixture(b, false)
+    Check(ST.endRetry = 1 && ST.endReturnRetry = 1 && ST.clickAgain = clicks + 2 && ST.rounds = rounds + 1
+        && !ST.lobbyRequeue && !ST.held.Count, "после паузы переходим к резервному выходу, раунд не дублируется")
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -252,15 +360,15 @@ FocusFixture(h) {
     Check(WinWaitActive("ahk_id " h, , 1), "не удалось активировать тестовое окно")
 }
 
-TickFixture(h) {
+TickFixture(h, requireHud := true) {
     global CFG, ST
     Check(GetGameWindow() = h && (CFG.dryRun || (CFG.bgMode && !WinActive("ahk_id " h)))
         , "без DryRun допустим только фоновый ввод в выбранный приёмник")
     seq := ST.captureSeq
     Tick()
     shot := ST.lastShot
-    Check(shot && shot.captureId > seq && shot.hwnd = h && shot.w = 480 && shot.h = 288 && FrameHasMatchHud(shot)
-        , "нет нового кадра с тестовым HUD; исход: " ST.tickProfile.outcome)
+    Check(shot && shot.captureId > seq && shot.hwnd = h && shot.w = 480 && shot.h = 288
+        && (!requireHud || FrameHasMatchHud(shot)), "нет нового тестового кадра; исход: " ST.tickProfile.outcome)
     Check(ST.tickProfile.outcome = "завершён", "ошибка цикла: " TickProfileText(ST.tickProfile))
     return shot
 }
@@ -299,7 +407,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 5
+    Loop 9
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -375,16 +483,18 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
-    PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
-    PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
+    if (scene < 7) {
+        PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
+        PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
+        PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
+    }
     if (scene = 1) {
         PaintFixture(buf, w, 242, 134, 58, 21, 0x282828) ; тёмная плашка
         PaintFixture(buf, w, 245, 142, 3, 4, 0xEEEEEE)    ; значок
         Loop 9
             PaintFixture(buf, w, 257 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
     }
-    if (scene >= 2) {
+    if (scene >= 2 && scene <= 4) {
         ; Неизменная оранжевая опора и отдельная полоса продолжали её рамку в v11.0.8.
         PaintFixture(buf, w, 96, 40, 24, 72, 0xDA8848)
         PaintFixture(buf, w, 120, 103, 9, 9, 0xCF7C39)
@@ -392,6 +502,17 @@ BuildFixtureFrame(scene) {
         if (scene >= 3)
             PaintFixture(buf, w, 233, 124, 16, 32, scene = 3 ? 0xDDDDDD : 0x202020)
         PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727)     ; один и тот же цвет на трёх сценах
+    }
+    if (scene = 5)
+        PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
+    if (scene = 6)
+        PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
+    if (scene = 7) {
+        PaintFixture(buf, w, 288, 96, 112, 22, 0xCBCB00)
+        PaintFixture(buf, w, 335, 104, 20, 8, 0x010101)
+        PaintFixture(buf, w, 310, 212, 136, 55, 0x252533)
+        PaintFixture(buf, w, 322, 226, 112, 22, 0xEEEEEE)
+        PaintFixture(buf, w, 350, 234, 26, 7, 0x202020)
     }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)

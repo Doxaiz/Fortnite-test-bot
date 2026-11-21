@@ -4,11 +4,11 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.13.0
+;@Ahk2Exe-SetVersion          11.0.14.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.13 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.14 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
 ;  Встроенный анализ пикселей на AutoHotkey v2. Среда включена в переносимый EXE:
 ;    • GDI-захват клиентской области игры (PrintWindow + резерв DC окна),
@@ -23,7 +23,7 @@
 ;      звуковой метке. Удержание E только после двух наблюдений плашки.
 ;      Тип объекта и открытие сундука не подтверждаются по одному цвету;
 ;    • Умная 3-коридорная навигация: выбор открытого прохода (лево/центр/право),
-;      карабканье (Mantle) через заборы/окна, бег с подкатом, стабилизация
+;      прыжок по повторному кандидату на уступ, бег по открытому обзору, стабилизация
 ;      горизонта, выход из Бури по белой линии миникарты и 5-ступенчатый выход
 ;      из застреваний без остановки бота;
 ;    • четыре режима работы:
@@ -69,7 +69,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.13"
+global FORMA_VERSION := "11.0.14"
 
 global CFG := {
     ; ---- окно игры ----
@@ -88,7 +88,7 @@ global CFG := {
     teamSafe:      false,   ; true = отключить автострельбу (вести бой только вручную)
     featSound:     true,    ; реагировать на визуализацию звука (выстрелы/шаги/сундуки)
     featFightBack: true,    ; смотреть к свежей метке при падении HP (без слепого огня)
-    featParkour:   true,    ; паркур: карабканье (Mantle), прыжки, подкаты, стрейф
+    featParkour:   true,    ; прыжок при низком уступе или метке выстрела
     featCrouchFight: true,  ; приседать в перестрелке и на дальней дистанции
     featAds:       true,    ; удерживать прицел (ПКМ) на средней и дальней дистанции
     featProStyle:  true,    ; стиль про-игрока: укрытие, выход из Бури, смена оружия
@@ -341,8 +341,6 @@ global CFG := {
 
     ; ---- движение и 3-коридорная навигация (v11.0) ----
     sprint:       true,
-    jumpChance:   0.08,
-    strafeChance: 0.28,
     fwdMinMs:     1400,
     fwdMaxMs:     3600,
     idleMinMs:    50,
@@ -356,7 +354,8 @@ global CFG := {
     mouseGain:    1.0,
     mouseMicroPx: 9,        ; плавный, но отзывчивый микрошаг мыши
     invertTurn:   false,
-    navScanMs:    240,      ; частота оценки свободных коридоров (лево/центр/право)
+    navScanMs:    240,      ; частота измерений коридоров в наземной авто-игре
+    patrolHoldMs: 900,      ; W и Shift истекают, если не пришли пригодные кадры
     stormScanMs:  850,      ; частота проверки Бури и белой линии безопасной зоны
     stuckDiffThreshold: 1.35, ; порог движения мира для детектора застревания
     stuckMs:      2400,       ; через 2.4 с упора в стену/угол сразу начинаем обход
@@ -367,19 +366,12 @@ global CFG := {
     confirmGapMs: 1400,
     promptConfirmHits: 2,
     ; ---- бег / паркур / карабканье (Mantle) ----
-    sprintPct:        88,     ; активный тактический бег
     jumpMinGapMs:     850,    ; не прыгать чаще, чем раз в N мс
-    obstacleEdges:    0.24,   ; плотность перепадов у ног => уступ/забор
     obstacleGapMs:    1150,   ; пауза между прыжками/карабканьем через препятствие
-    obstacleStepMs:   300,    ; частота проверки препятствия у ног
-    slideChance:      0.28,   ; подкат на бегу для сохранения высокой скорости
-    slideHoldMs:      420,    ; длительность приседа для подката
-    slideGapMs:       2800,   ; пауза между подкатами
     crouchHoldMs:     750,    ; присед в перестрелке (сбивает прицел и сужает разброс)
     crouchGapMs:      1350,
     adsRangePx:       80,     ; порог включения прицела (ПКМ)
     adsHoldMs:        850,
-    strafeMs:         320,    ; длительность контр-стрейфа в бою и обходе
     glideDeployMs:    900,    ; через сколько после прыжка раскрывать глайдер
     ; Слепые повторные нажатия переключают глайдер; не больше одной попытки.
     glideRepressMs:   1400,   ; оставлено для совместимости, повтор запрещён лимитом
@@ -448,7 +440,7 @@ global CFG := {
     sleepAction:    "wake",   ; экран спящего режима Fortnite: "wake" | "stop" | "wait"
     sleepNavyMin:   0.55,     ; доля тёмно-синего фона на экране спящего режима
     sleepCooldownMs: 8000,    ; минимальный интервал между кликами по «Продолжить игру»
-    endReturnAfterMs: 22000,  ; на итогах без «Играть снова» искать кнопку «В лобби» после N мс
+    endReturnAfterMs: 22000,  ; резервный выход при отсутствии повтора или после лимита попыток
     regModalBtn:    [0.32, 0.54, 0.68, 0.84], ; кнопка закрытия модалки / пропуска опроса
     stopOnToken:    false,    ; остановить запуск новых матчей после обнаружения жетона
     treasureHour:   false,    ; множитель 1.5x в «Час сокровищ» при расчёте шанса жетона
@@ -628,14 +620,10 @@ global ST := {
     adsOn:        false,        ; зажата ПКМ (прицел)
     lastAdsAt:    0,
     lastJumpT:    0,            ; когда прыгали
-    lastSlideT:   0,            ; когда подкатывались
     lastCrouchT:  0,            ; когда приседали под огнём
     jumps:        0,            ; сколько прыжков сделали
-    slides:       0,            ; сколько подкатов
     crouches:     0,            ; сколько раз приседали
     moveMode:     "",           ; что делают ноги сейчас (для журнала)
-    obstacleT:    0,            ; когда считали «препятствие впереди»
-    obstacleVal:  0.0,          ; плотность перепадов впереди
     glideDeploys: 0,            ; сколько раз раскрывали глайдер
     tickHeals:    0,            ; сколько раз сторож спасал зависший тик
     tickCheckMuted: false,      ; внутри хоткея TickCheck молчит (run-16.log)
@@ -700,6 +688,9 @@ global ST := {
     mmErrors:     0,
     endFirstSeen: 0,
     endRetry:     0,
+    endReturnRetry: 0,
+    endClickSeq:  0,
+    endClickAt:   0,
     actionTimes:  [],
     chests:       0,
     loots:        0,
@@ -713,6 +704,7 @@ global ST := {
     menuCache:    0,
     densityCache: 0,
     enemyCache:   0,
+    enemyCacheWide: false,     ; область, подтвердившая текущего кандидата
     ; ---- v7.2: слежение за целью и предсказание движения ----
     enemySeenAt:  0,            ; время последней положительной проверки фигуры
     enemySeenSeq: 0,            ; id кадра, на котором подтвердился кандидат
@@ -873,16 +865,10 @@ global ST := {
     soundRing:    0,            ; v11.0: раздельное кольцо звука {shot, chest, step, best}
     ; v11.0: умная 3-коридорная навигация, стабилизация горизонта и выход из Бури
     camPitch:     0,            ; накопленный вертикальный наклон камеры (0 = горизонт)
-    navAt:        0,            ; время последнего скана коридоров
-    navLeft:      55,           ; открытость левого коридора (0..100)
-    navCenter:    60,           ; открытость центрального коридора (0..100)
-    navRight:     55,           ; открытость правого коридора (0..100)
-    lastObsJump:  0,            ; время последней попытки карабканья
-    navLowObs:    false,        ; низкое препятствие/забор/подоконник впереди (карабканье)
-    navSteer:     0,            ; -1 влево, 0 прямо, +1 вправо, 2 разворот из тупика
-    navTurnSign:  1,            ; устойчивое направление разворота в тупике (без маятника)
+    navInfo:      0,            ; последние коридоры, вид и число повторных измерений
+    patrolLeaseAt: 0,           ; последнее продление W/Shift по кадру
+    navTurnSign:  1,            ; предпочтительная сторона при равных оценках
     navSteerAt:   0,            ; время последнего подруливания по коридору
-    navView:      0,
     stuckTotal:   0,            ; всего успешных выходов из застревания за сессию
     stormAt:      0,            ; время последней проверки Бури и линии зоны
     inStorm:      false,        ; игрок находится внутри фиолетовой Бури
@@ -983,9 +969,11 @@ Log(msg) {
     } catch {
     }
     try {
-        if (UI.panel) {
-            if (UI.visible && UI.panel.view = "log")
-                UI.panel.logDirty := true
+        p := UI.panel
+        if p {
+            p.homeLogDirty := true
+            if (UI.visible && p.view = "log" && !p.logSnapshot)
+                p.logDirty := true
         } else if (UI.logEdit && UI.visible) {
             RefreshLog()
         }
@@ -995,16 +983,16 @@ Log(msg) {
 
 RefreshLog() {
     global LogBuf, UI
-    if (UI.panel) {
-        if (UI.panel.view != "log")
-            return
-        UI.panel.logDirty := false
+    if UI.panel {
+        if (UI.panel.view = "log")
+            PanelRenderLog()
+        return
     }
     try {
         txt := ""
         for line in LogBuf
             txt .= line "`n"
-        UI.logEdit.Value := (UI.panel && txt = "") ? "Новых событий пока нет." : txt
+        UI.logEdit.Value := txt
         SendMessage(0x115, 7, 0, UI.logEdit)
     } catch {
     }
@@ -4638,80 +4626,144 @@ ResetMoveWatch(resetAttempts := false) {
 
 ResetNavigation() {
     global ST
-    ST.lastObsJump := 0, ST.navAt := 0, ST.navSteerAt := 0, ST.navView := 0
-    ST.lastScanT := 0
-    ST.navLowObs := false, ST.navSteer := 0, ST.navTurnSign := 1
-    ST.navLeft := 55, ST.navCenter := 60, ST.navRight := 55
+    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0
+    ST.lastScanT := 0, ST.navTurnSign := 1
 }
 
-ScanNavCorridors(shot) {
-    ; v11.0: оценка открытости 3 коридоров (лево / центр / право) по текстуре/перепадам
-    global CFG, ST
-    now := A_TickCount
-    if (ST.navAt && now - ST.navAt < CFG.navScanMs && SameFrameView(ST.navView, shot))
-        return
-    y1 := Round(shot.h * 0.42), y2 := Round(shot.h * 0.66)
-    step := Max(8, ScanStep(9))
-    zones := [[Round(shot.w * 0.14), Round(shot.w * 0.36)]
-            , [Round(shot.w * 0.38), Round(shot.w * 0.62)]
-            , [Round(shot.w * 0.64), Round(shot.w * 0.86)]]
-    scores := [0, 0, 0]
-    for idx, zr in zones {
-        edges := 0, tot := 0
-        y := y1
-        while (y < y2) {
-            TickCheck("скан коридоров")
-            prevLum := -1
-            x := zr[1]
-            while (x < zr[2]) {
-                px := NumGet(shot.buf, y * shot.stride + x * 4, "UInt")
-                lum := (((px >> 16) & 255) + ((px >> 8) & 255) + (px & 255)) // 3
-                if (prevLum >= 0 && Abs(lum - prevLum) > 22)
-                    edges += 1
-                prevLum := lum, tot += 1
-                x += step
-            }
-            y += step
-        }
-        density := tot ? (edges / tot) : 0.3
-        scores[idx] := Clamp(Round((1.0 - density * 1.65) * 100), 5, 98)
+ReadNavLane(shot, lo, hi) {
+    ; Постоянная сетка: 17 x 12 точек на полосу, независимо от разрешения.
+    ; Горизонтальный край — перепад МЕЖДУ строками на соседних столбцах,
+    ; а не много перепадов текстуры внутри одной строки.
+    cols := 17, rows := 12, xs := [], previous := []
+    Loop cols {
+        xs.Push(Round(shot.w * (lo + (hi - lo) * (A_Index - 1) / (cols - 1))))
+        previous.Push(0)
     }
+    minLum := 255, maxLum := 0, edges := 0, aligned := 0, lipRow := 0, upperEdge := false
+    Loop rows {
+        row := A_Index, y := Round(shot.h * (0.42 + (row - 1) * 0.024))
+        TickCheck("скан коридоров")
+        across := -1, run := 0, span := 0
+        for col, x in xs {
+            lum := Bright(shot, x, y)
+            minLum := Min(minLum, lum), maxLum := Max(maxLum, lum)
+            if (across >= 0 && Abs(lum - across) > 26)
+                edges += 1
+            vertical := row > 1 && Abs(lum - previous[col]) > 34
+            if vertical {
+                edges += 1, run += 1
+                span := Max(span, run)
+            } else
+                run := 0
+            previous[col] := lum, across := lum
+        }
+        if (span >= 11) {
+            aligned += 1
+            if (row < 7)
+                upperEdge := true
+            else if (row < rows && !lipRow)
+                lipRow := row
+        }
+    }
+    density := edges / ((cols - 1) * rows + (rows - 1) * cols)
+    known := maxLum - minLum >= 24
+    kind := !known ? "unknown" : (lipRow && !upperEdge && aligned <= 2 && density < 0.24) ? "lip"
+        : (aligned || density >= 0.27) ? "busy" : "clear"
+    return {kind:kind, row:lipRow, score:known ? Max(0, Round(100 - density * 160 - (aligned ? 25 : 0))) : 0}
+}
+
+ScanNavCorridors(shot, prefer := 1) {
+    l := ReadNavLane(shot, 0.15, 0.34), c := ReadNavLane(shot, 0.39, 0.61), r := ReadNavLane(shot, 0.66, 0.85)
+    kind := c.kind, turn := 0
+    ; Полоса поперёк всего обзора не похожа на локальный уступ.
+    if (kind = "lip" && l.row && r.row && Abs(l.row - c.row) <= 1 && Abs(r.row - c.row) <= 1)
+        kind := "busy"
+    if (kind = "busy" || kind = "lip") {
+        if (l.kind = "clear" && r.kind = "clear")
+            turn := Abs(l.score - r.score) < 8 ? prefer : (l.score > r.score ? -1 : 1)
+        else if (l.kind = "clear")
+            turn := -1
+        else if (r.kind = "clear")
+            turn := 1
+    }
+    return {kind:kind, row:c.row, turn:turn, left:l.score, center:c.score, right:r.score}
+}
+
+NavKindRu(kind) {
+    switch kind {
+        case "clear": return "открытый обзор"
+        case "lip": return "кандидат на уступ"
+        case "busy": return "плотные края"
+        default: return "неясно"
+    }
+}
+
+RefreshNavigation(shot) {
+    global CFG, ST
+    if !WorldFrameCurrent(shot)
+        return false
+    prior := ST.navInfo, now := A_TickCount
+    same := prior && SameFrameView(prior.view, shot)
+    if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
+        return false
+    if (same && now - prior.at < CFG.navScanMs)
+        return false
+    n := ScanNavCorridors(shot, ST.navTurnSign)
     TickCheck("после скана коридоров")
-    ST.navAt := now, ST.navView := FrameView(shot)
-    ST.navLeft := scores[1], ST.navCenter := scores[2], ST.navRight := scores[3]
-    ST.navLowObs := (ST.navCenter < 36)
-    if (ST.navCenter >= 45)
-        ST.navSteer := 0
-    else if (ST.navLeft >= ST.navRight + 10)
-        ST.navSteer := -1, ST.navTurnSign := -1
-    else if (ST.navRight >= ST.navLeft + 10)
-        ST.navSteer := 1, ST.navTurnSign := 1
-    else
-        ST.navSteer := 2
+    prev := Critical("On")
+    try {
+        if !WorldFrameCurrent(shot)
+            return false
+        similar := same && shot.capturedAt - prior.at <= CFG.confirmGapMs && prior.kind = n.kind
+            && (n.kind != "lip" || Abs(prior.row - n.row) <= 1)
+        ; Подтверждение уступа не теряется от смены предпочтительного обхода.
+        stable := similar && (n.kind = "lip" || n.turn = prior.turn)
+        n.hits := stable ? Min(2, prior.hits + 1) : 1
+        n.turnStable := similar && n.turn = prior.turn
+        n.jumped := similar && n.kind = "lip" && prior.jumped
+        n.at := shot.capturedAt, n.seq := shot.captureId, n.view := FrameView(shot)
+        ST.navInfo := n
+        return true
+    } finally {
+        Critical(prev)
+    }
 }
 
 SteerOpenSpace(shot, now) {
-    global CFG, SC, ST
-    if (!CFG.featMove || !WorldFrameCurrent(shot))
+    global CFG, ST, SC
+    if (!CFG.featMove || !RefreshNavigation(shot))
         return false
-    ScanNavCorridors(shot)
-    if !WorldFrameCurrent(shot)
+    n := ST.navInfo
+    if (n.kind != "clear")
+        SprintSet(false)
+    if (n.hits < 2 || !WorldFrameCurrent(shot))
         return false
-    if (CFG.featParkour && ST.navLowObs
-        && (!ST.lastObsJump || now - Max(ST.lastObsJump, ST.lastJumpT) >= CFG.obstacleGapMs)) {
-        ST.lastObsJump := now
-        if (CFG.dryRun || TapKey(SC.space, 190, shot.inputEpochAtCapture)) {
-            ST.lastJumpT := now
-            ST.lastAction := "коридор: пробую перелезть"
+    ; Только на ходе вперёд, один Пробел на серию похожих уступов.
+    if (CFG.featParkour && n.kind = "lip" && !n.jumped && ST.segUntil
+        && (CFG.dryRun || ST.held.Has(SC.w))
+        && (!ST.lastObsJump || now - ST.lastObsJump >= CFG.obstacleGapMs)
+        && (!ST.lastJumpT || now - ST.lastJumpT >= CFG.jumpMinGapMs)) {
+        if (CFG.dryRun || (KeyDown(SC.space, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", SC.space, 165))) {
+            n.jumped := true, ST.lastObsJump := now, ST.lastJumpT := now
+            ST.jumps += !CFG.dryRun
+            KeepPatrolMoving(shot)
+            ST.lastAction := (CFG.dryRun ? "DryRun: " : "") "пробую прыгнуть через уступ"
+            LogThrottledKey("[nav-lip]", "[nav] " ST.lastAction " · повторный край на кадре #" shot.captureId)
             return true
         }
     }
-    if (!ST.navSteer || now - ST.navSteerAt < 420 || !WorldFrameCurrent(shot))
+    ; При скачущей оценке бокового пространства не менять сторону каждый кадр.
+    if (!n.turn || !n.turnStable || (ST.navSteerAt && now - ST.navSteerAt < 650)
+        || (!CFG.dryRun && !MouseAllowed(shot.hwnd)))
         return false
-    turn := ST.navSteer = 2 ? ST.navTurnSign * 48 : ST.navSteer * 28
-    if (CFG.dryRun || TurnBy(turn, 0, CFG.turnMaxPx) || ST.cameraSeq != shot.cameraSeqAtCapture) {
-        ST.navSteerAt := now
-        ST.lastAction := "выбираю свободный коридор"
+    dx := Round(n.turn * Min(28, CFG.turnMaxPx) * CFG.mouseGain * (CFG.invertTurn ? -1 : 1))
+    if !dx
+        return false
+    HaltMatchMovement()
+    if (WorldFrameCurrent(shot) && (CFG.dryRun || MouseSmooth(dx, 0, 38, shot) || ST.cameraSeq != shot.cameraSeqAtCapture)) {
+        ST.navSteerAt := now, ST.navTurnSign := n.turn
+        ST.lastAction := "обход: " (n.turn < 0 ? "влево" : "вправо")
+        LogThrottledKey("[nav-turn]", "[nav] " ST.lastAction " · кадр #" shot.captureId)
         return true
     }
     return false
@@ -5743,34 +5795,44 @@ StartSegment(shot) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
-    now := A_TickCount
     if !CFG.dryRun {
         if !CFG.runKeepW
             KeyUp(SC.w)
-        ; Забираем W из короткого подхода: старый таймер не оборвёт бег.
-        previous := Critical("On")
-        alreadyHeld := ST.held.Has(SC.w)
-        if alreadyHeld
-            RenewKeyHold(ST.held[SC.w])
-        Critical(previous)
-        if (!alreadyHeld && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
+        if (!ST.held.Has(SC.w) && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
             return false
     }
     ClearMatchStrafe()
     CrouchSet(false)
-    SprintSet(CFG.sprint && Random(0, 99) < CFG.sprintPct)
-    ST.segUntil := now + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
-    ST.moveMode := ST.sprintOn ? "бегу" : "иду шагом"
-    ST.lastAction := "прямой ход"
-    ; Не добавляем к одному отрезку сразу подкат, прыжок, стрейф и поворот.
-    if (CFG.featParkour && !CFG.dryRun && WorldFrameCurrent(shot)) {
-        if (ST.sprintOn && RndF(0, 1) < CFG.slideChance)
-            SlideNow()
-        else if (RndF(0, 1) < CFG.strafeChance)
-            StrafeBurst(Random(120, 260))
-        else if (RndF(0, 1) < CFG.jumpChance)
-            JumpNow("на свободном ходу")
+    ST.segUntil := A_TickCount + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
+    if !KeepPatrolMoving(shot, true) {
+        HaltMatchMovement()
+        return false
     }
+    ST.lastAction := "прямой ход"
+    return true
+}
+
+KeepPatrolMoving(shot, renew := false) {
+    global CFG, SC, ST
+    if (!ST.segUntil || !WorldFrameCurrent(shot))
+        return false
+    now := A_TickCount, nav := ST.navInfo
+    sprint := CFG.sprint && nav && nav.kind = "clear" && nav.hits >= 2
+        && now - nav.at <= Max(500, CFG.navScanMs * 2) && SameFrameView(nav.view, shot)
+    if !CFG.dryRun {
+        ; Продлеваем не чаще трети срока. При потерянном кадре/долгом скане
+        ; отпускание не зависит от того, когда снова запустится Roam.
+        renew := renew || !ST.patrolLeaseAt || now - ST.patrolLeaseAt >= CFG.patrolHoldMs // 3
+        if (!ST.held.Has(SC.w) || (renew && !InputReleaseLater("key", SC.w, CFG.patrolHoldMs)))
+            return false
+        before := ST.sprintOn
+        SprintSet(sprint, shot)
+        if (ST.sprintOn && (renew || !before))
+            InputReleaseLater("key", SC.shift, CFG.patrolHoldMs)
+        if renew
+            ST.patrolLeaseAt := now
+    }
+    ST.moveMode := (CFG.dryRun ? sprint : ST.sprintOn) ? "бегу" : "иду шагом"
     return true
 }
 
@@ -5797,7 +5859,7 @@ ClearMatchStrafe() {
 HaltMatchMovement() {
     global ST, SC
     ClearMatchStrafe()
-    KeyUp(SC.w)
+    KeyUp(SC.w), KeyUp(SC.space)
     SprintSet(false), CrouchSet(false)
     ST.segUntil := 0, ST.guidedUntil := 0, ST.moveMode := "стою"
     ResetMoveWatch()
@@ -5807,6 +5869,7 @@ ForwardStep(shot, ms := 430) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
+    continuing := ST.guidedUntil && ST.held.Has(SC.w)
     ClearMatchStrafe()
     SprintSet(false), CrouchSet(false)
     if !WorldFrameCurrent(shot)
@@ -5820,7 +5883,9 @@ ForwardStep(shot, ms := 430) {
             return false
     }
     ST.segUntil := 0, ST.guidedUntil := A_TickCount + ms
-    ResetMoveWatch()
+    ; Продление той же ходьбы не стирает наблюдения о застревании.
+    if !continuing
+        ResetMoveWatch()
     return true
 }
 
@@ -5832,7 +5897,12 @@ WalkTo(targetX, targetY, shot) {
     ; Горизонтальная коррекция по центру пятна; его y не измеряет высоту.
     ; После поворота следующий шаг планируется по новому кадру.
     turn := Round(Clamp(dx * 0.12, -26, 26) * CFG.mouseGain * (CFG.invertTurn ? -1 : 1))
-    if (Abs(dx) > Max(12, shot.w * 0.032) && turn && (CFG.dryRun || MouseAllowed(shot.hwnd))) {
+    if (Abs(dx) > Max(12, shot.w * 0.032)) {
+        if (!turn || (!CFG.dryRun && !MouseAllowed(shot.hwnd))) {
+            if ST.guidedUntil
+                HaltMatchMovement()
+            return false
+        }
         HaltMatchMovement()
         if !WorldFrameCurrent(shot)
             return false
@@ -5846,20 +5916,16 @@ WalkTo(targetX, targetY, shot) {
 }
 
 ; ============================================================================
-;        ДВИЖЕНИЕ КАК У ПРО: БЕГ, ПРЫЖОК, ПОДКАТ, ПРИСЕД, ПРИЦЕЛ
+;              ИСПОЛНИТЕЛИ: БЕГ, ПРЫЖОК, ПРИСЕД И ПРИЦЕЛ
 ; ============================================================================
-; Раньше «ходить» означало «держать W и иногда жать Пробел». Этого мало:
-; в игре нужно бежать, перепрыгивать забор и ящик, подкатываться с горки,
-; приседать под огнём, лечиться сидя и брать прицел по дальнему врагу.
-; Ниже — маленький «водитель», который всем этим управляет.
 
-SprintSet(on) {
+SprintSet(on, shot := 0) {
     global CFG, SC, ST
     if !CFG.featMove
         on := false
     if on {
         if !ST.held.Has(SC.shift) {
-            ST.sprintOn := KeyDown(SC.shift)
+            ST.sprintOn := KeyDown(SC.shift, shot ? shot.inputEpochAtCapture : -1, 0, shot)
         }
     } else {
         KeyUp(SC.shift)
@@ -5922,98 +5988,6 @@ JumpNow(reason := "") {
     TapKey(SC.space, 90)
     ST.lastAction := "прыжок"
     LogThrottledKey("[jump]", "[~] прыжок — " reason)
-    return true
-}
-
-; Подкат: в Fortnite присед на бегу превращается в слайд.
-SlideNow() {
-    global CFG, SC, ST
-    if (!CFG.featParkour || !CFG.sprint)
-        return false
-    if (A_TickCount - ST.lastSlideT < CFG.slideGapMs)
-        return false
-    if (ST.hpPercent >= 0 && ST.hpPercent < 35)
-        return false                    ; на последних HP не рискуем
-    ST.lastSlideT := A_TickCount
-    ST.slides += 1
-    if CFG.dryRun {
-        LogThrottledKey("[dryslide]", "[dry-run] подкат (присед на бегу)")
-        return true
-    }
-    if !ST.held.Has(SC.w)
-        KeyDown(SC.w)
-    if !ST.held.Has(SC.shift)
-        KeyDown(SC.shift)
-    if !KeyDown(SC.ctrl)
-        return false
-    ST.crouchOn := true
-    InputReleaseLater("key", SC.ctrl, CFG.slideHoldMs)
-    ST.lastAction := "подкат"
-    return true
-}
-
-; Боковое уклонение на 0.2–0.4 с и отпускание клавиши таймером.
-StrafeBurst(ms := 0) {
-    global CFG, SC
-    if (ms <= 0)
-        ms := CFG.strafeMs
-    ClearMatchStrafe()
-    k := Random(0, 1) ? SC.a : SC.d
-    return KeyDown(k) && InputReleaseLater("key", k, ms)
-}
-
-; Плотность перепадов яркости в полосе кадра: стена/ящик/уступ дают много
-; перепадов, открытая земля — мало. Дешевле, чем искать геометрию.
-BandEdges(shot, x1, y1, x2, y2, step := 5) {
-    r := RegionToPixels(shot, [x1, y1, x2, y2])
-    hits := 0, total := 0
-    y := r.y1
-    while (y < r.y2 - step) {
-        x := r.x1
-        while (x < r.x2 - step) {
-            b1 := Bright(shot, x, y)
-            b2 := Bright(shot, x + step, y)
-            b3 := Bright(shot, x, y + step)
-            total += 1
-            if (Abs(b2 - b1) > 34 || Abs(b3 - b1) > 34)
-                hits += 1
-            x += step
-        }
-        y += step
-    }
-    return (total > 0) ? hits / total : 0.0
-}
-
-ObstacleAhead(shot, now) {
-    global CFG, ST
-    if (now - ST.obstacleT < CFG.obstacleStepMs)
-        return ST.obstacleVal
-    ST.obstacleT := now
-    ; полоса прямо перед игроком: чуть ниже центра и до низа экрана
-    ST.obstacleVal := BandEdges(shot, 0.36, 0.50, 0.64, 0.72)
-    return ST.obstacleVal
-}
-
-; «Водитель». Вызывается каждый тик в матче, работает поверх обычных
-; отрезков движения: держит бег, перепрыгивает препятствия, подкатывается,
-; приседает под огнём. Возвращает true, если что-то сделал.
-SmartMove(shot, now) {
-    global CFG, SC, ST
-    if (!CFG.featMove || !CFG.featParkour || !ST.held.Has(SC.w) || !WorldFrameCurrent(shot))
-        return false
-    val := ObstacleAhead(shot, now)
-    if (!WorldFrameCurrent(shot) || val < CFG.obstacleEdges || now - ST.lastJumpT <= CFG.obstacleGapMs)
-        return false
-    if (Random(0, 99) < 70) {
-        if !JumpNow("препятствие впереди (" Round(val * 100) "%)")
-            return false
-        ST.lastAction := "перепрыгиваю препятствие"
-    } else {
-        if !StrafeBurst()
-            return false
-        ST.lastJumpT := now
-        ST.lastAction := "обхожу сбоку"
-    }
     return true
 }
 
@@ -6290,10 +6264,10 @@ TryApproach(shot, now) {
     loot := (!chest && CFG.featLoot && WorldFrameCurrent(shot)) ? CachedLoot(shot) : 0
     if (ST.lootCacheSeq != shot.captureId)
         loot := 0
-    ST.chest := chest, ST.loot := loot
-    target := chest ? chest : loot
     if !WorldFrameCurrent(shot)
         return false
+    ST.chest := chest, ST.loot := loot
+    target := chest ? chest : loot
     if !target {
         if (ST.lootMasksSeq = shot.captureId && ST.walkTarget) {
             HaltMatchMovement()
@@ -6304,10 +6278,15 @@ TryApproach(shot, now) {
     kind := chest ? chest.kind : "loot"
     approach := ST.walkTarget
     if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd
-        || approach.epoch != shot.inputEpochAtCapture || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
-        approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture, waited:false}
+        || approach.epoch != shot.inputEpochAtCapture || approach.w != shot.w || approach.h != shot.h
+        || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
+        approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture
+            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false}
         ST.walkTarget := approach
     }
+    tr := approach.samples
+    if (shot.captureId <= tr.seq || shot.capturedAt < tr.at)
+        return true
     approach.last := now
     if (now - approach.at > 8000) {
         if chest
@@ -6319,7 +6298,15 @@ TryApproach(shot, now) {
         LogThrottledKey("[approach-limit]", "[~] Подход за 8 с не дал подсказку; прекращаю попытку.")
         return true
     }
-    ; .x/.y — центр и для сундука, и для лута. .drawX/.drawY — только рамка.
+    ; Дважды видим похожий центр, прежде чем идти к нему. После поворота
+    ; подтверждаем снова, но 8-секундный предел всего подхода остаётся.
+    point := {cx:target.x, cy:target.y}
+    if !ConfirmWorldCandidate(tr, shot, point, 2) {
+        HaltMatchMovement()
+        ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
+        ST.lastAction := "свечение: жду повторный кадр"
+        return true
+    }
     ; Центральное положение не доказывает близость: даём один спокойный
     ; кадр для плашки, затем пробуем короткий шаг, а не слепое E.
     if (!approach.waited && NearCrosshair(shot, target.x, target.y)) {
@@ -6613,6 +6600,16 @@ Combat(shot, now) {
     }
     if !WorldFrameCurrent(shot)
         return false
+    if !EnemyOnFrame(shot, enemy) {
+        ; Пропущенный скан не является опровержением цели, но память
+        ; не прерывает E и не отбирает уже начатый направленный шаг.
+        if (ST.tgt || (ST.walkTarget && A_TickCount < ST.guidedUntil))
+            return false
+        HaltMatchMovement()
+        ST.lastAction := "бой: жду свежий кадр, по кэшу не стреляю"
+        LogThrottledKey("[aimold]", "[i] Кандидат есть только в памяти; наведение ждёт свежего подтверждения.", 5000)
+        return true
+    }
     ST.enemy := enemy
     ST.guidedUntil := 0, ST.walkTarget := 0
     combatNow := A_TickCount
@@ -6620,12 +6617,6 @@ Combat(shot, now) {
         ST.enemyFirstAt := shot.capturedAt
     ST.combatAt := combatNow
     CancelInteraction()
-    if !EnemyOnFrame(shot, enemy) {
-        HaltMatchMovement()
-        ST.lastAction := "бой: жду свежий кадр, по кэшу не стреляю"
-        LogThrottledKey("[aimold]", "[i] Кандидат есть только в памяти; наведение ждёт свежего подтверждения.", 5000)
-        return true
-    }
     if ProDecision(shot, combatNow)
         return true
 
@@ -6641,8 +6632,8 @@ Combat(shot, now) {
     lead := CFG.aimLeadMs / 1000
     largeTarget := enemy.h >= 96 * k && enemy.w >= 40 * k
     ty0 := (largeTarget && enemy.HasOwnProp("hy") && enemy.hy) ? enemy.hy : enemy.cy
-    tx := Clamp(enemy.cx + ST.enemyVelX * lead, 8, shot.w - 8)
-    ty := Clamp(ty0 + ST.enemyVelY * lead, 8, shot.h - 8)
+    tx := Clamp(enemy.cx + Clamp(ST.enemyVelX * lead, -0.25 * enemy.w, 0.25 * enemy.w), 8, shot.w - 8)
+    ty := Clamp(ty0 + Clamp(ST.enemyVelY * lead, -0.18 * enemy.h, 0.18 * enemy.h), 8, shot.h - 8)
     dx := Round(tx - shot.w / 2), dy := Round(ty - shot.h / 2), err := Hypot(dx, dy)
     tolX := Min(CFG.fireTolerancePx * k, Max(4 * k, enemy.w * 0.30))
     tolY := Min(CFG.fireTolerancePx * 1.6 * k, Max(5 * k, enemy.h * 0.16))
@@ -6698,7 +6689,9 @@ Combat(shot, now) {
     }
     ST.aimPrevDx := dx, ST.aimPrevDy := dy
     ST.lastAction := "бой: веду кандидата"
-    if (reacted && CanFireOnFrame(shot, enemy, aligned, aimed)) {
+    ; Упреждение помогает вести рамку, но не подменяет положение на кадре.
+    underAim := aligned && Abs(enemy.cx - shot.w / 2) <= tolX && Abs(ty0 - shot.h / 2) <= tolY
+    if (reacted && CanFireOnFrame(shot, enemy, underAim, aimed)) {
         if (CFG.featAds && err > CFG.adsRangePx && !ST.adsOn
             && combatNow - ST.lastAdsAt > CFG.adsHoldMs * 2 && AdsSet(true, shot)) {
             ST.lastAdsAt := combatNow
@@ -6710,7 +6703,7 @@ Combat(shot, now) {
             CrouchSet(true)
             InputReleaseLater("key", SC.ctrl, CFG.crouchHoldMs)
         }
-        if FireBurst(shot, enemy, aligned, aimed) {
+        if FireBurst(shot, enemy, underAim, aimed) {
             ST.shots += 1
             if !CFG.dryRun
                 LogThrottledKey("[shot]", "[?] Попытка очереди по кандидату: " enemy.src " (#" shot.captureId ").")
@@ -6913,10 +6906,15 @@ CachedEnemy(shot) {
             if verified {
                 if (!ST.enemyCache || ST.enemyCache.src != verified.src)
                     ST.enemyLastAt := 0, ST.enemyVelX := 0, ST.enemyVelY := 0
-                ST.enemyCache := verified, ST.enemySeenAt := shot.capturedAt, ST.enemySeenSeq := shot.captureId
+                ST.enemyCache := verified, ST.enemyCacheWide := wide
+                ST.enemySeenAt := shot.capturedAt, ST.enemySeenSeq := shot.captureId
                 ST.enemyView := FrameView(shot), ST.enemySrc := verified.src
                 TrackEnemy(verified, shot.capturedAt, shot.cameraSeqAtCapture)
                 shot.enemyReading := verified
+            } else if (ST.enemyCache && wide = ST.enemyCacheWide) {
+                ; Завершённый скан исходной области уже не подтверждает
+                ; прежнюю цель. Отложенный/просроченный скан сюда не попадает.
+                ST.enemyCache := 0, ST.enemyVelX := 0, ST.enemyVelY := 0, ST.enemyLastAt := 0
             }
             return ST.enemyCache
         }
@@ -6989,14 +6987,20 @@ ScanLootMasks(shot) {
 CachedLootMasks(shot) {
     global CFG, ST
     if (ST.lootMasksSeq != shot.captureId && !shot.HasOwnProp("lootMasksDeferred")
-        && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs) {
+        && WorldFrameCurrent(shot) && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs) {
         if !ScanAllow(2) {
             shot.lootMasksDeferred := true
             return IsObject(ST.lootMasks) ? ST.lootMasks : EmptyLootMasks()
         }
-        ST.lootMasks := ScanLootMasks(shot)
-        ST.lootMasksAt := A_TickCount
-        ST.lootMasksSeq := shot.captureId
+        masks := ScanLootMasks(shot)
+        TickCheck("после масок лута")
+        prev := Critical("On")
+        try {
+            if WorldFrameCurrent(shot)
+                ST.lootMasks := masks, ST.lootMasksAt := A_TickCount, ST.lootMasksSeq := shot.captureId
+        } finally {
+            Critical(prev)
+        }
     }
     if !IsObject(ST.lootMasks)
         ST.lootMasks := EmptyLootMasks()
@@ -7019,11 +7023,16 @@ CachedChest(shot) {
     CachedLootMasks(shot)
     if (ST.lootMasksSeq != shot.captureId)
         return ST.chestCache
-    chestResult := FindChest(shot), chestSeq := ST.lootMasksSeq
+    chestResult := FindChest(shot)
     prev := Critical("On")
-    ST.chestCache := chestResult, ST.chestCacheSeq := chestSeq, ST.chestCacheAt := now
-    Critical(prev)
-    return chestResult
+    try {
+        if !WorldFrameCurrent(shot)
+            return 0
+        ST.chestCache := chestResult, ST.chestCacheSeq := shot.captureId, ST.chestCacheAt := now
+        return chestResult
+    } finally {
+        Critical(prev)
+    }
 }
 
 CachedLoot(shot) {
@@ -7033,11 +7042,16 @@ CachedLoot(shot) {
     CachedLootMasks(shot)
     if (ST.lootMasksSeq != shot.captureId)
         return ST.lootCache
-    lootResult := FindLoot(shot), lootSeq := ST.lootMasksSeq
+    lootResult := FindLoot(shot)
     prev := Critical("On")
-    ST.lootCache := lootResult, ST.lootCacheSeq := lootSeq
-    Critical(prev)
-    return lootResult
+    try {
+        if !WorldFrameCurrent(shot)
+            return 0
+        ST.lootCache := lootResult, ST.lootCacheSeq := shot.captureId
+        return lootResult
+    } finally {
+        Critical(prev)
+    }
 }
 
 CachedSound(shot) {
@@ -7353,63 +7367,70 @@ HandleSleep(shot, now) {
     Log("[>] Спящий режим Fortnite: нажал «Продолжить игру» (всего: " ST.sleepWakes ")")
 }
 
+SceneFrameCurrent(shot) {
+    ; Для меню не требуем фокуса и допускаем захват в «Умном фоне».
+    global CFG, ST
+    age := A_TickCount - shot.capturedAt
+    return ST.running && !ST.paused && !ST.tickAbort && !ST.mouseCalActive
+        && shot.hwnd && shot.hwnd = ST.hwnd && shot.captureId && shot.inputEpochAtCapture = ST.inputEpoch
+        && age >= 0 && age <= CFG.tickBudgetMs
+}
+
+ResetEndHandoff() {
+    global ST
+    ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0
+    ST.endClickSeq := 0, ST.endClickAt := 0
+}
+
 HandleEndScreen(shot, now) {
-    global CFG, SC, ST
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+    global CFG, ST
+    if (!SceneFrameCurrent(shot) || CFG.botMode = "antiafk" || CFG.botMode = "xp"
+        || ST.cancelHold || ST.queuePending)
         return
     if (ST.endFirstSeen = 0)
         ST.endFirstSeen := now
     MacroPlayReset()
     box := FrameActionButton(shot, "END_SCREEN")
 
-    ; Засчитываем раунд при реальной кнопке итогов (не на случайном тёмном экране загрузки).
-    if (box && ST.roundActive && !ST.roundCounted) {
+    ; Плашка в текущем кадре подтверждает итоги. Простой тёмный экран или
+    ; отправленный клик «В лобби» не засчитываем за завершение раунда.
+    if (box && !ST.roundCounted) {
+        ST.roundActive := true
         RecordRoundCompleted("итоги матча")
-        if ST.tokenStopArmed {
+    }
+    if ST.tokenStopArmed {
+        if ST.roundCounted {
             Log("[+] Жетон найден и матч завершён — останавливаю авто-очередь.")
             PlayAlertBeep(1040, 180)
             OnStop("жетон найден")
-            return
         }
-        if CheckSessionLimits(now, false)
+        return
+    }
+    if ((ST.roundCounted || ST.finishMatchArmed) && CheckSessionLimits(now, false))
+        return
+
+    if (!CFG.featPlayAgain || ST.tokenShown || shot.captureId <= ST.endClickSeq)
+        return
+
+    ; После серии неудач не мусолим «Играть снова»: ищем «В лобби».
+    ; В lobby_only этот поиск идёт сразу и не нажимает кнопку повтора.
+    preferLobby := CFG.endAction = "lobby_only"
+    if (!preferLobby && box && ST.endRetry < CFG.clickRetries) {
+        if (ST.endClickAt && now - ST.endClickAt < CFG.verifyMs)
             return
-    } else if (ST.finishMatchArmed && CheckSessionLimits(now, false)) {
+        if EndScreenClick(shot, box, "Играть снова", "play_again", now) {
+            ST.endRetry += 1
+            ST.lastAction := "попытка «Играть снова» · жду переход"
+            Log("[>] Итоги: «Играть снова», попытка " ST.endRetry "/" CFG.clickRetries ". Жду новую сцену.")
+        }
         return
     }
 
-    if !CFG.featPlayAgain
-        return
-
-    ; Режим «Только через лобби»: никогда не жмём «Играть снова», а ищем кнопку «В лобби»
-    ; (полезно в Squad Fill, чтобы каждый раунд собирать новый активный отряд).
-    preferLobby := (CFG.endAction = "lobby_only")
-
-    if (!preferLobby && box) {
-        ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
-        if (ST.endRetry >= CFG.clickRetries && now - ST.lastClickT < CFG.retryAfterMs)
-            return
-        if (now - ST.lastClickT < CFG.verifyMs)
-            return
-        ReleaseKeys()
-        if !Throttle()
-            return
-        if !ClickMenuBox(shot, box, "Играть снова", "play_again") {
-            LogThrottledKey("[resultsnoclick]", "[i] Клик «Играть снова» отложен или ждёт фокуса.")
-            return
-        }
-        ST.lastClickT := now
-        ST.endRetry += 1
-        ST.clickAgain += 1
-        ST.lastAction := "жму «Играть снова»"
-        Log("[>] Итоги: жму «Играть снова» (попытка " ST.endRetry ")")
-        return
-    }
-
-    ; Ищем реальную кнопку «В лобби» внизу справа (сразу при lobby_only, либо как резерв).
     waited := now - ST.endFirstSeen
     needWait := preferLobby ? 2200 : CFG.endReturnAfterMs
     gapWait := preferLobby ? CFG.verifyMs : CFG.retryAfterMs
-    if (waited >= needWait && now - ST.lastClickT >= gapWait) {
+    if (waited >= needWait && (!ST.endClickAt || now - ST.endClickAt >= gapWait)
+        && ST.endReturnRetry < CFG.clickRetries) {
         retBtn := FindLightPlateButton(shot, CFG.regReturnBtn, 0.08, 0.30, 2.0, 8.0, false)
         if !retBtn {
             yl := FindYellowButtons(shot, CFG.regReturnBtn)
@@ -7417,42 +7438,40 @@ HandleEndScreen(shot, now) {
                 retBtn := yl[1]
         }
         if retBtn {
-            ST.uiBoxCache := retBtn, ST.uiBoxSeq := shot.captureId
-            ReleaseKeys()
-            if Throttle() && ClickMenuBox(shot, retBtn, "В лобби", "end_return") {
-                ST.lastClickT := now
-                ST.clickAgain += 1
-                ST.lobbyRequeue := true
-                if (CFG.lobbyDelaySec > 0)
-                    ST.lobbyCooldownUntil := A_TickCount + CFG.lobbyDelaySec * 1000
-                if (ST.roundActive && !ST.roundCounted)
-                    RecordRoundCompleted("выход с итогов в лобби")
-                ST.lastAction := "жму «В лобби»"
-                Log("[>] Итоги: нажал кнопку «В лобби»"
-                    . (preferLobby ? " (режим «Только через лобби»)." : " (резерв после " Round(waited / 1000) " с)."))
-                return
+            if EndScreenClick(shot, retBtn, "В лобби", "end_return", now) {
+                ST.endReturnRetry += 1
+                ST.lastAction := "попытка «В лобби» · жду подтверждение"
+                Log("[>] Итоги: «В лобби», попытка " ST.endReturnRetry "/" CFG.clickRetries
+                    . ". Следующую очередь начну после подтверждения лобби.")
             }
+            return
         }
     }
 
-    ; Послематчевый опрос Fortnite («Пропустить / SKIP»): закрываем, если нет жетона на экране.
-    if (!ST.tokenShown && waited >= 6500 && now - ST.lastSurveyAt >= 9000 && now - ST.lastClickT >= CFG.verifyMs) {
+    ; Послематчевый опрос: по-прежнему проверяем только обнаруженную кнопку.
+    if (waited >= 6500 && now - ST.lastSurveyAt >= 9000
+        && (!ST.endClickAt || now - ST.endClickAt >= CFG.verifyMs)) {
         modalBtn := FindModalDismissButton(shot)
-        if modalBtn {
-            ST.uiBoxCache := modalBtn, ST.uiBoxSeq := shot.captureId
-            ReleaseKeys()
-            if Throttle() && ClickMenuBox(shot, modalBtn, "Пропустить опрос", "skip_survey") {
-                ST.lastClickT := now
-                ST.lastSurveyAt := now
-                ST.surveySkips += 1
-                ST.lastAction := "пропустил опрос"
-                Log("[>] Итоги: закрыл послематчевый опрос / модальное окно (всего: " ST.surveySkips ")")
-                return
-            }
+        if (modalBtn && EndScreenClick(shot, modalBtn, "Пропустить опрос", "skip_survey", now)) {
+            ST.lastSurveyAt := now
+            ST.surveySkips += 1
+            ST.lastAction := "попытка пропустить опрос"
+            return
         }
     }
+    LogThrottledKey("[resultsunknown]", ST.endReturnRetry >= CFG.clickRetries
+        ? "[?] Итоги: предел попыток выхода. Жду смены сцены."
+        : "[?] Итоги: жду подходящую кнопку или смену сцены.", 10000)
+}
 
-    LogThrottledKey("[resultsunknown]", "[?] Экран похож на итоги/загрузку, кнопка пока не найдена — жду.", 10000)
+EndScreenClick(shot, box, label, key, now) {
+    global ST
+    ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
+    ReleaseKeys()
+    if (!SceneFrameCurrent(shot) || !Throttle() || !ClickMenuBox(shot, box, label, key))
+        return false
+    ST.lastClickT := now, ST.endClickAt := now, ST.endClickSeq := shot.captureId, ST.clickAgain += 1
+    return true
 }
 
 HandleReward(shot, now) {
@@ -7589,10 +7608,10 @@ CheckToken(shot, now, press := true) {
 HandleDeath(shot, now) {
     ; Мы устранены: отпускаем управление, при живом отряде спокойно ждём финала
     ; или возрождения (Reboot Van), а когда отряд выбыл — переходим на итоги/в лобби.
-    global CFG, SC, ST
+    global CFG, ST
     MacroPlayReset()
     ReleaseKeys()
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !SceneFrameCurrent(shot))
         return
     ST.wasDeadScene := true
     if (ST.tokenShown || ST.tokenFoundMatch) {
@@ -7613,26 +7632,13 @@ HandleDeath(shot, now) {
             . " союзн. — жду возрождения или финала матча (" Round(elapsed / 1000) " с).", 15000)
         return
     }
-    if (elapsed < CFG.deathEscMs)
+    if (elapsed < CFG.deathEscMs || (CFG.botMode != "queue" && !CFG.featPlayAgain) || !FrameHasMatchHud(shot)
+        || !SceneFrameCurrent(shot) || !MenuClickPossible(shot.hwnd) || !Throttle())
         return
-    ; Долгое наблюдение без живых союзников: выходим в лобби
-    if !Throttle()
-        return
-    if (CFG.botMode = "queue" && MenuClickPossible()) {
-        Log("[!] Экран смерти/наблюдения " Round(elapsed / 1000) " с (отряд не виден) — запускаю выход в лобби.")
+    ; Авто-игра использует тот же проверяемый выход, что и AFK-очередь.
+    ; Один Esc без последующих кадров не возвращает в лобби.
+    if LeaveStart("долгое наблюдение после устранения", false)
         ST.deadSince := now
-        LeaveStart("долгое наблюдение после устранения", false)
-        return
-    }
-    Log("[!] висим на экране смерти " Round(elapsed / 1000) " с — жму Esc")
-    if !CFG.dryRun {
-        hwnd := GetGameWindow()
-        if (hwnd && (WinActive("ahk_id " hwnd) || BgInputActive()))
-            TapKey(SC.esc, 100)
-        else if (hwnd && CFG.smartRestore)
-            RunMenuAction(hwnd, "Esc после устранения", () => TapKey(SC.esc, 100))
-    }
-    ST.deadSince := now
 }
 
 LogUnknownDiag(shot) {
@@ -7653,11 +7659,28 @@ HandleUnknown(shot, now) {
     LogUnknownDiag(shot)
 }
 
+AcceptLobbyReturn(shot, now) {
+    global CFG, ST
+    if (!ST.roundActive || ST.cancelHold || ST.queuePending || !FrameActionButton(shot, "MENU")
+        || !SceneFrameCurrent(shot))
+        return false
+    ResetEndHandoff()
+    ST.roundActive := false, ST.lobbyRequeue := true, ST.queueTries := 0
+    if (CFG.lobbyDelaySec > 0 && !ST.lobbyCooldownUntil)
+        ST.lobbyCooldownUntil := now + CFG.lobbyDelaySec * 1000
+    RecordRoundCompleted("возврат в лобби")
+    Log("[i] Возврат после матча подтверждён плашкой лобби; жду следующий поиск.")
+    return true
+}
+
 HandleMenu(shot, now) {
     global CFG, ST
     MacroPlayReset()
     ST.wasDeadScene := false
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !CFG.featAutoQueue)
+    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !SceneFrameCurrent(shot))
+        return
+    AcceptLobbyReturn(shot, now)
+    if !CFG.featAutoQueue
         return
     if ST.tokenStopArmed {
         Log("[+] Возврат в лобби после находки жетона — останавливаю бота по настройке.")
@@ -9152,20 +9175,29 @@ EnsureWeapon(now) {
 
 Roam(shot, now) {
     global CFG, SC, ST
-    if MatchPhase(shot, now) {
-        ClearMatchStrafe()
-        ResetMoveWatch()
-        return
-    }
     if !WorldFrameCurrent(shot) {
         LogThrottledKey("[world-late]", "[i] После захвата/сцены нет актуального кадра для матча ("
             . (A_TickCount - shot.capturedAt) " мс); жду следующий.", 5000)
         return
     }
-    ; Один владелец за кадр. При подтверждённом сопровождении бой может
-    ; иметь приоритет, иначе сначала проверяем подсказку E.
-    combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && ST.enemyCache
-        && SameFrameView(ST.enemyView, shot) && now - ST.enemySeenAt <= CFG.enemyHoldMs
+    if MatchPhase(shot, now) {
+        ClearMatchStrafe()
+        ResetMoveWatch()
+        return
+    }
+    ; Память HUD удерживает сцену/таймер, но не разрешает надолго ехать
+    ; вперёд через загрузку или поверх неизвестного экрана.
+    if (!FrameHasMatchHud(shot) && !MatchHudRecentlySeen(now, 850)) {
+        HaltMatchMovement()
+        CancelInteraction()
+        ReleaseMouseButtons()
+        ST.lastAction := "жду подтверждение HUD матча"
+        return
+    }
+    ; Первый поиск E не отбираем у подсказки. Во время удержания/проверки E
+    ; остаётся шанс увидеть опасность, но прервать E может только свежий повтор.
+    combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && (ST.tgt
+        || (ST.enemyCache && SameFrameView(ST.enemyView, shot) && now - ST.enemySeenAt <= CFG.enemyHoldMs))
     if (combatFirst && (Combat(shot, now) || !WorldFrameCurrent(shot)))
         return
     ST.enemy := 0
@@ -9183,7 +9215,12 @@ Roam(shot, now) {
         return
     }
 
-    if (ProDecision(shot, now) || TryApproach(shot, now) || BreakObstacle(shot, now))
+    if ProDecision(shot, now)
+        return
+    ; Следим за направленным W до его продления. Подтверждённые E и бой
+    ; уже обработаны выше; они по-прежнему могут прервать обход.
+    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil
+    if ((watchGuided && MoveWatch(shot, now)) || TryApproach(shot, now) || BreakObstacle(shot, now))
         return
     if (!WorldFrameCurrent(shot) || FightBack(shot, now))
         return
@@ -9206,8 +9243,8 @@ Roam(shot, now) {
         ST.lastAction := "движение выключено (галочка «Ходить»)"
         return
     }
-    if (!WorldFrameCurrent(shot) || MoveWatch(shot, now) || CheckStormAndZone(shot, now)
-        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now) || SmartMove(shot, now))
+    if (!WorldFrameCurrent(shot) || (!watchGuided && MoveWatch(shot, now)) || CheckStormAndZone(shot, now)
+        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now))
         return
     if (now < ST.pauseUntil || !WorldFrameCurrent(shot))
         return
@@ -9220,6 +9257,8 @@ Roam(shot, now) {
             StartSegment(shot)
         return
     }
+    if !KeepPatrolMoving(shot)
+        return
     ; Даём несколько спокойных кадров детектору движения и застревания.
     ; Осмотр не совмещаем с новым отрезком или поворотом в коридор.
     quietMs := CFG.stuckMs + CFG.stuckCameraQuietMs + CFG.stuckSampleMs
@@ -10145,8 +10184,7 @@ TickBody(profile) {
         Log("[state] " StateRu(ST.state) " -> " StateRu(scene))
         ST.state := scene
         ST.sceneSince := A_TickCount
-        ST.endFirstSeen := 0
-        ST.endRetry := 0
+        ; Не сбрасываем лимит итогов при мерцании между итогами и загрузкой.
         ST.lastClickT := 0
         ST.prompt := 0
         ST.chest := 0
@@ -10156,11 +10194,12 @@ TickBody(profile) {
         if (scene != "GAME")
             ST.segUntil := 0
         if (scene = "MATCHMAKING") {
+            ResetEndHandoff()
             ST.mmSince := A_TickCount
             ST.mmEnterAt := A_TickCount
             ST.roundActive := false, ST.lobbyRequeue := false, ST.roundCounted := false
         }
-        if (scene = "GAME" || scene = "DEATH" || scene = "END_SCREEN" || scene = "REWARD")
+        if (scene = "GAME" || scene = "DEATH")
             ST.roundActive := true
         if (scene != "MATCHMAKING" && scene != "MENU")
             ST.mmEnterAt := 0
@@ -10175,18 +10214,6 @@ TickBody(profile) {
             ST.lobbySince := A_TickCount
             ST.squadEmptyCount := 0, ST.squadEverSeen := false, ST.groundAt := 0
             ST.squadStatus := CFG.squadAutoLeave ? "в лобби" : "выкл"
-            ; Только один ускоренный запуск после предполагаемого матча.
-            ; Защёлка отмены имеет приоритет, а плашку ещё нужно подтвердить.
-            if (ST.roundActive && prevState != "MATCHMAKING" && !ST.cancelHold) {
-                RecordRoundCompleted("возврат в лобби")
-                ST.lobbyRequeue := true
-                ST.roundActive := false
-                ST.queueTries := 0
-                if (CFG.lobbyDelaySec > 0 && !ST.lobbyCooldownUntil)
-                    ST.lobbyCooldownUntil := A_TickCount + CFG.lobbyDelaySec * 1000
-                Log("[i] Возврат в лобби после матча — проверяю кнопку «Играть»"
-                    . (CFG.lobbyDelaySec > 0 ? " (пауза " CFG.lobbyDelaySec " с)" : ""))
-            }
         }
         if (scene = "GAME")
             ST.queueSeen := false
@@ -10196,6 +10223,7 @@ TickBody(profile) {
             ST.tokenPresses := 0
             ST.tokenFoundMatch := false
             ST.matchStartT := A_TickCount
+            ResetEndHandoff()
             ResetNavigation()
             ST.groundAt := 0
             ST.squadCheckAt := 0, ST.squadEmptyCount := 0, ST.squadEverSeen := false
@@ -10861,17 +10889,17 @@ PanelPalette(theme) {
             return {canvas:"EEF1FA", side:"E4E9F7", card:"FCFDFF", well:"F1F4FC", line:"CFD8ED"
                 , chip:"E8EDFC", mark:"DDE4FC", primary:"3F50B8", onPrimary:"FFFFFF"
                 , ink:"212A47", muted:"535F7C", accent:"384CB0", danger:"A6224A", quiet:"7D89A4"
-                , violet:"6878DF", cyan:"278CA6", pink:"B854A8", peach:"BF6849"}
+                , violet:"6878DF", cyan:"278CA6", pink:"B854A8", peach:"BF6849", calc:"18765B", onCalc:"FFFFFF"}
         case "gray":
             return {canvas:"292D36", side:"22262F", card:"343945", well:"262B34", line:"4C5364"
                 , chip:"3D4454", mark:"454E65", primary:"52638F", onPrimary:"FFFFFF"
                 , ink:"F3F5FC", muted:"B8C0D1", accent:"B5C7FA", danger:"F7A5B8", quiet:"8C95A9"
-                , violet:"A8A9EF", cyan:"82D4DB", pink:"DC9FCC", peach:"EDAE95"}
+                , violet:"A8A9EF", cyan:"82D4DB", pink:"DC9FCC", peach:"EDAE95", calc:"7AD2B4", onCalc:"17332C"}
         default:
             return {canvas:"1C2030", side:"171B29", card:"272C40", well:"1D2233", line:"383F58"
                 , chip:"303751", mark:"323E69", primary:"485DC0", onPrimary:"FFFFFF"
                 , ink:"F1F3FF", muted:"AFB8D3", accent:"BCC8FF", danger:"FFA7BA", quiet:"8791AC"
-                , violet:"8395FF", cyan:"69C7E3", pink:"E38ED9", peach:"F1A68B"}
+                , violet:"8395FF", cyan:"69C7E3", pink:"E38ED9", peach:"F1A68B", calc:"72D8B5", onCalc:"17332C"}
     }
 }
 
@@ -11020,14 +11048,19 @@ PanelDrawButton(id, info, msg, hwnd) {
     dc := NumGet(info, offset + A_PtrSize, "Ptr"), rect := info + offset + 2 * A_PtrSize
     state := NumGet(info, 16, "UInt"), c := p.colors, kind := data.style
     picked := (kind = "nav" && p.view = data.key) || (kind = "theme" && CFG.panelTheme = data.key)
+        || (kind = "filter" && p.findingsFilter = data.key)
     disabled := state & 0x4, pressed := state & 0x1, focus := state & 0x10
     base := c.%data.surface%, fill := c.chip, border := c.line, color := c.ink
     if (kind = "nav" || kind = "theme") {
         fill := base, border := base, color := c.muted
         if picked
             fill := c.mark, border := c.line, color := c.accent
+    } else if (kind = "filter" && picked) {
+        fill := c.mark, border := c.violet, color := c.accent
     } else if (kind = "primary") {
         fill := c.primary, border := c.violet, color := c.onPrimary
+    } else if (kind = "calc") {
+        fill := c.calc, border := c.calc, color := c.onCalc
     } else if (kind = "danger") {
         fill := base, border := c.danger, color := c.danger
     }
@@ -11062,7 +11095,7 @@ PanelDrawButton(id, info, msg, hwnd) {
         DllCall("gdi32\SetBkMode", "Ptr", dc, "Int", 1)
         DllCall("gdi32\SetTextColor", "Ptr", dc, "UInt", PanelRgb(color))
         textRect := Buffer(16)
-        NumPut("Int", l + Round((kind = "nav" ? 39 : 6) * p.scale), "Int", t, "Int", r - Round(6 * p.scale), "Int", b, textRect)
+        NumPut("Int", l + Round((kind = "nav" ? 36 : 6) * p.scale), "Int", t, "Int", r - Round(4 * p.scale), "Int", b, textRect)
         ; DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS
         flags := 0x8824 | (kind = "nav" ? 0 : 1)
         DllCall("user32\DrawTextW", "Ptr", dc, "Str", data.control.Text, "Int", -1, "Ptr", textRect, "UInt", flags)
@@ -11220,15 +11253,17 @@ PanelBackdrop() {
                 art.Ribbon(x + 18, 113, 240, i = 1 ? c.cyan : (i = 2 ? c.violet : c.peach)
                     , i = 1 ? c.violet : c.pink, i = 2 ? -0.6 : 0.5)
             }
-            art.Card(206, 196, 852, 76, 15, c.card, c.line)
-            art.Card(222, 214, 39, 39, 10, c.mark, c.line)
-            art.Card(229, 221, 25, 25, 12, c.chip, c.accent)
-            art.Card(590, 215, 117, 37, 10, c.chip)
-            art.Card(717, 215, 117, 37, 10, c.chip)
-            art.Card(206, 284, 268, 236, 15, c.card, c.line)
-            art.Card(486, 284, 572, 236, 15, c.card, c.violet)
-            art.Card(206, 532, 852, 69, 15, c.card, c.line)
-            art.Card(206, 612, 852, 54, 15, c.card, c.line)
+            art.Card(206, 196, 852, 103, 15, c.card, c.line)
+            art.Card(222, 205, 39, 39, 10, c.mark, c.line)
+            art.Card(229, 212, 25, 25, 12, c.chip, c.accent)
+            art.Card(590, 203, 117, 45, 10, c.chip)
+            art.Card(717, 203, 117, 45, 10, c.chip)
+            art.Rect(222, 253, 820, 1, c.line)
+            art.Card(206, 309, 268, 213, 15, c.card, c.line)
+            art.Card(486, 309, 572, 213, 15, c.card, c.violet)
+            art.Card(206, 532, 268, 134, 15, c.card, c.line)
+            art.Card(486, 532, 572, 134, 15, c.card, c.line)
+            art.Card(504, 576, 536, 73, 9, c.well, c.line)
         case "settings":
             for x in [206, 638] {
                 art.Card(x, 109, 420, 111, 15, c.card, c.line)
@@ -11236,8 +11271,8 @@ PanelBackdrop() {
                 art.Card(x, 525, 420, 66, 15, c.card, c.line)
             }
             art.Card(206, 355, 852, 158, 15, c.card, c.line)
-            for x in [434, 628, 822]
-                art.Card(x, 432, 182, 61, 10, c.well, c.line)
+            for x in [536, 706, 876]
+                art.Card(x, 425, 164, 54, 10, c.well, c.line)
             art.Card(206, 603, 852, 63, 15, c.card, c.line)
         case "startup":
             art.Card(206, 85, 852, 378, 15, c.card, c.line)
@@ -11290,6 +11325,8 @@ PanelGo(view) {
                 control.Visible := false
         }
         p.view := view
+        if (view = "home")
+            p.findingsOverviewAt := -1
         PanelBackdrop()
         PanelPut(p.heading, p.titles[view])
         for control in p.views[view]
@@ -11340,16 +11377,27 @@ OnPanelThemeChange(theme, *) {
         p.themeWarning := "Тема применена, но не записалась в forma.ini. Попробуйте выбрать её ещё раз."
 }
 
-ReadPanelFindings(path) {
+PanelFindingKind(line) {
+    ; Опознаём только штатные формулировки RecordTokenFound/CheckToken.
+    ; Старый формат не сохраняет DryRun. Тип сигнала не подтверждает предмет.
+    if !RegExMatch(line, "^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  (.+) \(сессия: \d+, всего: \d+\)$", &match)
+        return "other"
+    if (match[1] == "Баннер редкой находки (скин/машина/жетон)")
+        return "banner"
+    return RegExMatch(match[1], "^Жетон пиратского магазина \(\d+(?:\.\d+)?, \d+(?:\.\d+)?\)$") ? "token" : "other"
+}
+
+ReadPanelFindingRows(path) {
     ; Не грузим старый журнал целиком и не показываем обрезанную UTF-8 строку.
+    rows := []
     if !FileExist(path)
-        return ""
+        return rows
     file := FileOpen(path, "r", "UTF-8-RAW")
     try {
         length := file.Length
         size := Min(length, 48 * 1024)
         if !size
-            return ""
+            return rows
         raw := Buffer(size + 1, 0), start := length - size
         file.Pos := start
         count := file.RawRead(raw, size), skip := 0
@@ -11362,35 +11410,110 @@ ReadPanelFindings(path) {
             skip := 3
         }
         if (skip >= count)
-            return ""
+            return rows
         text := StrGet(raw.Ptr + skip, "UTF-8")
     } finally {
         file.Close()
     }
-    lines := StrSplit(RTrim(text, "`r`n"), "`n", "`r"), result := ""
-    Loop Min(lines.Length, 80)
-        result .= lines[lines.Length - A_Index + 1] "`n"
-    return RTrim(result, "`n")
+    lines := StrSplit(RTrim(text, "`r`n"), "`n", "`r")
+    Loop Min(lines.Length, 80) {
+        line := lines[lines.Length - A_Index + 1]
+        if (Trim(line) != "")
+            rows.Push({text:line, kind:PanelFindingKind(line)})
+    }
+    return rows
+}
+
+PanelLoadFindings(force := false) {
+    global CFG, UI
+    p := UI.panel
+    size := -1
+    try size := FileGetSize(CFG.tokenFile)
+    key := CFG.tokenFile "|" size
+    if (!force && key = p.findingsKey)
+        return false
+    failed := false
+    try rows := ReadPanelFindingRows(CFG.tokenFile)
+    catch {
+        rows := [], failed := true
+    }
+    counts := Map("all", rows.Length, "token", 0, "banner", 0, "other", 0)
+    for row in rows
+        counts[row.kind] += 1
+    p.findingsRows := rows, p.findingsCounts := counts, p.findingsError := failed, p.findingsKey := key
+    return true
+}
+
+PanelUpdateFindingButtons(buttons) {
+    global UI
+    p := UI.panel
+    for kind, item in buttons {
+        text := item.label " · " (p.findingsError ? "—" : p.findingsCounts[kind])
+        if (item.control.Text != text)
+            item.control.Text := text
+    }
+}
+
+PanelRefreshHomeFindings(now := A_TickCount) {
+    global UI
+    p := UI.panel, last := p.findingsOverviewAt
+    ; Не проверяем файл на каждом тике панели. Сам хвост читается при
+    ; входе на обзор или после изменения длины журнала.
+    if (last >= 0 && now >= last && now - last < 1200)
+        return
+    p.findingsOverviewAt := now
+    PanelLoadFindings(last < 0)
+    PanelUpdateFindingButtons(p.homeFindingsButtons)
+    PanelPut(p.homeFindingsHint, p.findingsError ? "ИСТОРИЯ НЕДОСТУПНА" : "ИЗ ПОСЛЕДНИХ 80 СТРОК")
 }
 
 RefreshPanelFindings(force := false) {
     global CFG, ST, UI
-    if !UI.panel
+    p := UI.panel
+    if (!p || p.view != "finds")
         return
-    size := ""
-    try size := FileGetSize(CFG.tokenFile)
-    key := ST.tokensFound "|" CFG.totalTokens "|" size
-    if (!force && key = UI.findingsKey)
+    PanelPut(UI.findingsSession, "За сеанс: " ST.tokensFound)
+    PanelPut(UI.findingsTotal, "Всего: " CFG.totalTokens)
+    if PanelLoadFindings(force)
+        PanelRenderFindings()
+}
+
+PanelOpenFindings(kind, *) {
+    global UI
+    UI.panel.findingsFilter := kind
+    PanelGo("finds")
+}
+
+PanelSetFindingsFilter(kind, *) {
+    global UI
+    p := UI.panel, previous := p.findingsFilter
+    if (kind = previous)
         return
-    UI.findingsKey := key
-    UI.findingsSession.Value := "За сеанс: " ST.tokensFound
-    UI.findingsTotal.Value := "Всего: " CFG.totalTokens
-    try {
-        text := ReadPanelFindings(CFG.tokenFile)
-        UI.findingsEdit.Value := text != "" ? text : "Записей пока нет. Источник: ЖЕТОН_НАЙДЕН.txt рядом с FORMA."
-    } catch {
-        UI.findingsEdit.Value := "Не удалось прочитать ЖЕТОН_НАЙДЕН.txt. Повторите попытку кнопкой «Обновить»."
+    p.findingsFilter := kind
+    PanelRenderFindings()
+    p.findingsButtons[previous].control.Redraw()
+    p.findingsButtons[kind].control.Redraw()
+}
+
+PanelRenderFindings() {
+    global UI
+    p := UI.panel, text := "", shown := 0, counts := p.findingsCounts
+    for row in p.findingsRows {
+        if (p.findingsFilter = "all" || p.findingsFilter = row.kind) {
+            text .= row.text "`n"
+            shown += 1
+        }
     }
+    PanelUpdateFindingButtons(p.findingsButtons)
+    if p.findingsError
+        text := "Не удалось прочитать ЖЕТОН_НАЙДЕН.txt. Повторите попытку кнопкой «Обновить»."
+    else if !counts["all"]
+        text := "Записей пока нет. Источник: ЖЕТОН_НАЙДЕН.txt рядом с FORMA."
+    else if !shown
+        text := "В выбранной категории нет записей. Нажмите «Все», чтобы вернуться к журналу."
+    PanelPut(UI.findingsEdit, RTrim(text, "`n"))
+    PanelPut(p.findingsScope, p.findingsError ? "История недоступна · общие счётчики не изменены."
+        : "Показано " shown " из " counts["all"] " · до 80 строк из последних 48 КиБ · новые сверху")
 }
 
 PanelBuildSidebar() {
@@ -11400,9 +11523,13 @@ PanelBuildSidebar() {
     PanelText([68, 23, 105, 24], "FORMA", 15, "bold", "ink", "side")
     PanelText([69, 49, 106, 17], "Управление", 9, "norm", "muted", "side")
     PanelText([20, 92, 140, 18], "МЕНЮ", 8, "bold", "muted", "side")
-    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"], ["finds", "Находки"], ["startup", "Проверка запуска"]]
-        p.nav[item[1]] := PanelButton([14, 116 + (i - 1) * 47, 156, 40], item[2]
-            , PanelGo.Bind(item[1]), "nav", "side", item[1], item[1] = "startup" ? 9 : 11)
+    for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"]]
+        p.nav[item[1]] := PanelButton([12, 116 + (i - 1) * 43, 160, 37], item[2]
+            , PanelGo.Bind(item[1]), "nav", "side", item[1], 11)
+    PanelText([20, 253, 144, 18], "ДАННЫЕ И ПРОВЕРКА", 8, "bold", "muted", "side")
+    for i, item in [["finds", "Находки"], ["startup", "Проверка запуска"]]
+        p.nav[item[1]] := PanelButton([12, 277 + (i - 1) * 39, 160, 35], item[2]
+            , PanelGo.Bind(item[1]), "nav", "side", item[1], 9)
     PanelText([20, 368, 144, 20], "ГОРЯЧИЕ КЛАВИШИ", 8, "bold", "muted", "side")
     for i, label in ["Старт / стоп", "DryRun", "В трей", "Аварийный стоп", "Кадр и отчёт"] {
         y := 396 + (i - 1) * 30
@@ -11435,48 +11562,54 @@ PanelBuildHome() {
     PanelText([511, 158, 240, 18], "Раунды за сеанс", 9, "norm", "muted")
     PanelText([799, 158, 240, 18], "В работе · без пауз", 9, "norm", "muted")
 
-    PanelText([234, 226, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
-    PanelText([274, 208, 303, 25], "Находки FORMA", 11, "bold")
-    PanelText([274, 236, 303, 20], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
-    p.homeFound := PanelText([596, 220, 105, 26], "", 10, "bold", "accent", "chip", "Center +0x200")
-    p.homeTotal := PanelText([723, 220, 105, 26], "", 10, "bold", "accent", "chip", "Center +0x200")
-    PanelButton([844, 215, 106, 37], "История  ›", PanelGo.Bind("finds"))
-    p.resetFinds := PanelButton([959, 215, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
+    PanelText([234, 217, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
+    PanelText([274, 203, 303, 23], "Находки FORMA", 11, "bold")
+    PanelText([274, 229, 303, 17], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
+    PanelText([597, 207, 103, 14], "ЗА СЕАНС", 8, "bold", "muted", "chip", "Center")
+    PanelText([724, 207, 103, 14], "ВСЕГО", 8, "bold", "muted", "chip", "Center")
+    p.homeFound := PanelText([597, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
+    p.homeTotal := PanelText([724, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
+    p.homeFindingsHistory := PanelButton([844, 207, 106, 37], "История  ›", PanelOpenFindings.Bind("all"))
+    p.resetFinds := PanelButton([959, 207, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
+    p.homeFindingsHint := PanelText([222, 265, 216, 20], "", 8, "bold", "muted")
+    for spec in [["token", "Жетоны", 444, 193], ["banner", "Редкие баннеры", 645, 195], ["other", "Прочие записи", 848, 194]] {
+        control := PanelButton([spec[3], 260, spec[4], 30], spec[2], PanelOpenFindings.Bind(spec[1]), , , , 9)
+        p.homeFindingsButtons[spec[1]] := {control:control, label:spec[2]}
+    }
 
-    PanelText([223, 298, 235, 22], "До выхода из матча", 11, "bold")
-    p.ring := PanelAdd("Picture", [271, 328, 138, 138], "", , , , "")
-    p.clockLabel := PanelText([298, 367, 84, 16], "", 7, "bold", "muted", "card", "Center")
-    p.clockValue := PanelText([288, 384, 104, 32], "", 18, "bold", "ink", "card", "Center +0x200")
-    p.clockNote := PanelText([222, 476, 130, 34], "", 8, "norm", "muted")
-    PanelButton([354, 475, 103, 30], "Настроить", PanelGo.Bind("settings"), , , , 9)
+    PanelText([223, 319, 235, 22], "До выхода из матча", 11, "bold")
+    p.ring := PanelAdd("Picture", [271, 343, 138, 138], "", , , , "")
+    p.clockLabel := PanelText([298, 382, 84, 16], "", 7, "bold", "muted", "card", "Center")
+    p.clockValue := PanelText([288, 399, 104, 32], "", 18, "bold", "ink", "card", "Center +0x200")
+    p.clockNote := PanelText([222, 483, 130, 34], "", 8, "norm", "muted")
+    PanelButton([354, 483, 103, 30], "Настроить", PanelGo.Bind("settings"), , , , 9)
 
-    PanelText([504, 298, 272, 22], "Управление сеансом", 11, "bold")
-    p.inputLabel := PanelText([870, 300, 169, 19], "", 9, "bold", "accent", "card", "Right")
-    UI.btnStart := PanelButton([504, 328, 169, 38], "Старт", (*) => OnStart(), "primary", , , 11)
-    UI.btnPause := PanelButton([683, 328, 170, 38], "Пауза", OnPause, , , , 11)
-    UI.btnStop := PanelButton([863, 328, 177, 38], "Стоп", (*) => OnStop(), , , , 11)
-    PanelText([504, 379, 220, 18], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
-    UI.ddMode := PanelCombo([504, 399, 258, 26]
+    PanelText([504, 319, 272, 22], "Управление сеансом", 11, "bold")
+    p.inputLabel := PanelText([870, 321, 169, 19], "", 9, "bold", "accent", "card", "Right")
+    UI.btnStart := PanelButton([504, 346, 169, 38], "Старт", (*) => OnStart(), "primary", , , 11)
+    UI.btnPause := PanelButton([683, 346, 170, 38], "Пауза", OnPause, , , , 11)
+    UI.btnStop := PanelButton([863, 346, 177, 38], "Стоп", (*) => OnStop(), , , , 11)
+    PanelText([504, 391, 220, 18], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
+    UI.ddMode := PanelCombo([504, 411, 258, 26]
         , ["Авто-игра (Zero Build)", "AFK-очередь (цикл матчей)", "Только Анти-АФК (движение)", "AFK XP (LEGO / Creative)"])
     UI.ddMode.OnEvent("Change", PanelInvoke.Bind(OnBotModeChange))
-    UI.cbDry := PanelAdd("CheckBox", [780, 399, 260, 25], "Тест: без нажатий (DryRun)", 10, "bold", "accent")
+    UI.cbDry := PanelAdd("CheckBox", [780, 411, 260, 25], "Тест: без нажатий (DryRun)", 10, "bold", "accent")
     UI.cbDry.OnEvent("Click", PanelInvoke.Bind(OnModeOptionsChange))
-    p.action := PanelText([504, 438, 530, 27], "", 9, "norm", "muted", "card", "0xC000")
+    p.action := PanelText([504, 443, 530, 27], "", 9, "norm", "muted", "card", "0xC000")
     UI.btnCont := PanelButton([504, 477, 196, 30], "Возобновить очередь", OnResumeQueue, , , , 9)
     p.detail := PanelButton([711, 477, 141, 30], "Сводка", ShowPanelStatus, , , , 9)
     UI.btnBypass := PanelButton([863, 477, 177, 30], "Пропустить матч", RequestBypassMatch, , , , 9)
 
-    PanelText([222, 543, 360, 22], "Последнее событие", 11, "bold")
-    p.lastLog := PanelText([222, 574, 674, 17], "", 9, "norm", "muted", "card", "0xC000")
-    p.openLog := PanelButton([908, 549, 134, 36], "Весь журнал  ›", PanelGo.Bind("log"))
+    PanelText([223, 543, 230, 23], "Автостоп сеанса", 11, "bold")
+    p.stopTime := PanelText([223, 571, 232, 31], "", 16, "bold", "accent")
+    p.stopNote := PanelText([223, 610, 232, 42], "", 9, "norm", "muted")
 
-    PanelText([222, 619, 800, 16], "ДИАГНОСТИКА И ИНСТРУМЕНТЫ", 8, "bold", "muted")
-    UI.btnCheck := PanelButton([222, 637, 146, 23], "Проверить окно", OnCheckCapture, , , , 9)
-    UI.btnCal := PanelButton([378, 637, 139, 23], "Проверить HUD", OnCalibrate, , , , 9)
-    UI.btnVision := PanelButton([527, 637, 109, 23], "Зрение", ToggleVision, , , , 9)
-    UI.btnHud := PanelButton([646, 637, 112, 23], "Мини-HUD", ToggleMiniHud, , , , 9)
-    PanelButton([768, 637, 160, 23], "Кадр и отчёт", OnSaveCalibration, , , , 9)
-    UI.btnHelp := PanelButton([938, 637, 104, 23], "Справка", OnShowHelp, , , , 9)
+    PanelText([504, 543, 352, 24], "Журнал действий", 11, "bold")
+    p.openLog := PanelButton([908, 542, 132, 26], "Весь журнал  ›", PanelGo.Bind("log"), , , , 9)
+    p.homeLogRows := []
+    Loop 3
+        p.homeLogRows.Push(PanelText([515, 582 + (A_Index - 1) * 21, 514, 18], "", 9, "norm"
+            , A_Index = 1 ? "ink" : "muted", "well", "+0x80 0xC000"))
 }
 
 PanelBuildSettings() {
@@ -11501,18 +11634,24 @@ PanelBuildSettings() {
     }
 
     PanelText([224, 367, 530, 24], "Координаты мыши и экран", 11, "bold")
-    PanelText([224, 398, 816, 21], "Подгонка под размер клиентской области · X / Y. Предпросмотр не меняет точки."
+    PanelText([224, 399, 816, 20], "Подгонка под экран · только предпросмотр X / Y, сохранённые точки не меняются."
         , 9, "norm", "muted")
-    p.refreshCoords := PanelButton([766, 367, 104, 29], "Обновить", (*) => PanelUpdateCoords(true), , , , 9)
+    p.refreshCoords := PanelButton([766, 367, 104, 29], "Обновить", PanelSelectCoords, , , , 9)
     UI.btnAfk := PanelButton([880, 367, 160, 29], "Изменить точки…", ShowAfkSettings, , , , 9)
-    PanelText([224, 431, 200, 17], "РАЗРЕШЕНИЕ", 8, "bold", "muted")
-    p.coordPick := PanelCombo([224, 451, 189, 25], ["База FORMA", "1920 × 1080", "2560 × 1440", "3840 × 2160", "Мой экран", "Окно Fortnite"])
-    p.coordPick.OnEvent("Change", (*) => PanelUpdateCoords(true))
-    p.coordHint := PanelText([224, 484, 200, 19], "", 8, "norm", "muted")
+    p.coordPick := PanelCombo([224, 425, 295, 25], ["База FORMA", "1920 × 1080", "2560 × 1440", "3840 × 2160"
+        , "Мой экран", "Окно Fortnite", "Свой размер"])
+    p.coordPick.OnEvent("Change", PanelSelectCoords)
+    p.coordSize := PanelAdd("Edit", [224, 460, 111, 26], "", 9, "norm", "ink", "well", "Center -E0x200 +Border Limit24")
+    cue := "1600 × 900"
+    SendMessage(0x1501, 0, StrPtr(cue), p.coordSize) ; EM_SETCUEBANNER
+    p.coordDesktop := PanelButton([341, 459, 80, 28], "Мой экран", OnPanelDesktopCoords, , , , 8)
+    p.coordCalc := PanelButton([427, 459, 92, 28], "Рассчитать", OnPanelCalculateCoords, "calc", , , 8)
+    p.coordHint := PanelText([536, 484, 504, 19], "", 8, "norm", "muted")
+    p.coordError := PanelText([224, 488, 300, 16], "", 8, "norm", "danger")
     for i, label in ["Играть", "Параметры", "В лобби"] {
-        x := [448, 642, 836][i]
-        PanelText([x, 443, 153, 18], label, 9, "norm", "muted", "well")
-        p.coordValues.Push(PanelText([x, 462, 153, 22], "", 11, "bold", "ink", "well"))
+        x := [548, 718, 888][i]
+        PanelText([x, 432, 141, 17], label, 9, "norm", "muted", "well")
+        p.coordValues.Push(PanelText([x, 451, 141, 22], "", 11, "bold", "ink", "well"))
     }
 
     PanelText([224, 533, 380, 22], "Управление окном", 11, "bold")
@@ -11536,12 +11675,60 @@ PanelBuildLog() {
     global UI
     p := UI.panel, p.buildView := "log"
     PanelText([224, 101, 365, 27], "Журнал действий", 13, "bold")
-    PanelText([224, 133, 810, 20], "Время / событие · до 300 записей текущего запуска. Файл run.log остаётся на диске."
+    PanelText([224, 133, 810, 20], "До 300 событий текущего запуска. Очистка экрана не удаляет run.log."
         , 9, "norm", "muted")
     PanelButton([620, 100, 130, 30], "Кадр и отчёт", OnSaveCalibration, , , , 9)
     PanelButton([760, 100, 134, 30], "Найти run.log", OnOpenFolder, , , , 9)
     PanelButton([904, 100, 136, 30], "Очистить экран", OnPanelClearLog, , , , 9, "ClearView")
-    UI.logEdit := PanelAdd("Edit", [224, 159, 816, 489], "", 10, "norm", "ink", "well", "ReadOnly -Wrap VScroll HScroll -E0x200")
+
+    PanelText([224, 164, 49, 26], "Поиск", 9, "bold", "muted", "card", "+0x200")
+    p.logSearch := PanelAdd("Edit", [280, 163, 395, 28], "", 10, "norm", "ink", "well", "-Multi -E0x200 +Border Limit128")
+    cue := "Время или текст события"
+    SendMessage(0x1501, 0, StrPtr(cue), p.logSearch) ; EM_SETCUEBANNER
+    p.logSearch.OnEvent("Change", PanelInvoke.Bind(RefreshLog))
+    p.logReset := PanelButton([685, 163, 152, 28], "Сбросить поиск", PanelResetLogSearch, , , , 9)
+    p.logLive := PanelAdd("CheckBox", [854, 163, 186, 28], "Автообновление", 10, "norm", "ink", "card", "Checked")
+    p.logLive.OnEvent("Click", PanelSetLogLive)
+    p.logScope := PanelText([224, 201, 816, 18], "", 9, "norm", "muted")
+    UI.logEdit := PanelAdd("Edit", [224, 225, 816, 423], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
+}
+
+PanelRenderLog() {
+    global LogBuf, UI
+    p := UI.panel, p.logDirty := false
+    snapshot := p.logSnapshot, lines := snapshot ? snapshot : LogBuf.Clone()
+    raw := p.logSearch.Value, query := Trim(raw), shown := 0, text := ""
+    for line in lines {
+        ; Locale учитывает регистр кириллицы, в отличие от режима false.
+        if (query = "" || InStr(line, query, "Locale")) {
+            text .= line "`n"
+            shown += 1
+        }
+    }
+    if !shown
+        text := lines.Length ? "По запросу ничего не найдено." : "Новых событий пока нет."
+    PanelPut(p.logScope, "Показано: " shown " из " lines.Length
+        . (snapshot ? "  ·  Просмотр зафиксирован. Запись в run.log продолжается." : ""))
+    p.logReset.Enabled := (raw != "")
+    if !(p.logText == text) {
+        UI.logEdit.Value := text
+        p.logText := text
+        ; При просмотре всех событий следим за концом, при поиске читаем сверху.
+        SendMessage(0x115, !snapshot && query = "" ? 7 : 6, 0, UI.logEdit) ; WM_VSCROLL
+    }
+}
+
+PanelSetLogLive(source, *) {
+    global LogBuf, UI
+    UI.panel.logSnapshot := source.Value ? 0 : LogBuf.Clone()
+    RefreshLog()
+}
+
+PanelResetLogSearch(*) {
+    global UI
+    UI.panel.logSearch.Value := ""
+    RefreshLog()
+    UI.panel.logSearch.Focus()
 }
 
 PanelBuildFinds() {
@@ -11551,9 +11738,15 @@ PanelBuildFinds() {
     UI.findingsSession := PanelText([235, 148, 184, 32], "За сеанс: 0", 12, "bold", "accent", "chip", "Center +0x200")
     UI.findingsTotal := PanelText([453, 148, 184, 32], "Всего: 0", 12, "bold", "accent", "chip", "Center +0x200")
     PanelButton([900, 148, 140, 32], "Обновить", (*) => RefreshPanelFindings(true), , , , 9, "FindRefresh")
-    PanelText([224, 208, 816, 42], "ЖЕТОН_НАЙДЕН.txt · новые сверху. Это сигналы FORMA, включая DryRun и редкие баннеры, а не инвентарь Epic или подтверждение предмета."
+    PanelText([224, 203, 816, 36], "ЖЕТОН_НАЙДЕН.txt · сигналы с экрана, в том числе DryRun. Это не инвентарь Epic и не подтверждение получения предмета."
         , 10, "norm", "muted")
-    UI.findingsEdit := PanelAdd("Edit", [224, 252, 816, 396], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
+    for spec in [["all", "Все", 224, 162], ["token", "Жетоны", 398, 210]
+        , ["banner", "Редкие баннеры", 620, 210], ["other", "Прочие записи", 842, 198]] {
+        control := PanelButton([spec[3], 245, spec[4], 33], spec[2], PanelSetFindingsFilter.Bind(spec[1]), "filter", , spec[1])
+        p.findingsButtons[spec[1]] := {control:control, label:spec[2]}
+    }
+    p.findingsScope := PanelText([224, 289, 816, 20], "", 9, "norm", "muted")
+    UI.findingsEdit := PanelAdd("Edit", [224, 314, 816, 334], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200")
 }
 
 PanelBuildStartup() {
@@ -11567,10 +11760,15 @@ PanelBuildStartup() {
     p.startupReport := PanelAdd("Edit", [224, 161, 816, 253], "", 10, "norm", "ink", "well", "ReadOnly VScroll -E0x200 vStartupReport")
     p.startupNote := PanelText([224, 428, 816, 20], "", 9, "norm", "muted")
 
-    PanelText([224, 491, 720, 25], "Если программа не запускает сеанс", 11, "bold")
-    PanelText([224, 526, 816, 28], "1. Для проверки запуска оставьте DryRun включённым. Без игры отсутствие окна Fortnite — это нормально.", 9)
-    PanelText([224, 560, 816, 27], "2. Если run.log не появился, распакуйте FORMA в папку с правом записи и запустите EXE снова.", 9)
-    PanelText([224, 594, 816, 43], "3. Для разбора ошибки скопируйте сводку. Если прикладываете свежий run.log, сначала проверьте его на личные данные.", 9)
+    PanelText([224, 490, 720, 25], "Диагностика и инструменты", 11, "bold")
+    UI.btnCheck := PanelButton([224, 527, 143, 32], "Проверить окно", OnCheckCapture, , , , 9)
+    UI.btnCal := PanelButton([377, 527, 137, 32], "Проверить HUD", OnCalibrate, , , , 9)
+    UI.btnVision := PanelButton([524, 527, 106, 32], "Зрение", ToggleVision, , , , 9)
+    UI.btnHud := PanelButton([640, 527, 108, 32], "Мини-HUD", ToggleMiniHud, , , , 9)
+    PanelButton([758, 527, 170, 32], "Кадр и отчёт", OnSaveCalibration, , , , 9)
+    UI.btnHelp := PanelButton([938, 527, 102, 32], "Справка", OnShowHelp, , , , 9)
+    PanelText([224, 573, 816, 40], "Начните с DryRun. Без игры отсутствие окна Fortnite — это нормально. Если run.log не появился, запустите EXE из распакованной папки с правом записи.", 9)
+    PanelText([224, 623, 816, 32], "Перед отправкой run.log проверьте его на личные данные.", 9, "norm", "muted")
 }
 
 BuildStartupReport() {
@@ -11622,8 +11820,11 @@ BuildGui() {
         , views:Map("home", [], "log", [], "settings", [], "finds", [], "startup", [])
         , titles:Map("home", "Обзор", "log", "Журнал", "settings", "Настройки", "finds", "Находки", "startup", "Проверка")
         , nav:Map(), themes:Map(), paint:[], buttons:Map(), sliders:Map(), values:Map(), keys:[], coordValues:[], timers:[]
-        , coordChoice:0, preview:0, ringKey:-1, logDirty:false, themeWarning:""}
-    UI.panel := p, UI.findingsKey := ""
+        , coordChoice:0, preview:0, customSize:0, ringKey:-1, themeWarning:""
+        , logDirty:false, homeLogDirty:true, logSnapshot:0, logText:""
+        , findingsButtons:Map(), findingsFilter:"all", findingsKey:"", findingsRows:[], findingsCounts:Map(), findingsError:false
+        , homeFindingsButtons:Map(), findingsOverviewAt:-1}
+    UI.panel := p
     g.BackColor := p.colors.canvas
     PanelArtStart(p)
     p.background := PanelAdd("Picture", [0, 0, w, h], "", , , , "")
@@ -11742,10 +11943,40 @@ PanelClientPreview() {
     return 0
 }
 
+PanelSelectCoords(*) {
+    global UI
+    p := UI.panel
+    if (p.coordPick.Value = 7 && p.customSize)
+        p.coordSize.Value := p.customSize.w " × " p.customSize.h
+    PanelPut(p.coordError, "")
+    PanelUpdateCoords(true)
+}
+
+OnPanelDesktopCoords(*) {
+    global UI
+    p := UI.panel
+    p.coordSize.Value := A_ScreenWidth " × " A_ScreenHeight
+    p.coordPick.Value := 5
+    PanelSelectCoords()
+}
+
+OnPanelCalculateCoords(*) {
+    global UI
+    p := UI.panel
+    if (!RegExMatch(p.coordSize.Value, "i)^\h*([0-9]{1,5})\h*[x×х]\h*([0-9]{1,5})\h*$", &size)
+        || Integer(size[1]) < 1 || Integer(size[1]) > 16384 || Integer(size[2]) < 1 || Integer(size[2]) > 16384) {
+        PanelPut(p.coordError, "Введите Ш × В от 1 до 16384, например 1600 × 900.")
+        return
+    }
+    p.customSize := {w:Integer(size[1]), h:Integer(size[2])}
+    p.coordPick.Value := 7
+    PanelSelectCoords()
+}
+
 PanelUpdateCoords(force := false) {
     global CFG, UI
     p := UI.panel, choice := p.coordPick.Value
-    if (choice < 1 || choice > 6)
+    if (choice < 1 || choice > 7)
         choice := 1
     if (force || p.coordChoice != choice) {
         p.coordChoice := choice, p.preview := 0
@@ -11757,10 +11988,17 @@ PanelUpdateCoords(force := false) {
                 p.preview := {w:A_ScreenWidth, h:A_ScreenHeight}
             case 6:
                 try p.preview := PanelClientPreview()
+            case 7:
+                p.preview := p.customSize
         }
     }
     ref := p.preview ? p.preview : {w:CFG.coordRefW, h:CFG.coordRefH}
-    PanelPut(p.coordHint, (choice = 6 && !p.preview) ? "Нет окна · показана база" : ref.w " × " ref.h " · X / Y")
+    hint := ref.w " × " ref.h " · X / Y"
+    if (!p.preview && choice = 6)
+        hint := "Нет окна · показана база"
+    else if (!p.preview && choice = 7)
+        hint := "Введите размер и нажмите «Рассчитать» · показана база"
+    PanelPut(p.coordHint, hint)
     for i, point in [[CFG.playNormX, CFG.playNormY], [CFG.optNormX, CFG.optNormY], [CFG.leaveNormX, CFG.leaveNormY]]
         PanelPut(p.coordValues[i], Round(point[1] * ref.w) "  /  " Round(point[2] * ref.h))
 }
@@ -11784,23 +12022,55 @@ PanelMatchClock(now) {
         , percent:Round(100 * remaining / limit), note:"Лимит: " FmtCountdown(limit) (CFG.dryRun ? "`nDryRun" : "")}
 }
 
+PanelAutoStopClock(elapsed) {
+    global CFG, ST
+    if (CFG.stopAfterMin <= 0)
+        return {text:"Без лимита", note:"Остановка по времени выключена."}
+    limit := Round(CFG.stopAfterMin * 60)
+    if !ST.running
+        return {text:FmtCountdown(limit * 1000), note:"Лимит активного времени. Отсчёт после старта."}
+    if ST.finishMatchArmed
+        return {text:"Доигрываю", note:"Лимит истёк. Стоп после матча."}
+    remaining := Max(0, limit - elapsed)
+    return {text:FmtCountdown(remaining * 1000)
+        , note:remaining = 0 ? "Лимит времени достигнут." : (ST.paused ? "Отсчёт на паузе." : "До остановки · без учёта пауз.")}
+}
+
+PanelUpdateRecentLog() {
+    global UI, LogBuf
+    p := UI.panel
+    if !p.homeLogDirty
+        return
+    p.homeLogDirty := false
+    lines := LogBuf, count := lines.Length
+    for i, row in p.homeLogRows {
+        text := i <= count ? RegExReplace(lines[count - i + 1], "[\r\n][\s\S]*", " …")
+            : (i = 1 ? "Новых событий пока нет." : "")
+        PanelPut(row, text)
+    }
+}
+
 PanelUpdateHome() {
-    global CFG, ST, UI, LogBuf
+    global CFG, ST, UI
     p := UI.panel
     PanelPut(p.scene, !ST.running ? (ST.startWorkers ? "Запуск…" : "Ожидание")
         : (ST.paused ? "Пауза" : (ST.cancelHold ? "Жду игрока" : StateRu(ST.leaveActive ? "LEAVING" : ST.state))))
     PanelPut(p.rounds, ST.rounds (CFG.maxRounds > 0 ? " / " CFG.maxRounds : ""))
-    PanelPut(p.elapsed, FmtClock(SessionElapsedSec()))
-    PanelPut(p.homeFound, "Сеанс: " ST.tokensFound)
-    PanelPut(p.homeTotal, "Всего: " CFG.totalTokens)
+    elapsed := SessionElapsedSec(), autoStop := PanelAutoStopClock(elapsed)
+    PanelPut(p.elapsed, FmtClock(elapsed))
+    PanelPut(p.stopTime, autoStop.text)
+    PanelPut(p.stopNote, autoStop.note)
+    PanelPut(p.homeFound, ST.tokensFound)
+    PanelPut(p.homeTotal, CFG.totalTokens)
     p.resetFinds.Enabled := PanelCanEditTimers() && (ST.tokensFound || CFG.totalTokens)
-    PanelPut(p.lastLog, LogBuf.Length ? RegExReplace(LogBuf[-1], "[\r\n].*", " …") : "Новых событий пока нет.")
+    PanelRefreshHomeFindings()
+    PanelUpdateRecentLog()
     PanelPut(p.inputLabel, CFG.dryRun ? "DRYRUN  /  БЕЗ ВВОДА" : "РЕАЛЬНЫЙ ВВОД")
     note := ST.lastAction
     if ST.cancelHold
         note := "Подбор приостановлен. Возобновите очередь вручную."
     else if (note = "")
-        note := "Проверьте окно и HUD, затем нажмите «Старт»."
+        note := "Окно и HUD можно проверить на вкладке «Проверка запуска»."
     PanelPut(p.action, note)
     PanelUpdateRing()
 }
@@ -11858,6 +12128,9 @@ UpdateUiStatus() {
     switch p.view {
         case "home":
             UI.btnStart.Enabled := PanelCanEditTimers() && !ST.macroRec && !ST.macroCountdown && !ST.pickActive
+            startText := (!ST.running && CFG.hkStart != "" && StrLen(CFG.hkStart) <= 12) ? "Старт · " CFG.hkStart : "Старт"
+            if (UI.btnStart.Text != startText)
+                UI.btnStart.Text := startText
             UI.btnPause.Enabled := ST.running || ST.mouseCalActive
             text := ST.mouseCalActive ? "Отменить тест" : (ST.paused ? "Снять паузу" : "Пауза")
             if (UI.btnPause.Text != text)
@@ -11893,8 +12166,14 @@ OnPanelResetFinds(*) {
 }
 
 OnPanelClearLog(*) {
-    global LogBuf
+    global LogBuf, UI
     LogBuf := []
+    p := UI.panel
+    if p {
+        p.homeLogDirty := true
+        if p.logSnapshot
+            p.logSnapshot := []
+    }
     RefreshLog()
 }
 
@@ -13029,6 +13308,7 @@ ResetSceneEvidence() {
     ST.lastShot := 0, ST.lastShotAt := 0, ST.prevShot := 0
     ST.deadSince := 0, ST.hpPrev := -1
     ST.uiBoxCache := 0, ST.uiBoxSeq := 0
+    ResetEndHandoff()
 }
 
 StartPermit(gen) {
@@ -14014,8 +14294,9 @@ OnCheckCapture(*) {
     Log("  последнее действие: " (ST.lastAction != "" ? ST.lastAction : "—"))
     Log("  движение: " (ST.sprintOn ? "БЕГ " : "") (ST.crouchOn ? "ПРИСЕД " : "")
         . (ST.adsOn ? "ПРИЦЕЛ " : "") "· режим «" (ST.moveMode != "" ? ST.moveMode : "—") "»"
-        . " · прыжков " ST.jumps " · подкатов " ST.slides " · приседаний " ST.crouches
-        . " · препятствие впереди " Round(ST.obstacleVal * 100) "%"
+        . " · прыжков " ST.jumps " · приседаний " ST.crouches
+        . " · коридоры " (ST.navInfo ? ST.navInfo.left "/" ST.navInfo.center "/" ST.navInfo.right
+            . " · " NavKindRu(ST.navInfo.kind) " (" ST.navInfo.hits "/2)" : "ещё не измерялись")
         . " · спасений зависшего тика " ST.tickHeals)
     ; ---- v7.5: видно, что движение не рвётся и что бой/кирка реально работают ----
     Log("  бой и движение (v7.5): очередей по врагу " ST.shots
@@ -14202,7 +14483,7 @@ BuildCalibrationReport(shot) {
     enemy := ReadStaticFigure(shot, CFG.enemyFastFrac, 0, diagnostic)
     prompt := ReadInteractPrompt(shot)
     ring := SoundMarks(shot)
-    flashPct := SoundFlash(shot)
+    flashPct := SoundFlash(shot), nav := ScanNavCorridors(shot)
 
     lines := []
     lines.Push("── калибровка ──────────────────────────────")
@@ -14224,6 +14505,8 @@ BuildCalibrationReport(shot) {
         . "   [порог лечения " CFG.hpLowPercent "%]")
     lines.Push("  сундук: " (chest ? ("кандидат, " chest.area " px в (" chest.x "," chest.y ")") : "нет")
         . "   лут: " (loot ? (loot.kind ", " loot.area " px") : "нет"))
+    lines.Push("  коридоры слева/центр/справа: " nav.left "/" nav.center "/" nav.right
+        . " · " NavKindRu(nav.kind) " · один кадр; не карта препятствий")
     cand := EnemyCandidates(shot, enemy, diagnostic.skinPct)
     lines.Push("  фигура: " (enemy ? ("кандидат в (" enemy.cx "," enemy.cy "), рамка "
         . enemy.w "x" enemy.h " @ (" enemy.x "," enemy.y ")") : "нет: " diagnostic.figureReject)

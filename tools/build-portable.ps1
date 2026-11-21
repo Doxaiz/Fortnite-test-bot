@@ -44,6 +44,17 @@ function Find-UniqueFile([string]$Directory, [string]$Name) {
     return $files[0].FullName
 }
 
+function Invoke-AhkCheck([string]$Runtime, [string]$Arguments, [string]$Check, [string]$Directory) {
+    $stdout = Join-Path $Directory 'check-stdout.log'
+    $stderr = Join-Path $Directory 'check-stderr.log'
+    $process = Start-Process -FilePath $Runtime -ArgumentList $Arguments -WorkingDirectory $Directory -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
+    if ($process.ExitCode -ne 0) {
+        $reason = Get-Content -LiteralPath $stderr -Encoding UTF8 -TotalCount 1
+        throw "$Check failed (exit code $($process.ExitCode)). $reason"
+    }
+}
+
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('forma-build-' + [guid]::NewGuid().ToString('N'))
 New-Item -Path $temp -ItemType Directory | Out-Null
 try {
@@ -87,6 +98,12 @@ try {
     $archive = Join-Path $temp $archiveName
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archive -CompressionLevel Optimal
     if ($SmokeTest) {
+        foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_panel') {
+            $script = Join-Path $repo "tests\$suite.ahk"
+            Write-Host "Smoke test: $suite"
+            Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$suite test" $temp
+        }
+
         $archivesToTest = [ordered]@{ built = $archive }
         $published = Join-Path $repo "portable\$archiveName"
         if (Test-Path -LiteralPath $published -PathType Leaf) {
@@ -105,14 +122,7 @@ try {
             Expand-Archive -LiteralPath $item.Value -DestinationPath $extracted
             $smokeExe = Join-Path $extracted 'FORMA.exe'
             $smokeArgs = '/ErrorStdOut=UTF-8 "{0}" "{1}"' -f $smokeScript, $smokeExe
-            $stdout = Join-Path $extracted 'smoke-stdout.log'
-            $stderr = Join-Path $extracted 'smoke-stderr.log'
-            $smoke = Start-Process -FilePath $runtime -ArgumentList $smokeArgs -WorkingDirectory $temp -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            Get-Content -LiteralPath $stdout, $stderr -Encoding UTF8
-            if ($smoke.ExitCode -ne 0) {
-                $reason = Get-Content -LiteralPath $stderr -Encoding UTF8 -TotalCount 1
-                throw "The $($item.Key) portable startup test failed (exit code $($smoke.ExitCode)). $reason"
-            }
+            Invoke-AhkCheck $runtime $smokeArgs "The $($item.Key) portable startup test" $temp
         }
     }
     New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
