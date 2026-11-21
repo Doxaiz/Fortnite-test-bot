@@ -23,10 +23,10 @@ try {
     } else {
         for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestInputGuards, TestPixelRatios
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
-            , TestQueueOutcome, TestCalibrationIsolation, TestNavigationState, TestMotionUsesSameWindow
+            , TestQueueOutcome, TestEndHandoff, TestCalibrationIsolation, TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
-            , TestEnemyEvidence, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
+            , TestEnemyEvidence, TestCombatPreemption, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
             test()
@@ -575,6 +575,81 @@ TestQueueOutcome() {
     Check(!ResolveQueueScene("GAME", t) && ST.cancelHold && ST.queuePending, "сценой нельзя снять паузу игрока")
 }
 
+TestEndHandoff() {
+    WithGroundFixture(CheckEndHandoff)
+}
+
+FixtureEnd(id, showAgain := true, showReturn := true) {
+    shot := SceneFixture(id, A_TickCount, showAgain ? "results" : "blank")
+    if showReturn {
+        FixtureRect(shot, 310, 212, 136, 55, 0x252533)
+        FixtureRect(shot, 322, 226, 112, 22, 0xEEEEEE)
+        FixtureRect(shot, 350, 234, 26, 7, 0x202020)
+    }
+    return shot
+}
+
+CheckEndHandoff() {
+    global CFG, ST
+    CFG.featPlayAgain := true, CFG.featAutoQueue := true, CFG.endAction := "play_again"
+    CFG.clickRetries := 2, CFG.verifyMs := 400, CFG.retryAfterMs := 600, CFG.endReturnAfterMs := 1200
+    CFG.scanMenuMs := 0, CFG.lobbyDelaySec := 2, CFG.stopAfterMin := 0, CFG.maxRounds := 0
+    CFG.lobbyStableMs := 400, CFG.playConfirmMs := 400, CFG.maxActionsPerMin := 0
+    ST.lastClickT := 0, ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.endClickSeq := 0
+    ST.state := "END_SCREEN", ST.roundActive := true, ST.roundCounted := false
+    ST.queuePending := false, ST.cancelHold := false, ST.tokenShown := false, ST.tokenFoundMatch := false
+    ST.tokenStopArmed := false, ST.finishMatchArmed := false, ST.lobbyRequeue := false, ST.lobbyCooldownUntil := 0
+    ST.playSeenAt := 0, ST.inMatchT := 0, ST.mmEnterAt := 0, ST.menuCache := 0
+    t := A_TickCount, rounds := ST.rounds, again := ST.clickAgain, queues := ST.clickQueue
+    first := FixtureEnd(200), ST.scanWork := 0
+    Check(DetectState(first, 0, t) = "END_SCREEN" && FrameActionButton(first, "END_SCREEN"), "вижу плашку итогов")
+    HandleEndScreen(first, t)
+    HandleEndScreen(first, t + 1000)
+    Check(ST.endRetry = 1 && ST.clickAgain = again + 1 && ST.rounds = rounds + 1 && !ST.lobbyRequeue
+        , "один кадр итогов не отправляет два клика и учитывает матч один раз")
+    second := FixtureEnd(201), ST.scanWork := 0
+    DetectState(second, 0, t + 400)
+    HandleEndScreen(second, t + 400)
+    early := FixtureEnd(202), ST.scanWork := 0
+    DetectState(early, 0, t + 800)
+    HandleEndScreen(early, t + 800)
+    Check(ST.endRetry = 2 && !ST.endReturnRetry && ST.clickAgain = again + 2
+        , "после лимита повтор не кликается, резерв ждёт паузу")
+    fallback := FixtureEnd(203), ST.scanWork := 0
+    DetectState(fallback, 0, t + 1200)
+    HandleEndScreen(fallback, t + 1200)
+    Check(ST.endRetry = 2 && ST.endReturnRetry = 1 && ST.clickAgain = again + 3 && !ST.lobbyRequeue
+        && ST.rounds = rounds + 1 && !ST.held.Count, "резервная кнопка при всё ещё видимом повтора; сухой клик не доказывает лобби")
+
+    ; Пустой экран и старый контур не разрешают новый поиск.
+    ST.state := "MENU"
+    HandleMenu(SceneFixture(204, A_TickCount), t + 1300)
+    Check(!ST.lobbyRequeue && ST.clickQueue = queues, "одна принятая сцена не подтверждает возврат")
+    lobby := SceneFixture(205, t + 1400, "play"), ST.scanWork := 0
+    Check(DetectState(lobby, 0, t + 1400) = "MENU", "свежая плашка лобби")
+    HandleMenu(lobby, t + 1400)
+    Check(ST.lobbyRequeue && !ST.roundActive && ST.lobbyCooldownUntil = t + 3400 && ST.clickQueue = queues
+        && ST.rounds = rounds + 1, "подтверждаем возврат один раз и выдерживаем паузу перед очередью")
+    lobby := SceneFixture(206, t + 3400, "play"), ST.scanWork := 0
+    DetectState(lobby, 0, t + 3400)
+    HandleMenu(lobby, t + 3400)
+    Check(!ST.lobbyRequeue && ST.clickQueue = queues + 1 && !ST.held.Count, "следующий матч запрашивается через лобби только в DryRun")
+
+    CFG.endAction := "lobby_only", ST.state := "END_SCREEN", ST.roundCounted := false
+    ST.roundActive := true, ST.endClickSeq := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.lastClickT := 0
+    ST.endFirstSeen := t, ST.lobbyRequeue := false
+    dark := FixtureEnd(207, false)
+    HandleEndScreen(dark, t + 3500)
+    Check(!ST.endRetry && ST.endReturnRetry = 1 && ST.rounds = rounds + 1 && !ST.lobbyRequeue
+        , "при выходе вместо повтора запись матча ждёт реального лобби, а не клика")
+
+    CFG.waitSquadOnDeath := false, CFG.deathEscMs := 1, ST.state := "DEATH", ST.deadSince := t
+    death := WorldFixture(208), death.hudEvidence := {confirmed:true}
+    HandleDeath(death, t + 3600)
+    Check(ST.leaveActive && ST.leaveStep = 1 && !ST.held.Count, "Авто-игра начинает тот же проверяемый выход после наблюдения")
+    LeaveCancel()
+}
+
 TestCalibrationIsolation() {
     global CFG, ST
     ResetSceneFixture()
@@ -594,30 +669,75 @@ TestCalibrationIsolation() {
         Check(ST.%key% = value, "F5 не переписывает состояние цикла: " key)
 }
 
+NavFixture(id, kind, w := 480, h := 288) {
+    shot := WorldFixture(id), shot.w := w, shot.h := h, shot.stride := (w + 3) * 4
+    shot.buf := Buffer(shot.stride * h, 0x60)
+    for lane, bounds in [[0.15, 0.34], [0.39, 0.61], [0.66, 0.85]] {
+        Loop 17 {
+            col := A_Index - 1, x := Round(w * (bounds[1] + (bounds[2] - bounds[1]) * col / 16))
+            Loop 12 {
+                row := A_Index, y := Round(h * (0.42 + (row - 1) * 0.024))
+                shade := 64 + col * 3
+                if (kind = "flat")
+                    shade := 96
+                else if (kind = "busy" && lane >= 2)
+                    shade := Mod(col, 2) ? 48 : 202
+                else if (row >= 8 && (kind = "horizon" || (kind = "lip" && lane = 2 && col >= 2 && col <= 14)))
+                    shade += 60
+                NumPut("UInt", 0xD4000000 | shade * 0x010101, shot.buf, y * shot.stride + x * 4)
+            }
+        }
+    }
+    shot.capturedAt := A_TickCount
+    return shot
+}
+
 TestNavigationState() {
+    WithGroundFixture(CheckNavigation)
+}
+
+CheckNavigation() {
     global CFG, ST
-    Check(ST.HasOwnProp("lastObsJump") && ST.lastObsJump = 0, "таймер препятствия задан до первого обхода")
-    ResetNavigation()
-    shot := SceneFixture(50, A_TickCount)
-    x := Round(shot.w * 0.38), step := Max(8, ScanStep(9))
-    y := Round(shot.h * 0.42), h := Round(shot.h * 0.66) - y
-    ; Чередуем светлые и тёмные пробы только в центральном коридоре.
-    Loop 12 {
-        FixtureRect(shot, x, y, step, h, Mod(A_Index, 2) ? 0 : 0xFFFFFF)
-        x += step
+    CFG.featParkour := true, CFG.sprint := true, CFG.navScanMs := 0
+    for w, h in Map(480, 288, 1365, 767, 1920, 1080) {
+        for kind, expected in Map("flat", "unknown", "clear", "clear", "busy", "busy", "lip", "lip", "horizon", "busy") {
+            n := ScanNavCorridors(NavFixture(50, kind, w, h))
+            Check(n.kind = expected, w "×" h " · классификация коридора " kind " → " n.kind)
+            if (kind = "busy")
+                Check(n.turn = -1, "плотная текстура справа не выбирается как свободный путь")
+        }
     }
-    t := A_TickCount, shot.capturedAt := t
-    oldWindow := ST.hwnd, ST.hwnd := shot.hwnd, ST.running := true
-    try {
-        Check(SteerOpenSpace(shot, t), "карабканье забирает этот кадр")
-        Check(ST.navLowObs && ST.lastObsJump = t && !ST.navSteerAt, "первое препятствие: прыжок без поворота")
-        SteerOpenSpace(shot, t + CFG.obstacleGapMs - 1)
-        Check(ST.lastObsJump = t, "повторная оценка соблюдает паузу карабканья")
-    } finally {
-        ST.hwnd := oldWindow, ST.running := false
-    }
+    first := NavFixture(52, "clear")
+    Check(!SteerOpenSpace(first, first.capturedAt) && StartSegment(first) && ST.moveMode = "иду шагом"
+        , "один открытый кадр начинает ходьбу, а не спринт")
+    Check(!RefreshNavigation(first) && ST.navInfo.hits = 1, "повтор того же кадра не повышает подтверждение")
+    next := NavFixture(53, "clear")
+    Check(!SteerOpenSpace(next, next.capturedAt) && KeepPatrolMoving(next) && ST.moveMode = "бегу" && !ST.held.Count
+        , "два открытых кадра разрешают спринт только в DryRun")
+
+    lip := NavFixture(54, "lip")
+    Check(!SteerOpenSpace(lip, lip.capturedAt) && !ST.lastObsJump && ST.navInfo.hits = 1, "один уступ не разрешает прыжок")
+    ST.cameraSeq += 1
+    late := NavFixture(55, "lip"), late.capturedAt -= 251
+    Check(!SteerOpenSpace(late, A_TickCount) && ST.navInfo.seq = 54, "старый кадр не меняет проверку уступа")
+    turned := NavFixture(56, "lip")
+    Check(!SteerOpenSpace(turned, turned.capturedAt) && ST.navInfo.hits = 1, "после поворота снова нужен второй кадр")
+    ST.lastJumpT := 0
+    repeat := NavFixture(57, "lip")
+    Check(SteerOpenSpace(repeat, repeat.capturedAt) && ST.navInfo.jumped && ST.lastObsJump = repeat.capturedAt
+        && !ST.navSteerAt && !ST.held.Count, "два кадра локального уступа: ровно одна попытка прыжка без поворота")
+    later := NavFixture(58, "lip")
+    SteerOpenSpace(later, later.capturedAt)
+    Check(ST.lastObsJump = repeat.capturedAt, "не прыгать повторно на той же серии краёв")
+
     ResetNavigation()
-    Check(!ST.lastObsJump && !ST.navAt && !ST.navLowObs && !ST.navSteer, "у нового матча чистая навигация")
+    first := NavFixture(60, "busy")
+    Check(!SteerOpenSpace(first, first.capturedAt), "первый плотный кадр: ни прыжка, ни разворота")
+    second := NavFixture(61, "busy")
+    Check(SteerOpenSpace(second, second.capturedAt) && ST.navSteerAt && ST.navTurnSign = -1
+        && !ST.segUntil && !ST.lastObsJump, "плотная преграда: освобождаем W и выбираем боковой обзор вместо прыжка")
+    ResetNavigation()
+    Check(!ST.lastObsJump && !ST.navInfo && !ST.patrolLeaseAt, "у нового матча чистая навигация")
 }
 
 TestMotionUsesSameWindow() {
@@ -864,35 +984,52 @@ TestChestApproach() {
 
 CheckChestApproach() {
     global CFG, ST
-    for id, kind in ["gold", "rare"] {
+    CFG.scanLootMs := 0
+    for i, kind in ["gold", "rare"] {
         ResetCaches()
-        ST.scanWork := 0
-        shot := WorldFixture(100 + id, kind)
+        ST.scanWork := 0, id := 102 + i * 10
+        shot := WorldFixture(id, kind)
         chest := FindChest(shot, ScanLootMasks(shot))
         Check(chest && chest.kind = (kind = "gold" ? "chestGold" : "chestRare")
             && chest.x > chest.drawX && chest.y > chest.drawY, "детектор возвращает центр и рамку " kind)
         shot.capturedAt := A_TickCount
-        Check(TryInteract(shot, shot.capturedAt) && ST.lastAction = "к свечению сундука", "подход использует центр " kind)
-        Check(ST.chestCacheSeq = shot.captureId && ST.chest = ST.chestCache && !ST.promptN && !ST.tgt
+        Check(TryInteract(shot, shot.capturedAt) && ST.walkTarget.samples.hits = 1
+            && ST.lastAction = "свечение: жду повторный кадр" && !ST.held.Count, "одиночное пятно не запускает подход " kind)
+        Check(TryApproach(shot, A_TickCount) && ST.walkTarget.samples.hits = 1, "переиспользованный кадр не подтверждает пятно")
+        next := WorldFixture(id + 1, kind), ST.scanWork := 0
+        Check(TryInteract(next, next.capturedAt) && ST.lastAction = "к свечению сундука", "подход после двух замеров " kind)
+        Check(ST.chestCacheSeq = next.captureId && ST.chest = ST.chestCache && !ST.promptN && !ST.tgt
             && !ST.promptAttempts.Length, "свечение не разрешает E и не подтверждает открытие")
     }
-    ST.lootMasksAt := A_TickCount, ST.scanWork := 0
-    blank := WorldFixture(103)
-    Check(!TryApproach(blank, blank.capturedAt) && !ST.chest && !ST.loot, "старый центр не управляет движением")
+    ST.scanWork := CFG.scanPerTickMax
+    deferred := WorldFixture(125)
+    Check(!TryApproach(deferred, deferred.capturedAt) && ST.walkTarget.samples.hits = 2
+        , "пропуск скана не считается исчезновением объекта")
+    blank := WorldFixture(126), ST.scanWork := 0
+    Check(!TryApproach(blank, blank.capturedAt) && !ST.chest && !ST.loot && !ST.walkTarget && !ST.guidedUntil
+        , "полный отрицательный скан отменяет направленный шаг")
+    shot.capturedAt := A_TickCount
     Check(WalkTo(chest.x, chest.y, shot) && !ST.held.Count, "DryRun планирует подход без удержаний")
-    shot.capturedAt := A_TickCount - 251
+    shot.capturedAt -= 251
     Check(!WalkTo(chest.x, chest.y, shot), "устаревший кадр не начинает подход")
-    shifted := WorldFixture(104, "gold")
+    shifted := WorldFixture(127, "gold")
     shifted.cameraSeqAtCapture -= 1
     Check(!WalkTo(chest.x, chest.y, shifted), "нужен кадр после поворота")
 
     ResetCaches()
-    ST.scanWork := 0
-    near := WorldFixture(105, "center")
-    Check(TryApproach(near, near.capturedAt) && ST.lastAction = "объект у прицела: жду подсказку"
-        && !ST.segUntil && !ST.tgt, "центральное пятно забирает спокойный кадр, не пускает патруль")
-    Check(TryApproach(near, near.capturedAt) && ST.lastAction = "к свечению сундука"
-        && !ST.promptN, "близость в пикселях не останавливает подход навсегда")
+    for i, expected in ["свечение: жду повторный кадр", "объект у прицела: жду подсказку", "к свечению сундука"] {
+        ST.scanWork := 0, near := WorldFixture(130 + i, "center")
+        Check(TryApproach(near, near.capturedAt) && ST.lastAction = expected && !ST.segUntil && !ST.tgt && !ST.promptN
+            , "приближение к центру не заменяет подсказку E: " expected)
+    }
+    oldAt := ST.walkTarget.at
+    ST.cameraSeq += 1
+    ST.scanWork := 0, near := WorldFixture(134, "center")
+    Check(TryApproach(near, near.capturedAt) && ST.walkTarget.samples.hits = 1 && ST.walkTarget.at = oldAt
+        , "после собственной коррекции зрения подтверждаем цель снова, не продлевая весь подход")
+    near := WorldFixture(135, "center"), ST.scanWork := 0, ST.walkTarget.at := near.capturedAt - 8001
+    Check(TryApproach(near, near.capturedAt) && !ST.walkTarget && ST.blindChest && !ST.guidedUntil
+        , "вышло время подхода: не идём за одним свечением бесконечно")
 }
 
 PromptPixels(w, h, kind) {
@@ -994,7 +1131,7 @@ CheckPromptScanFreshness() {
     buf := shot.buf, changes := {count:0}
     shot.DefineProp("buf", {Get: ChangeDuringPixelScan.Bind(shot, buf, changes, "age")})
     try {
-        Roam(shot, shot.capturedAt)
+        RunFixtureRoam(shot)
         Check(changes.count && !WorldFrameCurrent(shot) && ST.segUntil = segment
             && ST.lastAction = "прямой ход" && !ST.enemy && !ST.shots
             && !shot.HasOwnProp("enemyReading"), "после просрочки E кадр не выбирает бой по старой фигуре")
@@ -1137,6 +1274,50 @@ CheckEnemyEvidence() {
     Check(!ConfirmWorldCandidate(tr, other, body, 2) && tr.seq = turned.captureId, "опоздавшее наблюдение не сбрасывает новое")
 }
 
+TestCombatPreemption() {
+    WithGroundFixture(CheckCombatPreemption)
+}
+
+CheckCombatPreemption() {
+    global CFG, ST
+    CFG.featMotionEnemy := true, CFG.enemyFastMs := 0, CFG.skinWideMs := 60000, CFG.aimReactMs := 0
+    CFG.combatOverLoot := true
+    ST.scanWideAt := A_TickCount, ST.prevShot := WorldFixture(300)
+    for i, color in [0xDDDDDD, 0x262626] {
+        frame := WorldFixture(300 + i)
+        FixtureRect(frame, 233, 124, 16, 32, color)
+        frame.capturedAt := A_TickCount, ST.scanWork := 0
+        if (i = 1) {
+            pending := {seq:300, view:FrameView(frame), until:A_TickCount + 5000, keyHold:0}
+            ST.tgt := pending
+        }
+        RunFixtureRoam(frame)
+        Check(i = 1 ? (ST.tgt = pending && !ST.shots && frame.enemyReading)
+            : (!ST.tgt && ST.enemySeenSeq = frame.captureId && ST.enemyCache)
+            , "проверка противника во время E: " i " · только повтор прерывает E")
+        ST.prevShot := frame
+    }
+    cache := ST.enemyCache, shots := ST.shots
+    pending := {seq:302, view:FrameView(frame), until:A_TickCount + 5000, keyHold:0}, ST.tgt := pending
+    defer := WorldFixture(303), ST.scanWork := CFG.scanPerTickMax
+    RunFixtureRoam(defer)
+    Check(ST.tgt = pending && ST.enemyCache = cache && ST.shots = shots && !defer.HasOwnProp("enemyReading")
+        , "пропущенный скан с кандидатом в памяти не прерывает E")
+    miss := frame.Clone(), miss.DeleteProp("enemyReading"), miss.captureId := 304, miss.capturedAt := A_TickCount
+    ST.scanWork := 0
+    RunFixtureRoam(miss)
+    Check(miss.HasOwnProp("enemyReading") && !miss.enemyReading && !ST.enemyCache && ST.tgt = pending && ST.shots = shots
+        , "свежий отрицательный скан освобождает взаимодействие, не подставляя старую цель")
+
+    aim := WorldFixture(305)
+    candidate := {src:"движение", cx:aim.w / 2 + 6, cy:aim.h / 2, w:16, h:32, dist:0}
+    ST.enemyCache := candidate, ST.enemySeenSeq := aim.captureId, ST.enemySeenAt := aim.capturedAt
+    ST.enemyView := FrameView(aim), aim.enemyReading := candidate
+    ST.enemyVelX := -100, ST.lastFire := 0
+    Check(Combat(aim, aim.capturedAt) && ST.shots = shots && !ST.held.Count
+        , "одного прогнозируемого попадания в прицел недостаточно для очереди")
+}
+
 TestCombatScanFreshness() {
     WithGroundFixture(CheckCombatScanFreshness)
 }
@@ -1180,7 +1361,7 @@ CheckCombatScanFreshness() {
             try {
                 if (change = "age") {
                     ; Приоритетный бой не должен пропустить старый кадр и к E.
-                    Roam(late, late.capturedAt)
+                    RunFixtureRoam(late)
                     selected := !!ST.enemy
                 } else
                     selected := Combat(late, late.capturedAt)
@@ -1379,7 +1560,7 @@ CheckSceneryKeepsPrompt() {
             Check(!Combat(shot, shot.capturedAt) && shot.HasOwnProp("enemyReading") && !shot.enemyReading
                 , "постоянная опора не становится боевым кандидатом")
         } else
-            Roam(shot, shot.capturedAt)
+            RunFixtureRoam(shot)
         ST.prevShot := shot
     }
     Check(!ST.enemyCache && !ST.shots && !ST.held.Count && !ST.leftDown
@@ -1537,6 +1718,11 @@ CheckSoundFrames() {
         && !ST.soundRing.chest && !ST.chestAudioAt, "актуальный пустой кадр заканчивает аудиоподход")
 }
 
+RunFixtureRoam(shot) {
+    shot.hudEvidence := {confirmed:true}
+    Roam(shot, shot.capturedAt)
+}
+
 TestRoamPriority() {
     WithGroundFixture(CheckRoamPriority)
 }
@@ -1544,20 +1730,19 @@ TestRoamPriority() {
 CheckRoamPriority() {
     global CFG, ST
     shot := WorldFixture(150, "prompt")
-    ST.navSteer := 2, ST.navLowObs := true, ST.navAt := A_TickCount, ST.navView := FrameView(shot)
     ST.camPitch := 90, ST.segUntil := 0
     CFG.featParkour := true
     ; В low_cpu после HUD/меню может остаться ровно один слот. Сначала E.
     ST.scanWork := CFG.scanPerTickMax - 1
-    Roam(shot, shot.capturedAt)
+    RunFixtureRoam(shot)
     Check(ST.promptSeq = shot.captureId && ST.promptConfirm.hits = 1 && !ST.lastObsJump && !ST.navSteerAt
         && !ST.segUntil && !ST.scanSoundAt && !shot.HasOwnProp("enemyReading"), "подсказка раньше скана фигуры, звука и навигации")
     ST.scanWork := 0, ST.promptAt := 0
     red := WorldFixture(151, "redPrompt")
     Check(ReadInteractPrompt(red), "кадр содержит и плашку, и красный прицел")
-    Roam(red, red.capturedAt)
+    RunFixtureRoam(red)
     Check(!ST.shots && red.promptReading && ST.promptConfirm.hits = 2 && !red.HasOwnProp("enemyReading")
-        && !ST.segUntil && !ST.navSteerAt && !ST.lastObsJump, "цвет прицела не перебивает подсказку E")
+        && !ST.segUntil && !ST.navInfo && !ST.lastObsJump, "цвет прицела не перебивает подсказку E")
 
     ResetCaches()
     CFG.combatOverLoot := true, CFG.featMotionEnemy := true, CFG.enemyFastMs := 0
@@ -1569,7 +1754,7 @@ CheckRoamPriority() {
         if (i < 3)
             CachedEnemy(both)
         else
-            Roam(both, both.capturedAt)
+            RunFixtureRoam(both)
         ST.prevShot := both
     }
     Check(ST.enemySeenSeq = both.captureId && ST.enemySrc = "движение" && !both.HasOwnProp("promptReading")
@@ -1579,19 +1764,24 @@ CheckRoamPriority() {
     ResetNavigation()
     ST.camPitch := 0, ST.scanWork := 0, ST.segUntil := 0
     open := WorldFixture(156)
-    Roam(open, open.capturedAt)
+    RunFixtureRoam(open)
     segmentEnd := ST.segUntil
     Check(segmentEnd > A_TickCount && ST.lastAction = "прямой ход", "без целей начинается обычный отрезок")
     open := WorldFixture(157)
     ST.scanWork := 0
-    Roam(open, open.capturedAt)
+    RunFixtureRoam(open)
     Check(ST.segUntil = segmentEnd && !ST.held.Count, "отрезок не перезапускается каждый кадр; DryRun без удержаний")
     ST.segUntil := 0
     Check(ForwardStep(open, 430), "начат короткий направленный шаг")
     ST.scanWork := 0
     later := WorldFixture(158)
-    Roam(later, later.capturedAt)
+    RunFixtureRoam(later)
     Check(!ST.segUntil && A_TickCount < ST.guidedUntil, "в паузе скана патруль не перехватывает короткий шаг")
+    ST.hudLastT := A_TickCount - 851
+    noHud := WorldFixture(159)
+    Roam(noHud, noHud.capturedAt)
+    Check(!ST.guidedUntil && !ST.segUntil && InStr(ST.lastAction, "жду подтверждение HUD")
+        , "память сцены не даёт двигаться на земле без недавнего HUD")
 }
 
 TestHoldOwnership() {

@@ -98,9 +98,11 @@ try {
     $archive = Join-Path $temp $archiveName
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archive -CompressionLevel Optimal
     if ($SmokeTest) {
-        $panelScript = Join-Path $repo 'tests\main_panel.ahk'
-        Write-Host 'Smoke test: main panel controls and profile isolation'
-        Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $panelScript) 'Main panel test' $temp
+        foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_panel') {
+            $script = Join-Path $repo "tests\$suite.ahk"
+            Write-Host "Smoke test: $suite"
+            Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$suite test" $temp
+        }
 
         $archivesToTest = [ordered]@{ built = $archive }
         $published = Join-Path $repo "portable\$archiveName"

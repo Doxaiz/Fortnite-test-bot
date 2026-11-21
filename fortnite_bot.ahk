@@ -23,7 +23,7 @@
 ;      звуковой метке. Удержание E только после двух наблюдений плашки.
 ;      Тип объекта и открытие сундука не подтверждаются по одному цвету;
 ;    • Умная 3-коридорная навигация: выбор открытого прохода (лево/центр/право),
-;      карабканье (Mantle) через заборы/окна, бег с подкатом, стабилизация
+;      прыжок по повторному кандидату на уступ, бег по открытому обзору, стабилизация
 ;      горизонта, выход из Бури по белой линии миникарты и 5-ступенчатый выход
 ;      из застреваний без остановки бота;
 ;    • четыре режима работы:
@@ -88,7 +88,7 @@ global CFG := {
     teamSafe:      false,   ; true = отключить автострельбу (вести бой только вручную)
     featSound:     true,    ; реагировать на визуализацию звука (выстрелы/шаги/сундуки)
     featFightBack: true,    ; смотреть к свежей метке при падении HP (без слепого огня)
-    featParkour:   true,    ; паркур: карабканье (Mantle), прыжки, подкаты, стрейф
+    featParkour:   true,    ; прыжок при низком уступе или метке выстрела
     featCrouchFight: true,  ; приседать в перестрелке и на дальней дистанции
     featAds:       true,    ; удерживать прицел (ПКМ) на средней и дальней дистанции
     featProStyle:  true,    ; стиль про-игрока: укрытие, выход из Бури, смена оружия
@@ -341,8 +341,6 @@ global CFG := {
 
     ; ---- движение и 3-коридорная навигация (v11.0) ----
     sprint:       true,
-    jumpChance:   0.08,
-    strafeChance: 0.28,
     fwdMinMs:     1400,
     fwdMaxMs:     3600,
     idleMinMs:    50,
@@ -356,7 +354,8 @@ global CFG := {
     mouseGain:    1.0,
     mouseMicroPx: 9,        ; плавный, но отзывчивый микрошаг мыши
     invertTurn:   false,
-    navScanMs:    240,      ; частота оценки свободных коридоров (лево/центр/право)
+    navScanMs:    240,      ; частота измерений коридоров в наземной авто-игре
+    patrolHoldMs: 900,      ; W и Shift истекают, если не пришли пригодные кадры
     stormScanMs:  850,      ; частота проверки Бури и белой линии безопасной зоны
     stuckDiffThreshold: 1.35, ; порог движения мира для детектора застревания
     stuckMs:      2400,       ; через 2.4 с упора в стену/угол сразу начинаем обход
@@ -367,19 +366,12 @@ global CFG := {
     confirmGapMs: 1400,
     promptConfirmHits: 2,
     ; ---- бег / паркур / карабканье (Mantle) ----
-    sprintPct:        88,     ; активный тактический бег
     jumpMinGapMs:     850,    ; не прыгать чаще, чем раз в N мс
-    obstacleEdges:    0.24,   ; плотность перепадов у ног => уступ/забор
     obstacleGapMs:    1150,   ; пауза между прыжками/карабканьем через препятствие
-    obstacleStepMs:   300,    ; частота проверки препятствия у ног
-    slideChance:      0.28,   ; подкат на бегу для сохранения высокой скорости
-    slideHoldMs:      420,    ; длительность приседа для подката
-    slideGapMs:       2800,   ; пауза между подкатами
     crouchHoldMs:     750,    ; присед в перестрелке (сбивает прицел и сужает разброс)
     crouchGapMs:      1350,
     adsRangePx:       80,     ; порог включения прицела (ПКМ)
     adsHoldMs:        850,
-    strafeMs:         320,    ; длительность контр-стрейфа в бою и обходе
     glideDeployMs:    900,    ; через сколько после прыжка раскрывать глайдер
     ; Слепые повторные нажатия переключают глайдер; не больше одной попытки.
     glideRepressMs:   1400,   ; оставлено для совместимости, повтор запрещён лимитом
@@ -628,14 +620,10 @@ global ST := {
     adsOn:        false,        ; зажата ПКМ (прицел)
     lastAdsAt:    0,
     lastJumpT:    0,            ; когда прыгали
-    lastSlideT:   0,            ; когда подкатывались
     lastCrouchT:  0,            ; когда приседали под огнём
     jumps:        0,            ; сколько прыжков сделали
-    slides:       0,            ; сколько подкатов
     crouches:     0,            ; сколько раз приседали
     moveMode:     "",           ; что делают ноги сейчас (для журнала)
-    obstacleT:    0,            ; когда считали «препятствие впереди»
-    obstacleVal:  0.0,          ; плотность перепадов впереди
     glideDeploys: 0,            ; сколько раз раскрывали глайдер
     tickHeals:    0,            ; сколько раз сторож спасал зависший тик
     tickCheckMuted: false,      ; внутри хоткея TickCheck молчит (run-16.log)
@@ -700,6 +688,8 @@ global ST := {
     mmErrors:     0,
     endFirstSeen: 0,
     endRetry:     0,
+    endReturnRetry: 0,
+    endClickSeq:  0,
     actionTimes:  [],
     chests:       0,
     loots:        0,
@@ -713,6 +703,7 @@ global ST := {
     menuCache:    0,
     densityCache: 0,
     enemyCache:   0,
+    enemyCacheWide: false,     ; область, подтвердившая текущего кандидата
     ; ---- v7.2: слежение за целью и предсказание движения ----
     enemySeenAt:  0,            ; время последней положительной проверки фигуры
     enemySeenSeq: 0,            ; id кадра, на котором подтвердился кандидат
@@ -873,16 +864,10 @@ global ST := {
     soundRing:    0,            ; v11.0: раздельное кольцо звука {shot, chest, step, best}
     ; v11.0: умная 3-коридорная навигация, стабилизация горизонта и выход из Бури
     camPitch:     0,            ; накопленный вертикальный наклон камеры (0 = горизонт)
-    navAt:        0,            ; время последнего скана коридоров
-    navLeft:      55,           ; открытость левого коридора (0..100)
-    navCenter:    60,           ; открытость центрального коридора (0..100)
-    navRight:     55,           ; открытость правого коридора (0..100)
-    lastObsJump:  0,            ; время последней попытки карабканья
-    navLowObs:    false,        ; низкое препятствие/забор/подоконник впереди (карабканье)
-    navSteer:     0,            ; -1 влево, 0 прямо, +1 вправо, 2 разворот из тупика
-    navTurnSign:  1,            ; устойчивое направление разворота в тупике (без маятника)
+    navInfo:      0,            ; последние коридоры, вид и число повторных измерений
+    patrolLeaseAt: 0,           ; последнее продление W/Shift по кадру
+    navTurnSign:  1,            ; предпочтительная сторона при равных оценках
     navSteerAt:   0,            ; время последнего подруливания по коридору
-    navView:      0,
     stuckTotal:   0,            ; всего успешных выходов из застревания за сессию
     stormAt:      0,            ; время последней проверки Бури и линии зоны
     inStorm:      false,        ; игрок находится внутри фиолетовой Бури
@@ -4640,80 +4625,144 @@ ResetMoveWatch(resetAttempts := false) {
 
 ResetNavigation() {
     global ST
-    ST.lastObsJump := 0, ST.navAt := 0, ST.navSteerAt := 0, ST.navView := 0
-    ST.lastScanT := 0
-    ST.navLowObs := false, ST.navSteer := 0, ST.navTurnSign := 1
-    ST.navLeft := 55, ST.navCenter := 60, ST.navRight := 55
+    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0
+    ST.lastScanT := 0, ST.navTurnSign := 1
 }
 
-ScanNavCorridors(shot) {
-    ; v11.0: оценка открытости 3 коридоров (лево / центр / право) по текстуре/перепадам
-    global CFG, ST
-    now := A_TickCount
-    if (ST.navAt && now - ST.navAt < CFG.navScanMs && SameFrameView(ST.navView, shot))
-        return
-    y1 := Round(shot.h * 0.42), y2 := Round(shot.h * 0.66)
-    step := Max(8, ScanStep(9))
-    zones := [[Round(shot.w * 0.14), Round(shot.w * 0.36)]
-            , [Round(shot.w * 0.38), Round(shot.w * 0.62)]
-            , [Round(shot.w * 0.64), Round(shot.w * 0.86)]]
-    scores := [0, 0, 0]
-    for idx, zr in zones {
-        edges := 0, tot := 0
-        y := y1
-        while (y < y2) {
-            TickCheck("скан коридоров")
-            prevLum := -1
-            x := zr[1]
-            while (x < zr[2]) {
-                px := NumGet(shot.buf, y * shot.stride + x * 4, "UInt")
-                lum := (((px >> 16) & 255) + ((px >> 8) & 255) + (px & 255)) // 3
-                if (prevLum >= 0 && Abs(lum - prevLum) > 22)
-                    edges += 1
-                prevLum := lum, tot += 1
-                x += step
-            }
-            y += step
-        }
-        density := tot ? (edges / tot) : 0.3
-        scores[idx] := Clamp(Round((1.0 - density * 1.65) * 100), 5, 98)
+ReadNavLane(shot, lo, hi) {
+    ; Постоянная сетка: 17 x 12 точек на полосу, независимо от разрешения.
+    ; Горизонтальный край — перепад МЕЖДУ строками на соседних столбцах,
+    ; а не много перепадов текстуры внутри одной строки.
+    cols := 17, rows := 12, xs := [], previous := []
+    Loop cols {
+        xs.Push(Round(shot.w * (lo + (hi - lo) * (A_Index - 1) / (cols - 1))))
+        previous.Push(0)
     }
+    minLum := 255, maxLum := 0, edges := 0, aligned := 0, lipRow := 0, upperEdge := false
+    Loop rows {
+        row := A_Index, y := Round(shot.h * (0.42 + (row - 1) * 0.024))
+        TickCheck("скан коридоров")
+        across := -1, run := 0, span := 0
+        for col, x in xs {
+            lum := Bright(shot, x, y)
+            minLum := Min(minLum, lum), maxLum := Max(maxLum, lum)
+            if (across >= 0 && Abs(lum - across) > 26)
+                edges += 1
+            vertical := row > 1 && Abs(lum - previous[col]) > 34
+            if vertical {
+                edges += 1, run += 1
+                span := Max(span, run)
+            } else
+                run := 0
+            previous[col] := lum, across := lum
+        }
+        if (span >= 11) {
+            aligned += 1
+            if (row < 7)
+                upperEdge := true
+            else if (row < rows && !lipRow)
+                lipRow := row
+        }
+    }
+    density := edges / ((cols - 1) * rows + (rows - 1) * cols)
+    known := maxLum - minLum >= 24
+    kind := !known ? "unknown" : (lipRow && !upperEdge && aligned <= 2 && density < 0.24) ? "lip"
+        : (aligned || density >= 0.27) ? "busy" : "clear"
+    return {kind:kind, row:lipRow, score:known ? Max(0, Round(100 - density * 160 - (aligned ? 25 : 0))) : 0}
+}
+
+ScanNavCorridors(shot, prefer := 1) {
+    l := ReadNavLane(shot, 0.15, 0.34), c := ReadNavLane(shot, 0.39, 0.61), r := ReadNavLane(shot, 0.66, 0.85)
+    kind := c.kind, turn := 0
+    ; Полоса поперёк всего обзора не похожа на локальный уступ.
+    if (kind = "lip" && l.row && r.row && Abs(l.row - c.row) <= 1 && Abs(r.row - c.row) <= 1)
+        kind := "busy"
+    if (kind = "busy" || kind = "lip") {
+        if (l.kind = "clear" && r.kind = "clear")
+            turn := Abs(l.score - r.score) < 8 ? prefer : (l.score > r.score ? -1 : 1)
+        else if (l.kind = "clear")
+            turn := -1
+        else if (r.kind = "clear")
+            turn := 1
+    }
+    return {kind:kind, row:c.row, turn:turn, left:l.score, center:c.score, right:r.score}
+}
+
+NavKindRu(kind) {
+    switch kind {
+        case "clear": return "открытый обзор"
+        case "lip": return "кандидат на уступ"
+        case "busy": return "плотные края"
+        default: return "неясно"
+    }
+}
+
+RefreshNavigation(shot) {
+    global CFG, ST
+    if !WorldFrameCurrent(shot)
+        return false
+    prior := ST.navInfo, now := A_TickCount
+    same := prior && SameFrameView(prior.view, shot)
+    if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
+        return false
+    if (same && now - prior.at < CFG.navScanMs)
+        return false
+    n := ScanNavCorridors(shot, ST.navTurnSign)
     TickCheck("после скана коридоров")
-    ST.navAt := now, ST.navView := FrameView(shot)
-    ST.navLeft := scores[1], ST.navCenter := scores[2], ST.navRight := scores[3]
-    ST.navLowObs := (ST.navCenter < 36)
-    if (ST.navCenter >= 45)
-        ST.navSteer := 0
-    else if (ST.navLeft >= ST.navRight + 10)
-        ST.navSteer := -1, ST.navTurnSign := -1
-    else if (ST.navRight >= ST.navLeft + 10)
-        ST.navSteer := 1, ST.navTurnSign := 1
-    else
-        ST.navSteer := 2
+    prev := Critical("On")
+    try {
+        if !WorldFrameCurrent(shot)
+            return false
+        similar := same && shot.capturedAt - prior.at <= CFG.confirmGapMs && prior.kind = n.kind
+            && (n.kind != "lip" || Abs(prior.row - n.row) <= 1)
+        ; Подтверждение уступа не теряется от смены предпочтительного обхода.
+        stable := similar && (n.kind = "lip" || n.turn = prior.turn)
+        n.hits := stable ? Min(2, prior.hits + 1) : 1
+        n.turnStable := similar && n.turn = prior.turn
+        n.jumped := similar && n.kind = "lip" && prior.jumped
+        n.at := shot.capturedAt, n.seq := shot.captureId, n.view := FrameView(shot)
+        ST.navInfo := n
+        return true
+    } finally {
+        Critical(prev)
+    }
 }
 
 SteerOpenSpace(shot, now) {
-    global CFG, SC, ST
-    if (!CFG.featMove || !WorldFrameCurrent(shot))
+    global CFG, ST, SC
+    if (!CFG.featMove || !RefreshNavigation(shot))
         return false
-    ScanNavCorridors(shot)
-    if !WorldFrameCurrent(shot)
+    n := ST.navInfo
+    if (n.kind != "clear")
+        SprintSet(false)
+    if (n.hits < 2 || !WorldFrameCurrent(shot))
         return false
-    if (CFG.featParkour && ST.navLowObs
-        && (!ST.lastObsJump || now - Max(ST.lastObsJump, ST.lastJumpT) >= CFG.obstacleGapMs)) {
-        ST.lastObsJump := now
-        if (CFG.dryRun || TapKey(SC.space, 190, shot.inputEpochAtCapture)) {
-            ST.lastJumpT := now
-            ST.lastAction := "коридор: пробую перелезть"
+    ; Только на ходе вперёд, один Пробел на серию похожих уступов.
+    if (CFG.featParkour && n.kind = "lip" && !n.jumped && ST.segUntil
+        && (CFG.dryRun || ST.held.Has(SC.w))
+        && (!ST.lastObsJump || now - ST.lastObsJump >= CFG.obstacleGapMs)
+        && (!ST.lastJumpT || now - ST.lastJumpT >= CFG.jumpMinGapMs)) {
+        if (CFG.dryRun || (KeyDown(SC.space, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", SC.space, 165))) {
+            n.jumped := true, ST.lastObsJump := now, ST.lastJumpT := now
+            ST.jumps += !CFG.dryRun
+            KeepPatrolMoving(shot)
+            ST.lastAction := (CFG.dryRun ? "DryRun: " : "") "пробую прыгнуть через уступ"
+            LogThrottledKey("[nav-lip]", "[nav] " ST.lastAction " · повторный край на кадре #" shot.captureId)
             return true
         }
     }
-    if (!ST.navSteer || now - ST.navSteerAt < 420 || !WorldFrameCurrent(shot))
+    ; При скачущей оценке бокового пространства не менять сторону каждый кадр.
+    if (!n.turn || !n.turnStable || (ST.navSteerAt && now - ST.navSteerAt < 650)
+        || (!CFG.dryRun && !MouseAllowed(shot.hwnd)))
         return false
-    turn := ST.navSteer = 2 ? ST.navTurnSign * 48 : ST.navSteer * 28
-    if (CFG.dryRun || TurnBy(turn, 0, CFG.turnMaxPx) || ST.cameraSeq != shot.cameraSeqAtCapture) {
-        ST.navSteerAt := now
-        ST.lastAction := "выбираю свободный коридор"
+    dx := Round(n.turn * Min(28, CFG.turnMaxPx) * CFG.mouseGain * (CFG.invertTurn ? -1 : 1))
+    if !dx
+        return false
+    HaltMatchMovement()
+    if (WorldFrameCurrent(shot) && (CFG.dryRun || MouseSmooth(dx, 0, 38, shot) || ST.cameraSeq != shot.cameraSeqAtCapture)) {
+        ST.navSteerAt := now, ST.navTurnSign := n.turn
+        ST.lastAction := "обход: " (n.turn < 0 ? "влево" : "вправо")
+        LogThrottledKey("[nav-turn]", "[nav] " ST.lastAction " · кадр #" shot.captureId)
         return true
     }
     return false
@@ -5745,34 +5794,44 @@ StartSegment(shot) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
-    now := A_TickCount
     if !CFG.dryRun {
         if !CFG.runKeepW
             KeyUp(SC.w)
-        ; Забираем W из короткого подхода: старый таймер не оборвёт бег.
-        previous := Critical("On")
-        alreadyHeld := ST.held.Has(SC.w)
-        if alreadyHeld
-            RenewKeyHold(ST.held[SC.w])
-        Critical(previous)
-        if (!alreadyHeld && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
+        if (!ST.held.Has(SC.w) && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
             return false
     }
     ClearMatchStrafe()
     CrouchSet(false)
-    SprintSet(CFG.sprint && Random(0, 99) < CFG.sprintPct)
-    ST.segUntil := now + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
-    ST.moveMode := ST.sprintOn ? "бегу" : "иду шагом"
-    ST.lastAction := "прямой ход"
-    ; Не добавляем к одному отрезку сразу подкат, прыжок, стрейф и поворот.
-    if (CFG.featParkour && !CFG.dryRun && WorldFrameCurrent(shot)) {
-        if (ST.sprintOn && RndF(0, 1) < CFG.slideChance)
-            SlideNow()
-        else if (RndF(0, 1) < CFG.strafeChance)
-            StrafeBurst(Random(120, 260))
-        else if (RndF(0, 1) < CFG.jumpChance)
-            JumpNow("на свободном ходу")
+    ST.segUntil := A_TickCount + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
+    if !KeepPatrolMoving(shot, true) {
+        HaltMatchMovement()
+        return false
     }
+    ST.lastAction := "прямой ход"
+    return true
+}
+
+KeepPatrolMoving(shot, renew := false) {
+    global CFG, SC, ST
+    if (!ST.segUntil || !WorldFrameCurrent(shot))
+        return false
+    now := A_TickCount, nav := ST.navInfo
+    sprint := CFG.sprint && nav && nav.kind = "clear" && nav.hits >= 2
+        && now - nav.at <= Max(500, CFG.navScanMs * 2) && SameFrameView(nav.view, shot)
+    if !CFG.dryRun {
+        ; Продлеваем не чаще трети срока. При потерянном кадре/долгом скане
+        ; отпускание не зависит от того, когда снова запустится Roam.
+        renew := renew || !ST.patrolLeaseAt || now - ST.patrolLeaseAt >= CFG.patrolHoldMs // 3
+        if (!ST.held.Has(SC.w) || (renew && !InputReleaseLater("key", SC.w, CFG.patrolHoldMs)))
+            return false
+        before := ST.sprintOn
+        SprintSet(sprint, shot)
+        if (ST.sprintOn && (renew || !before))
+            InputReleaseLater("key", SC.shift, CFG.patrolHoldMs)
+        if renew
+            ST.patrolLeaseAt := now
+    }
+    ST.moveMode := (CFG.dryRun ? sprint : ST.sprintOn) ? "бегу" : "иду шагом"
     return true
 }
 
@@ -5799,7 +5858,7 @@ ClearMatchStrafe() {
 HaltMatchMovement() {
     global ST, SC
     ClearMatchStrafe()
-    KeyUp(SC.w)
+    KeyUp(SC.w), KeyUp(SC.space)
     SprintSet(false), CrouchSet(false)
     ST.segUntil := 0, ST.guidedUntil := 0, ST.moveMode := "стою"
     ResetMoveWatch()
@@ -5848,20 +5907,16 @@ WalkTo(targetX, targetY, shot) {
 }
 
 ; ============================================================================
-;        ДВИЖЕНИЕ КАК У ПРО: БЕГ, ПРЫЖОК, ПОДКАТ, ПРИСЕД, ПРИЦЕЛ
+;              ИСПОЛНИТЕЛИ: БЕГ, ПРЫЖОК, ПРИСЕД И ПРИЦЕЛ
 ; ============================================================================
-; Раньше «ходить» означало «держать W и иногда жать Пробел». Этого мало:
-; в игре нужно бежать, перепрыгивать забор и ящик, подкатываться с горки,
-; приседать под огнём, лечиться сидя и брать прицел по дальнему врагу.
-; Ниже — маленький «водитель», который всем этим управляет.
 
-SprintSet(on) {
+SprintSet(on, shot := 0) {
     global CFG, SC, ST
     if !CFG.featMove
         on := false
     if on {
         if !ST.held.Has(SC.shift) {
-            ST.sprintOn := KeyDown(SC.shift)
+            ST.sprintOn := KeyDown(SC.shift, shot ? shot.inputEpochAtCapture : -1, 0, shot)
         }
     } else {
         KeyUp(SC.shift)
@@ -5924,98 +5979,6 @@ JumpNow(reason := "") {
     TapKey(SC.space, 90)
     ST.lastAction := "прыжок"
     LogThrottledKey("[jump]", "[~] прыжок — " reason)
-    return true
-}
-
-; Подкат: в Fortnite присед на бегу превращается в слайд.
-SlideNow() {
-    global CFG, SC, ST
-    if (!CFG.featParkour || !CFG.sprint)
-        return false
-    if (A_TickCount - ST.lastSlideT < CFG.slideGapMs)
-        return false
-    if (ST.hpPercent >= 0 && ST.hpPercent < 35)
-        return false                    ; на последних HP не рискуем
-    ST.lastSlideT := A_TickCount
-    ST.slides += 1
-    if CFG.dryRun {
-        LogThrottledKey("[dryslide]", "[dry-run] подкат (присед на бегу)")
-        return true
-    }
-    if !ST.held.Has(SC.w)
-        KeyDown(SC.w)
-    if !ST.held.Has(SC.shift)
-        KeyDown(SC.shift)
-    if !KeyDown(SC.ctrl)
-        return false
-    ST.crouchOn := true
-    InputReleaseLater("key", SC.ctrl, CFG.slideHoldMs)
-    ST.lastAction := "подкат"
-    return true
-}
-
-; Боковое уклонение на 0.2–0.4 с и отпускание клавиши таймером.
-StrafeBurst(ms := 0) {
-    global CFG, SC
-    if (ms <= 0)
-        ms := CFG.strafeMs
-    ClearMatchStrafe()
-    k := Random(0, 1) ? SC.a : SC.d
-    return KeyDown(k) && InputReleaseLater("key", k, ms)
-}
-
-; Плотность перепадов яркости в полосе кадра: стена/ящик/уступ дают много
-; перепадов, открытая земля — мало. Дешевле, чем искать геометрию.
-BandEdges(shot, x1, y1, x2, y2, step := 5) {
-    r := RegionToPixels(shot, [x1, y1, x2, y2])
-    hits := 0, total := 0
-    y := r.y1
-    while (y < r.y2 - step) {
-        x := r.x1
-        while (x < r.x2 - step) {
-            b1 := Bright(shot, x, y)
-            b2 := Bright(shot, x + step, y)
-            b3 := Bright(shot, x, y + step)
-            total += 1
-            if (Abs(b2 - b1) > 34 || Abs(b3 - b1) > 34)
-                hits += 1
-            x += step
-        }
-        y += step
-    }
-    return (total > 0) ? hits / total : 0.0
-}
-
-ObstacleAhead(shot, now) {
-    global CFG, ST
-    if (now - ST.obstacleT < CFG.obstacleStepMs)
-        return ST.obstacleVal
-    ST.obstacleT := now
-    ; полоса прямо перед игроком: чуть ниже центра и до низа экрана
-    ST.obstacleVal := BandEdges(shot, 0.36, 0.50, 0.64, 0.72)
-    return ST.obstacleVal
-}
-
-; «Водитель». Вызывается каждый тик в матче, работает поверх обычных
-; отрезков движения: держит бег, перепрыгивает препятствия, подкатывается,
-; приседает под огнём. Возвращает true, если что-то сделал.
-SmartMove(shot, now) {
-    global CFG, SC, ST
-    if (!CFG.featMove || !CFG.featParkour || !ST.held.Has(SC.w) || !WorldFrameCurrent(shot))
-        return false
-    val := ObstacleAhead(shot, now)
-    if (!WorldFrameCurrent(shot) || val < CFG.obstacleEdges || now - ST.lastJumpT <= CFG.obstacleGapMs)
-        return false
-    if (Random(0, 99) < 70) {
-        if !JumpNow("препятствие впереди (" Round(val * 100) "%)")
-            return false
-        ST.lastAction := "перепрыгиваю препятствие"
-    } else {
-        if !StrafeBurst()
-            return false
-        ST.lastJumpT := now
-        ST.lastAction := "обхожу сбоку"
-    }
     return true
 }
 
@@ -6292,10 +6255,10 @@ TryApproach(shot, now) {
     loot := (!chest && CFG.featLoot && WorldFrameCurrent(shot)) ? CachedLoot(shot) : 0
     if (ST.lootCacheSeq != shot.captureId)
         loot := 0
-    ST.chest := chest, ST.loot := loot
-    target := chest ? chest : loot
     if !WorldFrameCurrent(shot)
         return false
+    ST.chest := chest, ST.loot := loot
+    target := chest ? chest : loot
     if !target {
         if (ST.lootMasksSeq = shot.captureId && ST.walkTarget) {
             HaltMatchMovement()
@@ -6306,10 +6269,15 @@ TryApproach(shot, now) {
     kind := chest ? chest.kind : "loot"
     approach := ST.walkTarget
     if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd
-        || approach.epoch != shot.inputEpochAtCapture || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
-        approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture, waited:false}
+        || approach.epoch != shot.inputEpochAtCapture || approach.w != shot.w || approach.h != shot.h
+        || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
+        approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture
+            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false}
         ST.walkTarget := approach
     }
+    tr := approach.samples
+    if (shot.captureId <= tr.seq || shot.capturedAt < tr.at)
+        return true
     approach.last := now
     if (now - approach.at > 8000) {
         if chest
@@ -6321,7 +6289,15 @@ TryApproach(shot, now) {
         LogThrottledKey("[approach-limit]", "[~] Подход за 8 с не дал подсказку; прекращаю попытку.")
         return true
     }
-    ; .x/.y — центр и для сундука, и для лута. .drawX/.drawY — только рамка.
+    ; Дважды видим похожий центр, прежде чем идти к нему. После поворота
+    ; подтверждаем снова, но 8-секундный предел всего подхода остаётся.
+    point := {cx:target.x, cy:target.y}
+    if !ConfirmWorldCandidate(tr, shot, point, 2) {
+        HaltMatchMovement()
+        ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
+        ST.lastAction := "свечение: жду повторный кадр"
+        return true
+    }
     ; Центральное положение не доказывает близость: даём один спокойный
     ; кадр для плашки, затем пробуем короткий шаг, а не слепое E.
     if (!approach.waited && NearCrosshair(shot, target.x, target.y)) {
@@ -6615,6 +6591,16 @@ Combat(shot, now) {
     }
     if !WorldFrameCurrent(shot)
         return false
+    if !EnemyOnFrame(shot, enemy) {
+        ; Пропущенный скан не является опровержением цели, но память
+        ; не прерывает E и не отбирает уже начатый направленный шаг.
+        if (ST.tgt || (ST.walkTarget && A_TickCount < ST.guidedUntil))
+            return false
+        HaltMatchMovement()
+        ST.lastAction := "бой: жду свежий кадр, по кэшу не стреляю"
+        LogThrottledKey("[aimold]", "[i] Кандидат есть только в памяти; наведение ждёт свежего подтверждения.", 5000)
+        return true
+    }
     ST.enemy := enemy
     ST.guidedUntil := 0, ST.walkTarget := 0
     combatNow := A_TickCount
@@ -6622,12 +6608,6 @@ Combat(shot, now) {
         ST.enemyFirstAt := shot.capturedAt
     ST.combatAt := combatNow
     CancelInteraction()
-    if !EnemyOnFrame(shot, enemy) {
-        HaltMatchMovement()
-        ST.lastAction := "бой: жду свежий кадр, по кэшу не стреляю"
-        LogThrottledKey("[aimold]", "[i] Кандидат есть только в памяти; наведение ждёт свежего подтверждения.", 5000)
-        return true
-    }
     if ProDecision(shot, combatNow)
         return true
 
@@ -6643,8 +6623,8 @@ Combat(shot, now) {
     lead := CFG.aimLeadMs / 1000
     largeTarget := enemy.h >= 96 * k && enemy.w >= 40 * k
     ty0 := (largeTarget && enemy.HasOwnProp("hy") && enemy.hy) ? enemy.hy : enemy.cy
-    tx := Clamp(enemy.cx + ST.enemyVelX * lead, 8, shot.w - 8)
-    ty := Clamp(ty0 + ST.enemyVelY * lead, 8, shot.h - 8)
+    tx := Clamp(enemy.cx + Clamp(ST.enemyVelX * lead, -0.25 * enemy.w, 0.25 * enemy.w), 8, shot.w - 8)
+    ty := Clamp(ty0 + Clamp(ST.enemyVelY * lead, -0.18 * enemy.h, 0.18 * enemy.h), 8, shot.h - 8)
     dx := Round(tx - shot.w / 2), dy := Round(ty - shot.h / 2), err := Hypot(dx, dy)
     tolX := Min(CFG.fireTolerancePx * k, Max(4 * k, enemy.w * 0.30))
     tolY := Min(CFG.fireTolerancePx * 1.6 * k, Max(5 * k, enemy.h * 0.16))
@@ -6700,7 +6680,9 @@ Combat(shot, now) {
     }
     ST.aimPrevDx := dx, ST.aimPrevDy := dy
     ST.lastAction := "бой: веду кандидата"
-    if (reacted && CanFireOnFrame(shot, enemy, aligned, aimed)) {
+    ; Упреждение помогает вести рамку, но не подменяет положение на кадре.
+    underAim := aligned && Abs(enemy.cx - shot.w / 2) <= tolX && Abs(ty0 - shot.h / 2) <= tolY
+    if (reacted && CanFireOnFrame(shot, enemy, underAim, aimed)) {
         if (CFG.featAds && err > CFG.adsRangePx && !ST.adsOn
             && combatNow - ST.lastAdsAt > CFG.adsHoldMs * 2 && AdsSet(true, shot)) {
             ST.lastAdsAt := combatNow
@@ -6712,7 +6694,7 @@ Combat(shot, now) {
             CrouchSet(true)
             InputReleaseLater("key", SC.ctrl, CFG.crouchHoldMs)
         }
-        if FireBurst(shot, enemy, aligned, aimed) {
+        if FireBurst(shot, enemy, underAim, aimed) {
             ST.shots += 1
             if !CFG.dryRun
                 LogThrottledKey("[shot]", "[?] Попытка очереди по кандидату: " enemy.src " (#" shot.captureId ").")
@@ -6915,10 +6897,15 @@ CachedEnemy(shot) {
             if verified {
                 if (!ST.enemyCache || ST.enemyCache.src != verified.src)
                     ST.enemyLastAt := 0, ST.enemyVelX := 0, ST.enemyVelY := 0
-                ST.enemyCache := verified, ST.enemySeenAt := shot.capturedAt, ST.enemySeenSeq := shot.captureId
+                ST.enemyCache := verified, ST.enemyCacheWide := wide
+                ST.enemySeenAt := shot.capturedAt, ST.enemySeenSeq := shot.captureId
                 ST.enemyView := FrameView(shot), ST.enemySrc := verified.src
                 TrackEnemy(verified, shot.capturedAt, shot.cameraSeqAtCapture)
                 shot.enemyReading := verified
+            } else if (ST.enemyCache && wide = ST.enemyCacheWide) {
+                ; Завершённый скан исходной области уже не подтверждает
+                ; прежнюю цель. Отложенный/просроченный скан сюда не попадает.
+                ST.enemyCache := 0, ST.enemyVelX := 0, ST.enemyVelY := 0, ST.enemyLastAt := 0
             }
             return ST.enemyCache
         }
@@ -6991,14 +6978,20 @@ ScanLootMasks(shot) {
 CachedLootMasks(shot) {
     global CFG, ST
     if (ST.lootMasksSeq != shot.captureId && !shot.HasOwnProp("lootMasksDeferred")
-        && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs) {
+        && WorldFrameCurrent(shot) && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs) {
         if !ScanAllow(2) {
             shot.lootMasksDeferred := true
             return IsObject(ST.lootMasks) ? ST.lootMasks : EmptyLootMasks()
         }
-        ST.lootMasks := ScanLootMasks(shot)
-        ST.lootMasksAt := A_TickCount
-        ST.lootMasksSeq := shot.captureId
+        masks := ScanLootMasks(shot)
+        TickCheck("после масок лута")
+        prev := Critical("On")
+        try {
+            if WorldFrameCurrent(shot)
+                ST.lootMasks := masks, ST.lootMasksAt := A_TickCount, ST.lootMasksSeq := shot.captureId
+        } finally {
+            Critical(prev)
+        }
     }
     if !IsObject(ST.lootMasks)
         ST.lootMasks := EmptyLootMasks()
@@ -7021,11 +7014,16 @@ CachedChest(shot) {
     CachedLootMasks(shot)
     if (ST.lootMasksSeq != shot.captureId)
         return ST.chestCache
-    chestResult := FindChest(shot), chestSeq := ST.lootMasksSeq
+    chestResult := FindChest(shot)
     prev := Critical("On")
-    ST.chestCache := chestResult, ST.chestCacheSeq := chestSeq, ST.chestCacheAt := now
-    Critical(prev)
-    return chestResult
+    try {
+        if !WorldFrameCurrent(shot)
+            return 0
+        ST.chestCache := chestResult, ST.chestCacheSeq := shot.captureId, ST.chestCacheAt := now
+        return chestResult
+    } finally {
+        Critical(prev)
+    }
 }
 
 CachedLoot(shot) {
@@ -7035,11 +7033,16 @@ CachedLoot(shot) {
     CachedLootMasks(shot)
     if (ST.lootMasksSeq != shot.captureId)
         return ST.lootCache
-    lootResult := FindLoot(shot), lootSeq := ST.lootMasksSeq
+    lootResult := FindLoot(shot)
     prev := Critical("On")
-    ST.lootCache := lootResult, ST.lootCacheSeq := lootSeq
-    Critical(prev)
-    return lootResult
+    try {
+        if !WorldFrameCurrent(shot)
+            return 0
+        ST.lootCache := lootResult, ST.lootCacheSeq := shot.captureId
+        return lootResult
+    } finally {
+        Critical(prev)
+    }
 }
 
 CachedSound(shot) {
@@ -7356,16 +7359,20 @@ HandleSleep(shot, now) {
 }
 
 HandleEndScreen(shot, now) {
-    global CFG, SC, ST
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+    global CFG, ST
+    if (!ST.running || ST.paused || ST.tickAbort || CFG.botMode = "antiafk" || CFG.botMode = "xp"
+        || ST.cancelHold || ST.queuePending
+        || shot.hwnd != ST.hwnd || shot.inputEpochAtCapture != ST.inputEpoch || !shot.captureId)
         return
     if (ST.endFirstSeen = 0)
         ST.endFirstSeen := now
     MacroPlayReset()
     box := FrameActionButton(shot, "END_SCREEN")
 
-    ; Засчитываем раунд при реальной кнопке итогов (не на случайном тёмном экране загрузки).
-    if (box && ST.roundActive && !ST.roundCounted) {
+    ; Плашка в текущем кадре подтверждает итоги. Простой тёмный экран или
+    ; отправленный клик «В лобби» не засчитываем за завершение раунда.
+    if (box && !ST.roundCounted) {
+        ST.roundActive := true
         RecordRoundCompleted("итоги матча")
         if ST.tokenStopArmed {
             Log("[+] Жетон найден и матч завершён — останавливаю авто-очередь.")
@@ -7379,39 +7386,28 @@ HandleEndScreen(shot, now) {
         return
     }
 
-    if !CFG.featPlayAgain
+    if (!CFG.featPlayAgain || ST.tokenShown || shot.captureId <= ST.endClickSeq)
         return
 
-    ; Режим «Только через лобби»: никогда не жмём «Играть снова», а ищем кнопку «В лобби»
-    ; (полезно в Squad Fill, чтобы каждый раунд собирать новый активный отряд).
-    preferLobby := (CFG.endAction = "lobby_only")
-
-    if (!preferLobby && box) {
-        ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
-        if (ST.endRetry >= CFG.clickRetries && now - ST.lastClickT < CFG.retryAfterMs)
+    ; После серии неудач не мусолим «Играть снова»: ищем «В лобби».
+    ; В lobby_only этот поиск идёт сразу и не нажимает кнопку повтора.
+    preferLobby := CFG.endAction = "lobby_only"
+    if (!preferLobby && box && ST.endRetry < CFG.clickRetries) {
+        if (ST.lastClickT && now - ST.lastClickT < CFG.verifyMs)
             return
-        if (now - ST.lastClickT < CFG.verifyMs)
-            return
-        ReleaseKeys()
-        if !Throttle()
-            return
-        if !ClickMenuBox(shot, box, "Играть снова", "play_again") {
-            LogThrottledKey("[resultsnoclick]", "[i] Клик «Играть снова» отложен или ждёт фокуса.")
-            return
+        if EndScreenClick(shot, box, "Играть снова", "play_again", now) {
+            ST.endRetry += 1
+            ST.lastAction := "попытка «Играть снова» · жду переход"
+            Log("[>] Итоги: «Играть снова», попытка " ST.endRetry "/" CFG.clickRetries ". Жду новую сцену.")
         }
-        ST.lastClickT := now
-        ST.endRetry += 1
-        ST.clickAgain += 1
-        ST.lastAction := "жму «Играть снова»"
-        Log("[>] Итоги: жму «Играть снова» (попытка " ST.endRetry ")")
         return
     }
 
-    ; Ищем реальную кнопку «В лобби» внизу справа (сразу при lobby_only, либо как резерв).
     waited := now - ST.endFirstSeen
     needWait := preferLobby ? 2200 : CFG.endReturnAfterMs
     gapWait := preferLobby ? CFG.verifyMs : CFG.retryAfterMs
-    if (waited >= needWait && now - ST.lastClickT >= gapWait) {
+    if (waited >= needWait && (!ST.lastClickT || now - ST.lastClickT >= gapWait)
+        && ST.endReturnRetry < CFG.clickRetries) {
         retBtn := FindLightPlateButton(shot, CFG.regReturnBtn, 0.08, 0.30, 2.0, 8.0, false)
         if !retBtn {
             yl := FindYellowButtons(shot, CFG.regReturnBtn)
@@ -7419,42 +7415,40 @@ HandleEndScreen(shot, now) {
                 retBtn := yl[1]
         }
         if retBtn {
-            ST.uiBoxCache := retBtn, ST.uiBoxSeq := shot.captureId
-            ReleaseKeys()
-            if Throttle() && ClickMenuBox(shot, retBtn, "В лобби", "end_return") {
-                ST.lastClickT := now
-                ST.clickAgain += 1
-                ST.lobbyRequeue := true
-                if (CFG.lobbyDelaySec > 0)
-                    ST.lobbyCooldownUntil := A_TickCount + CFG.lobbyDelaySec * 1000
-                if (ST.roundActive && !ST.roundCounted)
-                    RecordRoundCompleted("выход с итогов в лобби")
-                ST.lastAction := "жму «В лобби»"
-                Log("[>] Итоги: нажал кнопку «В лобби»"
-                    . (preferLobby ? " (режим «Только через лобби»)." : " (резерв после " Round(waited / 1000) " с)."))
-                return
+            if EndScreenClick(shot, retBtn, "В лобби", "end_return", now) {
+                ST.endReturnRetry += 1
+                ST.lastAction := "попытка «В лобби» · жду подтверждение"
+                Log("[>] Итоги: «В лобби», попытка " ST.endReturnRetry "/" CFG.clickRetries
+                    . ". Следующую очередь начну после подтверждения лобби.")
             }
+            return
         }
     }
 
-    ; Послематчевый опрос Fortnite («Пропустить / SKIP»): закрываем, если нет жетона на экране.
-    if (!ST.tokenShown && waited >= 6500 && now - ST.lastSurveyAt >= 9000 && now - ST.lastClickT >= CFG.verifyMs) {
+    ; Послематчевый опрос: по-прежнему проверяем только обнаруженную кнопку.
+    if (waited >= 6500 && now - ST.lastSurveyAt >= 9000
+        && (!ST.lastClickT || now - ST.lastClickT >= CFG.verifyMs)) {
         modalBtn := FindModalDismissButton(shot)
-        if modalBtn {
-            ST.uiBoxCache := modalBtn, ST.uiBoxSeq := shot.captureId
-            ReleaseKeys()
-            if Throttle() && ClickMenuBox(shot, modalBtn, "Пропустить опрос", "skip_survey") {
-                ST.lastClickT := now
-                ST.lastSurveyAt := now
-                ST.surveySkips += 1
-                ST.lastAction := "пропустил опрос"
-                Log("[>] Итоги: закрыл послематчевый опрос / модальное окно (всего: " ST.surveySkips ")")
-                return
-            }
+        if (modalBtn && EndScreenClick(shot, modalBtn, "Пропустить опрос", "skip_survey", now)) {
+            ST.lastSurveyAt := now
+            ST.surveySkips += 1
+            ST.lastAction := "попытка пропустить опрос"
+            return
         }
     }
+    LogThrottledKey("[resultsunknown]", ST.endReturnRetry >= CFG.clickRetries
+        ? "[?] Итоги: предел попыток выхода. Жду смены сцены."
+        : "[?] Итоги: жду подходящую кнопку или смену сцены.", 10000)
+}
 
-    LogThrottledKey("[resultsunknown]", "[?] Экран похож на итоги/загрузку, кнопка пока не найдена — жду.", 10000)
+EndScreenClick(shot, box, label, key, now) {
+    global ST
+    ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
+    ReleaseKeys()
+    if (!Throttle() || !ClickMenuBox(shot, box, label, key))
+        return false
+    ST.lastClickT := now, ST.endClickSeq := shot.captureId, ST.clickAgain += 1
+    return true
 }
 
 HandleReward(shot, now) {
@@ -7615,26 +7609,13 @@ HandleDeath(shot, now) {
             . " союзн. — жду возрождения или финала матча (" Round(elapsed / 1000) " с).", 15000)
         return
     }
-    if (elapsed < CFG.deathEscMs)
+    if (elapsed < CFG.deathEscMs || !CFG.featPlayAgain || !FrameHasMatchHud(shot)
+        || !MenuClickPossible(shot.hwnd) || !Throttle())
         return
-    ; Долгое наблюдение без живых союзников: выходим в лобби
-    if !Throttle()
-        return
-    if (CFG.botMode = "queue" && MenuClickPossible()) {
-        Log("[!] Экран смерти/наблюдения " Round(elapsed / 1000) " с (отряд не виден) — запускаю выход в лобби.")
+    ; Авто-игра использует тот же проверяемый выход, что и AFK-очередь.
+    ; Один Esc без последующих кадров не возвращает в лобби.
+    if LeaveStart("долгое наблюдение после устранения", false)
         ST.deadSince := now
-        LeaveStart("долгое наблюдение после устранения", false)
-        return
-    }
-    Log("[!] висим на экране смерти " Round(elapsed / 1000) " с — жму Esc")
-    if !CFG.dryRun {
-        hwnd := GetGameWindow()
-        if (hwnd && (WinActive("ahk_id " hwnd) || BgInputActive()))
-            TapKey(SC.esc, 100)
-        else if (hwnd && CFG.smartRestore)
-            RunMenuAction(hwnd, "Esc после устранения", () => TapKey(SC.esc, 100))
-    }
-    ST.deadSince := now
 }
 
 LogUnknownDiag(shot) {
@@ -7655,11 +7636,27 @@ HandleUnknown(shot, now) {
     LogUnknownDiag(shot)
 }
 
+AcceptLobbyReturn(shot, now) {
+    global CFG, ST
+    if (!ST.roundActive || ST.cancelHold || ST.queuePending || !FrameActionButton(shot, "MENU")
+        || shot.hwnd != ST.hwnd || shot.inputEpochAtCapture != ST.inputEpoch)
+        return false
+    ST.roundActive := false, ST.lobbyRequeue := true, ST.queueTries := 0
+    if (CFG.lobbyDelaySec > 0 && !ST.lobbyCooldownUntil)
+        ST.lobbyCooldownUntil := now + CFG.lobbyDelaySec * 1000
+    RecordRoundCompleted("возврат в лобби")
+    Log("[i] Возврат после матча подтверждён плашкой лобби; жду следующий поиск.")
+    return true
+}
+
 HandleMenu(shot, now) {
     global CFG, ST
     MacroPlayReset()
     ST.wasDeadScene := false
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !CFG.featAutoQueue)
+    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+        return
+    AcceptLobbyReturn(shot, now)
+    if !CFG.featAutoQueue
         return
     if ST.tokenStopArmed {
         Log("[+] Возврат в лобби после находки жетона — останавливаю бота по настройке.")
@@ -9154,20 +9151,29 @@ EnsureWeapon(now) {
 
 Roam(shot, now) {
     global CFG, SC, ST
-    if MatchPhase(shot, now) {
-        ClearMatchStrafe()
-        ResetMoveWatch()
-        return
-    }
     if !WorldFrameCurrent(shot) {
         LogThrottledKey("[world-late]", "[i] После захвата/сцены нет актуального кадра для матча ("
             . (A_TickCount - shot.capturedAt) " мс); жду следующий.", 5000)
         return
     }
-    ; Один владелец за кадр. При подтверждённом сопровождении бой может
-    ; иметь приоритет, иначе сначала проверяем подсказку E.
-    combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && ST.enemyCache
-        && SameFrameView(ST.enemyView, shot) && now - ST.enemySeenAt <= CFG.enemyHoldMs
+    if MatchPhase(shot, now) {
+        ClearMatchStrafe()
+        ResetMoveWatch()
+        return
+    }
+    ; Память HUD удерживает сцену/таймер, но не разрешает надолго ехать
+    ; вперёд через загрузку или поверх неизвестного экрана.
+    if (!FrameHasMatchHud(shot) && !MatchHudRecentlySeen(now, 850)) {
+        HaltMatchMovement()
+        CancelInteraction()
+        ReleaseMouseButtons()
+        ST.lastAction := "жду подтверждение HUD матча"
+        return
+    }
+    ; Первый поиск E не отбираем у подсказки. Во время удержания/проверки E
+    ; остаётся шанс увидеть опасность, но прервать E может только свежий повтор.
+    combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && (ST.tgt
+        || (ST.enemyCache && SameFrameView(ST.enemyView, shot) && now - ST.enemySeenAt <= CFG.enemyHoldMs))
     if (combatFirst && (Combat(shot, now) || !WorldFrameCurrent(shot)))
         return
     ST.enemy := 0
@@ -9209,7 +9215,7 @@ Roam(shot, now) {
         return
     }
     if (!WorldFrameCurrent(shot) || MoveWatch(shot, now) || CheckStormAndZone(shot, now)
-        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now) || SmartMove(shot, now))
+        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now))
         return
     if (now < ST.pauseUntil || !WorldFrameCurrent(shot))
         return
@@ -9222,6 +9228,8 @@ Roam(shot, now) {
             StartSegment(shot)
         return
     }
+    if !KeepPatrolMoving(shot)
+        return
     ; Даём несколько спокойных кадров детектору движения и застревания.
     ; Осмотр не совмещаем с новым отрезком или поворотом в коридор.
     quietMs := CFG.stuckMs + CFG.stuckCameraQuietMs + CFG.stuckSampleMs
@@ -10147,8 +10155,7 @@ TickBody(profile) {
         Log("[state] " StateRu(ST.state) " -> " StateRu(scene))
         ST.state := scene
         ST.sceneSince := A_TickCount
-        ST.endFirstSeen := 0
-        ST.endRetry := 0
+        ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.endClickSeq := 0
         ST.lastClickT := 0
         ST.prompt := 0
         ST.chest := 0
@@ -10162,7 +10169,7 @@ TickBody(profile) {
             ST.mmEnterAt := A_TickCount
             ST.roundActive := false, ST.lobbyRequeue := false, ST.roundCounted := false
         }
-        if (scene = "GAME" || scene = "DEATH" || scene = "END_SCREEN" || scene = "REWARD")
+        if (scene = "GAME" || scene = "DEATH")
             ST.roundActive := true
         if (scene != "MATCHMAKING" && scene != "MENU")
             ST.mmEnterAt := 0
@@ -10177,18 +10184,6 @@ TickBody(profile) {
             ST.lobbySince := A_TickCount
             ST.squadEmptyCount := 0, ST.squadEverSeen := false, ST.groundAt := 0
             ST.squadStatus := CFG.squadAutoLeave ? "в лобби" : "выкл"
-            ; Только один ускоренный запуск после предполагаемого матча.
-            ; Защёлка отмены имеет приоритет, а плашку ещё нужно подтвердить.
-            if (ST.roundActive && prevState != "MATCHMAKING" && !ST.cancelHold) {
-                RecordRoundCompleted("возврат в лобби")
-                ST.lobbyRequeue := true
-                ST.roundActive := false
-                ST.queueTries := 0
-                if (CFG.lobbyDelaySec > 0 && !ST.lobbyCooldownUntil)
-                    ST.lobbyCooldownUntil := A_TickCount + CFG.lobbyDelaySec * 1000
-                Log("[i] Возврат в лобби после матча — проверяю кнопку «Играть»"
-                    . (CFG.lobbyDelaySec > 0 ? " (пауза " CFG.lobbyDelaySec " с)" : ""))
-            }
         }
         if (scene = "GAME")
             ST.queueSeen := false
@@ -14267,8 +14262,9 @@ OnCheckCapture(*) {
     Log("  последнее действие: " (ST.lastAction != "" ? ST.lastAction : "—"))
     Log("  движение: " (ST.sprintOn ? "БЕГ " : "") (ST.crouchOn ? "ПРИСЕД " : "")
         . (ST.adsOn ? "ПРИЦЕЛ " : "") "· режим «" (ST.moveMode != "" ? ST.moveMode : "—") "»"
-        . " · прыжков " ST.jumps " · подкатов " ST.slides " · приседаний " ST.crouches
-        . " · препятствие впереди " Round(ST.obstacleVal * 100) "%"
+        . " · прыжков " ST.jumps " · приседаний " ST.crouches
+        . " · коридоры " (ST.navInfo ? ST.navInfo.left "/" ST.navInfo.center "/" ST.navInfo.right
+            . " · " NavKindRu(ST.navInfo.kind) " (" ST.navInfo.hits "/2)" : "ещё не измерялись")
         . " · спасений зависшего тика " ST.tickHeals)
     ; ---- v7.5: видно, что движение не рвётся и что бой/кирка реально работают ----
     Log("  бой и движение (v7.5): очередей по врагу " ST.shots
@@ -14455,7 +14451,7 @@ BuildCalibrationReport(shot) {
     enemy := ReadStaticFigure(shot, CFG.enemyFastFrac, 0, diagnostic)
     prompt := ReadInteractPrompt(shot)
     ring := SoundMarks(shot)
-    flashPct := SoundFlash(shot)
+    flashPct := SoundFlash(shot), nav := ScanNavCorridors(shot)
 
     lines := []
     lines.Push("── калибровка ──────────────────────────────")
@@ -14477,6 +14473,8 @@ BuildCalibrationReport(shot) {
         . "   [порог лечения " CFG.hpLowPercent "%]")
     lines.Push("  сундук: " (chest ? ("кандидат, " chest.area " px в (" chest.x "," chest.y ")") : "нет")
         . "   лут: " (loot ? (loot.kind ", " loot.area " px") : "нет"))
+    lines.Push("  коридоры слева/центр/справа: " nav.left "/" nav.center "/" nav.right
+        . " · " NavKindRu(nav.kind) " · один кадр; не карта препятствий")
     cand := EnemyCandidates(shot, enemy, diagnostic.skinPct)
     lines.Push("  фигура: " (enemy ? ("кандидат в (" enemy.cx "," enemy.cy "), рамка "
         . enemy.w "x" enemy.h " @ (" enemy.x "," enemy.y ")") : "нет: " diagnostic.figureReject)

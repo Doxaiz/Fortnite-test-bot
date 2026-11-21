@@ -43,7 +43,7 @@ RunWindowTests() {
         Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
-            , TestSavedWindowFrame] {
+            , TestSavedWindowFrame, TestPatrolLease] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -241,6 +241,42 @@ TestSavedWindowFrame(a, b) {
     }
 }
 
+TestPatrolLease(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featChest := false, CFG.featParkour := true, CFG.sprint := true
+    CFG.navScanMs := 0, CFG.patrolHoldMs := 1200
+    ResetNavigation()
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, 1, 0)
+    ExpectKey(b, SC.shift, 0, 0)
+    TickFixture(b)
+    Check(ST.sprintOn && ST.navInfo.hits = 2, "два открытых кадра ускоряют наземный шаг")
+    ExpectKey(b, SC.shift, 1, 0)
+
+    SetFixtureFrame(b, 5)
+    TickFixture(b)
+    Check(!ST.sprintOn && ST.navInfo.kind = "lip" && ST.navInfo.hits = 1
+        , "при первом крае убираем спринт, но ещё не прыгаем")
+    ExpectKey(b, SC.shift, 1, 1)
+    ExpectKey(b, SC.space, 0, 0)
+    TickFixture(b)
+    Check(ST.navInfo.jumped && ST.held.Has(SC.w), "прыжок подтверждён, прямая ходьба не рвётся")
+    ExpectKey(b, SC.space, 1, 0)
+    ExpectKey(b, SC.space, 1, 1, 600)
+    TickFixture(b)
+    ExpectKey(b, SC.space, 1, 1)
+    stepEnds := ST.segUntil
+    ; Больше нет тиков: отпускание не зависит от распознавания и нового кадра.
+    ExpectKey(b, SC.w, 1, 1, 2200)
+    Check(A_TickCount < stepEnds && !ST.held.Count, "W отпущена таймером раньше конца отрезка")
+    ExpectKey(a, SC.w, 1, 1)
+    ExpectKey(a, SC.shift, 0, 0)
+    ExpectKey(a, SC.space, 0, 0)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -299,7 +335,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 5
+    Loop 6
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -384,7 +420,7 @@ BuildFixtureFrame(scene) {
         Loop 9
             PaintFixture(buf, w, 257 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
     }
-    if (scene >= 2) {
+    if (scene >= 2 && scene <= 4) {
         ; Неизменная оранжевая опора и отдельная полоса продолжали её рамку в v11.0.8.
         PaintFixture(buf, w, 96, 40, 24, 72, 0xDA8848)
         PaintFixture(buf, w, 120, 103, 9, 9, 0xCF7C39)
@@ -393,6 +429,8 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, 233, 124, 16, 32, scene = 3 ? 0xDDDDDD : 0x202020)
         PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727)     ; один и тот же цвет на трёх сценах
     }
+    if (scene = 5)
+        PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)
     return {w:w, h:h, buf:buf, info:info}
