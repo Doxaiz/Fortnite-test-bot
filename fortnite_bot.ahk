@@ -442,6 +442,7 @@ global CFG := {
     sleepNavyMin:   0.55,     ; доля тёмно-синего фона на экране спящего режима
     sleepCooldownMs: 8000,    ; минимальный интервал между кликами по «Продолжить игру»
     endReturnAfterMs: 22000,  ; резервный выход при отсутствии повтора или после лимита попыток
+    endContextMs:   120000,    ; сколько храним подтверждённый контекст итогов/устранения
     regModalBtn:    [0.32, 0.54, 0.68, 0.84], ; кнопка закрытия модалки / пропуска опроса
     stopOnToken:    false,    ; остановить запуск новых матчей после обнаружения жетона
     treasureHour:   false,    ; множитель 1.5x в «Час сокровищ» при расчёте шанса жетона
@@ -690,6 +691,8 @@ global ST := {
     endFirstSeen: 0,
     endRetry:     0,
     endReturnRetry: 0,
+    endContext:   0,            ; недавнее подтверждённое устранение или плашка повтора
+    endReturnObs: 0,            ; отдельное подтверждение светлой плашки выхода
     endClickSeq:  0,
     endClickAt:   0,
     actionTimes:  [],
@@ -2708,6 +2711,17 @@ FindLightPlateButton(shot, region, minWFrac := 0.08, maxWFrac := 0.36, minAsp :=
             bestScore := cand.area, best := cand
     }
     return best
+}
+
+FindResultReturnButton(shot, replay := 0) {
+    global CFG
+    ; Только отдельная светлая плашка со штрихами и тёмной окантовкой.
+    ; Жёлтая зона частично совпадает с «Играть снова» — не подставляем её.
+    box := FindLightPlateButton(shot, CFG.regReturnBtn, 0.08, 0.30, 2.0, 8.0, false)
+    if (box && replay && Max(box.x, replay.x) < Min(box.x + box.w, replay.x + replay.w)
+        && Max(box.y, replay.y) < Min(box.y + box.h, replay.y + replay.h))
+        return 0
+    return box
 }
 
 FindRedMenuButton(shot, region := 0) {
@@ -6848,9 +6862,9 @@ SoundReact(shot, now) {
 ; сцены кэш сбрасывался и они шли заново. Теперь у сканов есть БЮДЖЕТ:
 ; за тик выполняется не больше CFG.scanPerTickMax единиц, остальные значения
 ; берутся из кэша (пусть чуть старые — это лучше, чем тик на 5 секунд).
-ScanAllow(cost := 1) {
+ScanAllow(cost := 1, reserve := 0) {
     global CFG, ST
-    if (ST.scanWork + cost > CFG.scanPerTickMax) {
+    if (ST.scanWork + cost + reserve > CFG.scanPerTickMax) {
         ST.scanSkipped += 1
         return false
     }
@@ -7217,7 +7231,7 @@ PlateKind(shot, box) {
 DetectState(shot, density, now) {
     global CFG, ST
     ST.density := density
-    shot.screenAction := 0
+    shot.screenAction := 0, shot.endReturnAction := 0
     if (CFG.botMode = "xp") {
         ; В XP стандартный HUD может быть скрыт. Режим не ищет кнопки меню.
         PublishFrameHud(shot, 0)
@@ -7233,16 +7247,20 @@ DetectState(shot, density, now) {
         return "UNKNOWN"
     }
     m := FrameMenu(shot)
-    ; Геометрия итогов v11 (в том числе раскладка отряда). Подсказка из
-    ; прошлого кадра не имеет приоритета над текущим HUD и не даёт клик.
+    ; Актуальный HUD проверяем даже рядом со свежим жёлтым кандидатом:
+    ; совпадение цвета на игровом кадре не даёт разрешения выйти из матча.
     resBtn := !m.blocksGame ? PickResultPlayAgain(shot, m.results) : 0
-    hud := (!m.blocksGame && (!m.fresh || !resBtn)) ? FrameHudEvidence(shot, true) : 0
+    hud := !m.blocksGame ? FrameHudEvidence(shot, true) : 0
     PublishFrameHud(shot, hud)
+    noHud := hud && !hud.bar && !hud.confirmed && !shot.HasOwnProp("healthDeferred")
+    if (resBtn && m.fresh && noHud) {
+        shot.screenAction := {scene:"END_SCREEN", box:resBtn}
+        RememberEndContext(shot, "replay")
+    }
+    returnVisible := ObserveEndReturn(shot, m, resBtn, noHud)
 
-    if (resBtn && (!hud || !hud.confirmed)) {
+    if ((resBtn && noHud) || returnVisible) {
         ST.menuSeenAt := 0, ST.playSeenAt := 0, ST.deadSince := 0
-        if m.fresh
-            shot.screenAction := {scene:"END_SCREEN", box:resBtn}
         ST.mmSince := 0
         return "END_SCREEN"
     }
@@ -7258,6 +7276,7 @@ DetectState(shot, density, now) {
     if (hud && hud.confirmed) {
         ST.menuSeenAt := 0, ST.playSeenAt := 0
         ST.prompt := 0
+        ST.endContext := 0
         ST.inMatchT := shot.capturedAt
         return "GAME"
     }
@@ -7448,10 +7467,73 @@ SceneFrameCurrent(shot) {
         && age >= 0 && age <= CFG.tickBudgetMs
 }
 
+RememberEndContext(shot, kind) {
+    global ST
+    if (SceneFrameCurrent(shot) && !ST.queuePending && !ST.cancelHold)
+        ST.endContext := {kind:kind, view:FrameView(shot), at:shot.capturedAt}
+}
+
+EndContextCurrent(shot) {
+    global CFG, ST
+    ctx := ST.endContext
+    if (!ctx || !SameFrameView(ctx.view, shot))
+        return false
+    age := shot.capturedAt - ctx.at
+    ; Слабый признак не отменяет ожидание живых союзников. Свежая
+    ; отдельная плашка повтора может подтвердить, что это уже итоги.
+    return age >= 0 && age <= CFG.endContextMs
+        && (ctx.kind = "replay" || (ST.roundActive && (!CFG.waitSquadOnDeath || !ST.spectateAlive)))
+}
+
+ObserveEndReturn(shot, menu, replay, noHud) {
+    global CFG, ST
+    if !SceneFrameCurrent(shot)
+        return false
+    old := ST.endReturnObs
+    if (old && (shot.captureId < old.seq || shot.capturedAt < old.at))
+        return false
+    if (!CFG.featPlayAgain || ST.queuePending || ST.cancelHold || menu.blocksGame || !EndContextCurrent(shot)) {
+        ST.endReturnObs := 0
+        return false
+    }
+    if shot.HasOwnProp("healthDeferred")
+        return false ; не подтверждаем выход и не считаем отсрочку промахом
+    if !noHud {
+        ST.endReturnObs := 0
+        return false
+    }
+    similarView := old && SameFrameView(old.view, shot) && shot.capturedAt - old.at <= CFG.confirmGapMs
+    ; Между полными проходами меню поддерживаем только сцену. Даже если
+    ; она подтверждена, старые координаты не становятся действием.
+    ; В экономном профиле проверка жетона важнее дополнительного скана.
+    reserve := TokenScanDue(A_TickCount) ? 2 : 0
+    if (!menu.fresh || (old && shot.captureId = old.seq) || !ScanAllow(1, reserve))
+        return similarView && old.hits >= 2
+
+    box := FindResultReturnButton(shot, replay)
+    TickCheck("после поиска плашки возврата")
+    previous := Critical("On")
+    try {
+        if (!SceneFrameCurrent(shot) || !EndContextCurrent(shot) || ST.cancelHold || ST.queuePending)
+            return false
+        matched := box && similarView && old.box && Abs(box.cx - old.box.cx) <= shot.w * 0.02
+            && Abs(box.cy - old.box.cy) <= shot.h * 0.02 && Abs(box.w - old.box.w) <= old.box.w * 0.20
+            && Abs(box.h - old.box.h) <= old.box.h * 0.25
+        hits := !box ? 0 : (matched ? Min(2, old.hits + 1) : 1)
+        ST.endReturnObs := {seq:shot.captureId, at:shot.capturedAt, view:FrameView(shot), box:box, hits:hits}
+        if (hits >= 2)
+            shot.endReturnAction := box
+        return hits >= 2
+    } finally {
+        Critical(previous)
+    }
+}
+
 ResetEndHandoff() {
     global ST
     ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0
     ST.endClickSeq := 0, ST.endClickAt := 0
+    ST.endContext := 0, ST.endReturnObs := 0
 }
 
 HandleEndScreen(shot, now) {
@@ -7459,8 +7541,6 @@ HandleEndScreen(shot, now) {
     if (!SceneFrameCurrent(shot) || CFG.botMode = "antiafk" || CFG.botMode = "xp"
         || ST.cancelHold || ST.queuePending)
         return
-    if (ST.endFirstSeen = 0)
-        ST.endFirstSeen := now
     MacroPlayReset()
     box := FrameActionButton(shot, "END_SCREEN")
 
@@ -7483,9 +7563,18 @@ HandleEndScreen(shot, now) {
 
     if (!CFG.featPlayAgain || ST.tokenShown || shot.captureId <= ST.endClickSeq)
         return
+    context := EndContextCurrent(shot)
+    retBtn := (context && ST.endReturnObs && ST.endReturnObs.seq = shot.captureId
+        && shot.HasOwnProp("endReturnAction")) ? shot.endReturnAction : 0
+    if (!box && !retBtn && (!ST.endFirstSeen || !context)) {
+        LogThrottledKey("[results-context]", "[?] Итоги: жду подтверждения кнопки на новом экране.", 10000)
+        return
+    }
+    if !ST.endFirstSeen
+        ST.endFirstSeen := now
 
-    ; После серии неудач не мусолим «Играть снова»: ищем «В лобби».
-    ; В lobby_only этот поиск идёт сразу и не нажимает кнопку повтора.
+    ; После серии неудач пробуем отдельную плашку «В лобби».
+    ; В lobby_only повтор не нажимаем даже при видимой плашке.
     preferLobby := CFG.endAction = "lobby_only"
     if (!preferLobby && box && ST.endRetry < CFG.clickRetries) {
         if (ST.endClickAt && now - ST.endClickAt < CFG.verifyMs)
@@ -7501,23 +7590,15 @@ HandleEndScreen(shot, now) {
     waited := now - ST.endFirstSeen
     needWait := preferLobby ? 2200 : CFG.endReturnAfterMs
     gapWait := preferLobby ? CFG.verifyMs : CFG.retryAfterMs
-    if (waited >= needWait && (!ST.endClickAt || now - ST.endClickAt >= gapWait)
+    if (retBtn && waited >= needWait && (!ST.endClickAt || now - ST.endClickAt >= gapWait)
         && ST.endReturnRetry < CFG.clickRetries) {
-        retBtn := FindLightPlateButton(shot, CFG.regReturnBtn, 0.08, 0.30, 2.0, 8.0, false)
-        if !retBtn {
-            yl := FindYellowButtons(shot, CFG.regReturnBtn)
-            if yl.Length
-                retBtn := yl[1]
+        if EndScreenClick(shot, retBtn, "В лобби", "end_return", now) {
+            ST.endReturnRetry += 1
+            ST.lastAction := "попытка «В лобби» · жду подтверждение"
+            Log("[>] Итоги: «В лобби», попытка " ST.endReturnRetry "/" CFG.clickRetries
+                . ". Следующую очередь начну после подтверждения лобби.")
         }
-        if retBtn {
-            if EndScreenClick(shot, retBtn, "В лобби", "end_return", now) {
-                ST.endReturnRetry += 1
-                ST.lastAction := "попытка «В лобби» · жду подтверждение"
-                Log("[>] Итоги: «В лобби», попытка " ST.endReturnRetry "/" CFG.clickRetries
-                    . ". Следующую очередь начну после подтверждения лобби.")
-            }
-            return
-        }
+        return
     }
 
     ; Послематчевый опрос: по-прежнему проверяем только обнаруженную кнопку.
@@ -7540,7 +7621,8 @@ EndScreenClick(shot, box, label, key, now) {
     global ST
     ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
     ReleaseKeys()
-    if (!SceneFrameCurrent(shot) || !Throttle() || !ClickMenuBox(shot, box, label, key))
+    if (!SceneFrameCurrent(shot) || ST.queuePending || ST.cancelHold || ST.tokenShown || ST.tokenStopArmed
+        || !Throttle() || !ClickMenuBox(shot, box, label, key))
         return false
     ST.lastClickT := now, ST.endClickAt := now, ST.endClickSeq := shot.captureId, ST.clickAgain += 1
     return true
@@ -7610,6 +7692,11 @@ RecordTokenFound(detail) {
     }
 }
 
+TokenScanDue(now) {
+    global CFG, ST
+    return CFG.featToken && now - ST.scanTokenAt >= CFG.scanTokenMs
+}
+
 CheckToken(shot, now, press := true) {
     ; Жетон пиратского магазина (золотой круг с белой «F»): один раз жмём «\».
     ; Повторно — только если жетон исчез и не появлялся tokenRearmMs.
@@ -7620,7 +7707,7 @@ CheckToken(shot, now, press := true) {
     ; хранится как 0, то есть как «кэша нет». Из-за этого жетон и баннер
     ; сканировались КАЖДЫЙ кадр (это область 0.28..0.72 x 0.10..0.88 плюс
     ; отдельный подсчёт золота вокруг каждого кандидата). Теперь — по времени.
-    if (now - ST.scanTokenAt >= CFG.scanTokenMs && ScanAllow(2)) {
+    if (TokenScanDue(now) && ScanAllow(2)) {
         found := FindToken(shot)
         if found
             ST.tokenCache := found                      ; жетон (золото + белая «F»)
@@ -7686,6 +7773,8 @@ HandleDeath(shot, now) {
     if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !SceneFrameCurrent(shot))
         return
     ST.wasDeadScene := true
+    if (ST.roundActive && FrameHasMatchHud(shot))
+        RememberEndContext(shot, "death")
     if (ST.tokenShown || ST.tokenFoundMatch) {
         ST.lastAction := "устранён · жетон защищён"
         return
@@ -7957,6 +8046,7 @@ LeaveFinish(shot, now, epoch) {
         reason := ST.leaveReason
         LeaveCancel()
         ; Результат учитываем только после плашки лобби на новом кадре.
+        ResetEndHandoff()
         ST.inMatchT := 0, ST.hudLastT := 0
         ST.matchStarted := false, ST.matchFromQueue := false
         ST.queuePending := false, ST.queueSeen := false
@@ -14606,8 +14696,10 @@ BuildCalibrationReport(shot) {
     confirm := FindLeaveConfirmation(shot)
     mdl := FindModalDismissButton(shot)
     pa := PickResultPlayAgain(shot, FindYellowButtons(shot, CFG.regResults))
+    ret := FindResultReturnButton(shot, pa)
     lines.Push("  UI: отряд в HUD " sq.count " союзн."
         . " · «Играть снова» " (pa ? ("ДА (" pa.cx "," pa.cy ")") : "нет")
+        . " · светлая «В лобби» " (ret ? ("кандидат (" ret.cx "," ret.cy ")") : "нет")
         . " · спящий режим " (slp ? ("ДА (" slp.cx "," slp.cy ")") : "нет")
         . " · красная кнопка выхода " (redL ? ("ДА (" redL.cx "," redL.cy ")") : "нет")
         . " · подтверждение выхода " (confirm ? ("ДА (" confirm.cx "," confirm.cy ")") : "нет")

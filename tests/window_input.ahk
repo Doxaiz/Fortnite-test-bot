@@ -43,7 +43,8 @@ RunWindowTests() {
         Check(!WinActive("ahk_id " a) && !WinActive("ahk_id " b), "приёмники неактивны")
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
-            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestResultBlink] {
+            , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestResultBlink
+            , TestReturnOnlyResults] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -370,6 +371,47 @@ TestResultBlink(a, b) {
         && !ST.lobbyRequeue && !ST.held.Count, "после паузы переходим к резервному выходу, раунд не дублируется")
 }
 
+TestReturnOnlyResults(a, b) {
+    global CFG, ST, SC
+    CFG.dryRun := true, CFG.featPlayAgain := true, CFG.featAutoQueue := true, CFG.endAction := "lobby_only"
+    CFG.stateConfirmFrames := 2, CFG.scanMenuMs := 0, CFG.sceneHoldMs := 0
+    CFG.lobbyDelaySec := 2, CFG.lobbyStableMs := 400, CFG.playConfirmMs := 400, CFG.maxActionsPerMin := 0
+    CFG.waitSquadOnDeath := false, CFG.deathEscMs := 45000
+    ResetSceneEvidence()
+    ST.state := "UNKNOWN", ST.roundActive := false, ST.roundCounted := false, ST.lobbyRequeue := false
+    ST.queuePending := false, ST.cancelHold := false, ST.lobbyCooldownUntil := 0
+    clicks := ST.clickAgain, queues := ST.clickQueue, rounds := ST.rounds
+    SetFixtureFrame(b, 10)
+    TickFixture(b, true, true)
+    TickFixture(b)
+    Check(ST.state = "DEATH" && ST.endContext.kind = "death", "устранение подтверждено кадрами окна")
+
+    SetFixtureFrame(b, 11)
+    first := TickFixture(b, false, true)
+    Check(!first.endReturnAction && ST.clickAgain = clicks && FrameDarkRatio(first) < CFG.endDarkRatio
+        , "на светлых итогах один замер не разрешает возврат")
+    TickFixture(b, false, true)
+    TickFixture(b, false)
+    Check(ST.state = "END_SCREEN" && ST.endReturnObs.hits = 2 && ST.clickAgain = clicks
+        , "светлые итоги без жёлтой плашки приняты после повторов; выдерживаем паузу")
+    ST.endFirstSeen := A_TickCount - 2300
+    TickFixture(b, false)
+    Check(!ST.endRetry && ST.endReturnRetry = 1 && ST.clickAgain = clicks + 1 && ST.rounds = rounds
+        && !ST.lobbyRequeue && ST.clickQueue = queues, "попытка возврата не засчитывает раунд и не ставит очередь")
+
+    SetFixtureFrame(b, 12)
+    TickFixture(b, false, true)
+    TickFixture(b, false)
+    Check(ST.state = "MENU" && ST.lobbyRequeue && ST.lobbyCooldownUntil > A_TickCount && ST.rounds = rounds + 1
+        && ST.clickQueue = queues && !ST.endContext, "новая плашка лобби подтверждает единственный раунд и запускает задержку")
+    ST.lobbyCooldownUntil := A_TickCount, ST.playSeenAt := A_TickCount - 500
+    TickFixture(b, false)
+    Check(ST.clickQueue = queues + 1 && !ST.lobbyRequeue && ST.rounds = rounds + 1 && !ST.held.Count
+        , "после задержки отправляется ровно один запрос поиска в DryRun")
+    ExpectKey(b, SC.w, 3, 3)
+    ExpectKey(b, SC.e, 1, 1)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -381,7 +423,7 @@ FocusFixture(h) {
     Check(WinWaitActive("ahk_id " h, , 1), "не удалось активировать тестовое окно")
 }
 
-TickFixture(h, requireHud := true) {
+TickFixture(h, requireHud := true, allowSceneWait := false) {
     global CFG, ST
     Check(GetGameWindow() = h && (CFG.dryRun || (CFG.bgMode && !WinActive("ahk_id " h)))
         , "без DryRun допустим только фоновый ввод в выбранный приёмник")
@@ -390,7 +432,9 @@ TickFixture(h, requireHud := true) {
     shot := ST.lastShot
     Check(shot && shot.captureId > seq && shot.hwnd = h && shot.w = 480 && shot.h = 288
         && (!requireHud || FrameHasMatchHud(shot)), "нет нового тестового кадра; исход: " ST.tickProfile.outcome)
-    Check(ST.tickProfile.outcome = "завершён", "ошибка цикла: " TickProfileText(ST.tickProfile))
+    outcome := ST.tickProfile.outcome
+    Check(outcome = "завершён" || (allowSceneWait && outcome = "выдержка сцены")
+        , "ошибка цикла: " TickProfileText(ST.tickProfile))
     return shot
 }
 
@@ -428,7 +472,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 10
+    Loop 13
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -504,7 +548,7 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    if (scene < 7 || scene = 9) {
+    if (scene < 7 || scene = 9 || scene = 10) {
         PaintFixture(buf, w, 24, 256, 80, 20, 0x2ABA31)      ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -535,10 +579,16 @@ BuildFixtureFrame(scene) {
     if (scene = 7) {
         PaintFixture(buf, w, 288, 96, 112, 22, 0xCBCB00)
         PaintFixture(buf, w, 335, 104, 20, 8, 0x010101)
+    }
+    if (scene = 7 || scene = 11) {
         PaintFixture(buf, w, 310, 212, 136, 55, 0x252533)
         PaintFixture(buf, w, 322, 226, 112, 22, 0xEEEEEE)
         PaintFixture(buf, w, 350, 234, 26, 7, 0x202020)
     }
+    if (scene = 10)
+        PaintFixture(buf, w, 156, 253, 104, 24, 0xF1F1F1) ; экран устранения поверх HUD
+    if (scene = 12)
+        PaintFixture(buf, w, 16, 224, 112, 32, 0xCBCB00) ; «Играть» в лобби
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)
     return {w:w, h:h, buf:buf, info:info}

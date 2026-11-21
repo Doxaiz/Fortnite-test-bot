@@ -23,7 +23,7 @@ try {
     } else {
         for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestInputGuards, TestPixelRatios
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
-            , TestQueueOutcome, TestEndHandoff, TestEndStopGuards, TestCalibrationIsolation
+            , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
@@ -580,14 +580,18 @@ TestEndHandoff() {
     WithGroundFixture(CheckEndHandoff)
 }
 
-FixtureEnd(id, showAgain := true, showReturn := true) {
+FixtureEnd(id, showAgain := true, showReturn := true, shiftX := 0) {
     shot := SceneFixture(id, A_TickCount, showAgain ? "results" : "blank")
-    if showReturn {
-        FixtureRect(shot, 310, 212, 136, 55, 0x252533)
-        FixtureRect(shot, 322, 226, 112, 22, 0xEEEEEE)
-        FixtureRect(shot, 350, 234, 26, 7, 0x202020)
-    }
+    if showReturn
+        PaintReturnFixture(shot, shiftX)
+    shot.capturedAt := A_TickCount
     return shot
+}
+
+PaintReturnFixture(shot, shiftX := 0) {
+    FixtureRect(shot, 310 + shiftX, 212, 136, 55, 0x252533)
+    FixtureRect(shot, 322 + shiftX, 226, 112, 22, 0xEEEEEE)
+    FixtureRect(shot, 350 + shiftX, 234, 26, 7, 0x202020)
 }
 
 CheckEndHandoff() {
@@ -653,23 +657,151 @@ CheckEndHandoff() {
     CFG.endAction := "lobby_only", ST.state := "END_SCREEN", ST.roundCounted := false
     ResetEndHandoff()
     ST.roundActive := true, ST.lastClickT := 0, ST.endFirstSeen := t, ST.lobbyRequeue := false
-    dark := FixtureEnd(207, false)
-    HandleEndScreen(dark, t + 3500)
+    ST.state := "DEATH", ST.deadSince := t, ST.lastLobbyAt := 0
+    CFG.waitSquadOnDeath := false, CFG.deathEscMs := 45000
+    death := WorldFixture(207), death.hudEvidence := {confirmed:true}
+    HandleDeath(death, t + 3000)
+    lone := FixtureEnd(208, false), ST.scanWork := 0
+    Check(DetectState(lone, 0, t + 3400) = "UNKNOWN" && !lone.endReturnAction, "один светлый кандидат ещё не итоги")
+    lobbyOnly := FixtureEnd(209, false), ST.scanWork := 0
+    Check(DetectState(lobbyOnly, 0, t + 3500) = "END_SCREEN" && lobbyOnly.endReturnAction
+        && !FrameActionButton(lobbyOnly, "END_SCREEN"), "после устранения светлые итоги без повтора")
+    HandleEndScreen(lobbyOnly, t + 3500)
     Check(!ST.endRetry && ST.endReturnRetry = 1 && ST.rounds = rounds + 1 && !ST.lobbyRequeue
         , "при выходе вместо повтора запись матча ждёт реального лобби, а не клика")
 
-    HandleEndScreen(FixtureEnd(208, false), t + 3900)
-    HandleEndScreen(FixtureEnd(209, false), t + 4500)
+    for i, elapsed in [3900, 4500] {
+        same := FixtureEnd(209 + i, false), ST.scanWork := 0
+        DetectState(same, 0, t + elapsed)
+        HandleEndScreen(same, t + elapsed)
+    }
     Check(ST.endReturnRetry = 2 && ST.clickAgain = again + 5 && !ST.lobbyRequeue
         , "резервный выход также ограничен и не ставит очередь по клику")
 
     CFG.waitSquadOnDeath := false, CFG.deathEscMs := 1, ST.state := "DEATH", ST.deadSince := t
-    HandleDeath(WorldFixture(210), t + 4600)
+    HandleDeath(WorldFixture(212), t + 4600)
     Check(!ST.leaveActive, "без HUD наблюдения не начинаем выход вслепую")
-    death := WorldFixture(211), death.hudEvidence := {confirmed:true}
+    death := WorldFixture(213), death.hudEvidence := {confirmed:true}
     HandleDeath(death, t + 4700)
     Check(ST.leaveActive && ST.leaveStep = 1 && !ST.held.Count, "Авто-игра начинает тот же проверяемый выход после наблюдения")
     LeaveCancel()
+}
+
+TestReturnEvidence() {
+    WithGroundFixture(CheckReturnEvidence)
+}
+
+CheckReturnEvidence() {
+    global CFG, ST
+    ResetSceneEvidence()
+    CFG.featPlayAgain := true, CFG.endAction := "lobby_only", CFG.scanMenuMs := 0
+    CFG.stopAfterMin := 0, CFG.maxRounds := 0, CFG.waitSquadOnDeath := true
+    ST.state := "UNKNOWN", ST.queuePending := false, ST.cancelHold := false
+    ST.roundActive := true, ST.roundCounted := false, ST.mmEnterAt := 0, ST.mmSince := 0
+    ST.tokenStopArmed := false, ST.tokenShown := false, ST.finishMatchArmed := false
+    t := A_TickCount, clicks := ST.clickAgain, rounds := ST.rounds
+    unsupported := FixtureEnd(400, false), light := FindResultReturnButton(unsupported)
+    Check(light && FrameDarkRatio(unsupported) < CFG.endDarkRatio, "светлая геометрия в исходно неопознанном кадре")
+    Check(!FindResultReturnButton(unsupported, light), "перекрывающийся бокс не становится отдельным выходом")
+    Check(DetectState(unsupported, 0, t) = "UNKNOWN" && !unsupported.endReturnAction
+        , "даже подходящая геометрия не заменяет контекст результата")
+    dark := FixtureEnd(401, false, false), ST.scanWork := 0
+    dark.buf := Buffer(dark.stride * dark.h, 0x22)
+    PaintReturnFixture(dark)
+    Check(FindResultReturnButton(dark) && DetectState(dark, 0, t + 50) = "END_SCREEN" && !dark.endReturnAction
+        , "даже на тёмной сцене предположение об итогах не даёт координат")
+    HandleEndScreen(dark, t + 10000)
+    HandleEndScreen(dark, t + 15000)
+    Check(ST.clickAgain = clicks && !ST.endFirstSeen && ST.rounds = rounds, "без контекста не стартует таймер кликов")
+
+    death := WorldFixture(402), death.hudEvidence := {confirmed:true}, ST.deadSince := t
+    ST.spectateSquadAt := A_TickCount, ST.spectateAlive := 1
+    HandleDeath(death, t)
+    watched := FixtureEnd(403, false), ST.scanWork := 0
+    Check(ST.endContext.kind = "death" && DetectState(watched, 0, t + 100) = "UNKNOWN" && !ST.endReturnObs
+        , "одна светлая кнопка не отменяет ожидание живого отряда")
+    ST.spectateAlive := 0
+    first := FixtureEnd(404, false), ST.scanWork := 0
+    Check(DetectState(first, 0, t + 200) = "UNKNOWN" && ST.endReturnObs.hits = 1 && !first.endReturnAction
+        , "первый кадр возврата не даёт ни сцены итогов, ни клика")
+    DetectState(first, 0, t + 350)
+    Check(ST.endReturnObs.hits = 1 && !first.endReturnAction, "повтор того же снимка не подтверждает кнопку")
+    budget := CFG.scanPerTickMax, CFG.scanPerTickMax := 2, ST.scanWork := 0
+    deferredHud := FixtureEnd(405)
+    FixtureRect(deferredHud, 24, 256, 80, 20, 0x2ABA31)
+    FixtureRect(deferredHud, 236, 142, 9, 5, 0xFFFFFF)
+    Check(DetectState(deferredHud, 0, t + 400) = "UNKNOWN" && deferredHud.HasOwnProp("healthDeferred")
+        && ST.endReturnObs.hits = 1 && !deferredHud.endReturnAction && !FrameActionButton(deferredHud, "END_SCREEN")
+        , "при отложенном HUD нет разрешения на клик и нет отрицательного скана возврата")
+    CFG.scanPerTickMax := budget
+    moved := FixtureEnd(406, false, true, 20), ST.scanWork := 0
+    Check(DetectState(moved, 0, t + 500) = "UNKNOWN" && ST.endReturnObs.hits = 1
+        , "смещение геометрии требует повторного наблюдения")
+    current := FixtureEnd(407, false, true, 20), ST.scanWork := 0
+    Check(DetectState(current, 0, t + 650) = "END_SCREEN" && current.endReturnAction
+        , "два согласованных снимка подтверждают сцену без жёлтого повтора")
+
+    ST.endFirstSeen := t - 3000
+    for latch in ["tokenShown", "tokenStopArmed", "queuePending", "cancelHold"] {
+        ST.%latch% := true
+        HandleEndScreen(current, t + 700)
+        Check(ST.clickAgain = clicks && !ST.endReturnRetry, "выход не обходит блокировку " latch)
+        ST.%latch% := false
+    }
+    CFG.scanPerTickMax := 4, CFG.featToken := true, ST.scanWork := 0
+    ST.scanTokenAt := A_TickCount - CFG.scanTokenMs
+    lowCpu := FixtureEnd(408, false, true, 20)
+    Check(DetectState(lowCpu, 0, t + 750) = "END_SCREEN" && !lowCpu.endReturnAction && ST.scanWork = 2
+        && ST.endReturnObs.seq = current.captureId, "в экономном профиле ждём следующий скан возврата, оставив бюджет жетону")
+    Check(!CheckToken(lowCpu, A_TickCount, false) && ST.scanWork = 4 && ST.scanTokenAt >= lowCpu.capturedAt
+        , "скан жетона получил две оставленные единицы бюджета")
+    CFG.scanPerTickMax := budget
+    CFG.scanMenuMs := 60000, ST.scanWork := 0
+    deferred := FixtureEnd(409, false, false)
+    Check(DetectState(deferred, 0, t + 800) = "END_SCREEN" && !deferred.endReturnAction
+        , "отложенный скан удерживает сцену, но не координаты")
+    HandleEndScreen(deferred, t + 800)
+    stale := current.Clone(), stale.capturedAt -= CFG.tickBudgetMs + 1
+    HandleEndScreen(stale, t + 900)
+    Check(ST.clickAgain = clicks && ST.rounds = rounds, "по старому кадру и памяти нет клика или раунда")
+    CFG.scanMenuMs := 0, ST.scanWork := 0
+    miss := FixtureEnd(410, false, false)
+    Check(DetectState(miss, 0, t + 950) = "UNKNOWN" && !ST.endReturnObs.hits && !miss.endReturnAction
+        , "полный отрицательный скан снимает поддержку")
+
+    ST.scanWork := 0
+    active := FixtureEnd(411)
+    FixtureRect(active, 24, 256, 80, 20, 0x2ABA31)
+    FixtureRect(active, 236, 142, 9, 5, 0xFFFFFF)
+    Check(DetectState(active, 0, t + 1000) = "GAME" && FrameHasMatchHud(active) && !active.endReturnAction
+        && !FrameActionButton(active, "END_SCREEN") && !ST.endContext
+        , "текущий HUD важнее даже свежих жёлтой и светлой плашек")
+
+    death := WorldFixture(412), death.hudEvidence := {confirmed:true}
+    ST.deadSince := t
+    HandleDeath(death, t + 1100)
+    prior := ST.endContext, prior.at := death.capturedAt - CFG.endContextMs - 1
+    late := FixtureEnd(413, false), ST.scanWork := 0
+    Check(DetectState(late, 0, t + 1150) = "UNKNOWN" && !ST.endReturnObs, "контекст устранения имеет срок жизни")
+    prior.at := death.capturedAt
+    ST.inputEpoch += 1, ST.scanWork := 0, ST.state := "UNKNOWN"
+    afterPause := FixtureEnd(414, false)
+    Check(DetectState(afterPause, 0, t + 1200) = "UNKNOWN" && !ST.endReturnObs && !afterPause.endReturnAction
+        , "контекст старого поколения не переносится на свежий кадр")
+
+    ; Старый жёлтый запасной поиск мог нажать этот же повтор как «В лобби».
+    for id in [415, 416] {
+        lowReplay := FixtureEnd(id, false, false), ST.scanWork := 0
+        FixtureRect(lowReplay, 318, 210, 112, 22, 0xCBCB00)
+        FixtureRect(lowReplay, 346, 215, 26, 7, 0x202020)
+        Check(FindYellowButtons(lowReplay, CFG.regReturnBtn).Length && !FindResultReturnButton(lowReplay)
+            , "жёлтая кнопка в зоне возврата не считается выходом")
+        Check(DetectState(lowReplay, 0, t + 1300) = "END_SCREEN" && FrameActionButton(lowReplay, "END_SCREEN")
+            && !lowReplay.endReturnAction, "жёлтый бокс остаётся только кандидатом на повтор")
+        HandleEndScreen(lowReplay, t + 1300)
+    }
+    Check(ST.clickAgain = clicks && !ST.endRetry && !ST.endReturnRetry && !ST.held.Count
+        , "lobby_only не отправляет ни повтора, ни фиктивного возврата")
 }
 
 TestEndStopGuards() {
@@ -708,6 +840,12 @@ TestCalibrationIsolation() {
     active := SceneFixture(42, 60200, "hud")
     DescribeCalibrationFrame(active)
     Check(active.hudEvidence.confirmed, "F5 находит HUD на собственном снимке")
+    ret := FixtureEnd(43, false)
+    shown := false
+    for line in BuildCalibrationReport(ret).lines
+        if InStr(line, "светлая «В лобби» кандидат")
+            shown := true
+    Check(shown && !ret.HasOwnProp("endReturnAction"), "F5 выводит геометрию возврата без подтверждения и действия")
     for key, value in before.OwnProps()
         Check(ST.%key% = value, "F5 не переписывает состояние цикла: " key)
 }
