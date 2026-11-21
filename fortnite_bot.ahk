@@ -6331,17 +6331,20 @@ TryApproach(shot, now) {
     tr := approach ? approach.samples : 0
     if (approach && (shot.captureId <= Max(tr.seq, approach.missSeq) || shot.capturedAt < tr.at))
         return !!target || ST.lootMasksSeq = shot.captureId
+    hint := (CFG.featChest && ST.chestCacheSeq = shot.captureId) ? ChestFollowHint(shot) : 0
+    if (hint && !hint.missSeq && (!chest || chest.kind != hint.kind
+        || !CandidateNear(hint.samples, chest.x, chest.y, shot.w, shot.h))) {
+        ; Краткое мерцание: остановиться на один замер, даже если виден сосед.
+        ; Прежний центр остаётся подсказкой, а подтверждение набираем заново.
+        HaltMatchMovement()
+        hint.missSeq := shot.captureId, hint.samples.hits := 0
+        ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
+        ST.lastAction := "свечение пропало: жду следующий замер"
+        return true
+    }
     if !target {
         if (ST.lootMasksSeq = shot.captureId && approach) {
             HaltMatchMovement()
-            if (CFG.featChest && !approach.missSeq && ChestFollowHint(shot)) {
-                ; Краткое мерцание: W уже отпущена. Храним центр на один скан,
-                ; но два положительных замера придётся получить заново.
-                approach.missSeq := shot.captureId, tr.hits := 0
-                ST.guidedUntil := A_TickCount + Max(300, CFG.scanLootMs * 2)
-                ST.lastAction := "свечение пропало: жду следующий замер"
-                return true
-            }
             ST.walkTarget := 0
         }
         return false

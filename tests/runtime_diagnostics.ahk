@@ -1090,13 +1090,16 @@ CheckChestApproach() {
         , "маски, скан которых закончился после срока кадра, не запускают подход")
 }
 
-TwoChestFrame(id, w, h, brighterRight := false) {
+TwoChestFrame(id, w, h, brighterRight := false, showLeft := true) {
     shot := WorldFixture(id), shot.w := w, shot.h := h, shot.stride := (w + 3) * 4
     shot.buf := Buffer(shot.stride * h, 0x60)
     ; Оба пятна проходят одни и те же фильтры, меняется только яркость.
-    bw := Round(w * 0.075 / 18) * 18, bh := Round(h * 0.125 / 18) * 18, y := Round(h * 0.49 / 18) * 18
-    bright := 0xFFCB18, dim := 0xB58030
-    FixtureRect(shot, Round(w * 0.45 / 18) * 18, y, bw, bh, brighterRight ? dim : bright)
+    ; Небольшие пятна на обоих размерах: с слишком большим пятном штраф
+    ; за удаление от прицела перевешивает разницу яркости в старом выборе.
+    bw := Clamp(Round(w * 0.075 / 18), 2, 4) * 18, bh := Clamp(Round(h * 0.125 / 18), 2, 3) * 18
+    y := Round(h * 0.49 / 18) * 18, bright := 0xFFCB18, dim := 0xB58030
+    if showLeft
+        FixtureRect(shot, Round(w * 0.45 / 18) * 18, y, bw, bh, brighterRight ? dim : bright)
     FixtureRect(shot, Round(w * 0.675 / 18) * 18, y, bw, bh, brighterRight ? bright : dim)
     shot.capturedAt := A_TickCount
     return shot
@@ -1121,10 +1124,10 @@ CheckChestSelection() {
         Check(TryApproach(second, second.capturedAt) && ST.chest.x < w * 0.6 && ST.walkTarget.samples.hits = 2
             && ST.lastAction = "объект у прицела: жду подсказку", label ": живой выбор держит ближайшее совпадение")
 
-        missed := second.Clone(), missed.captureId := 352, missed.capturedAt := A_TickCount
-        missed.buf := Buffer(missed.stride * h, 0x60), ST.scanWork := 0
-        Check(TryApproach(missed, missed.capturedAt) && !ST.walkTarget.samples.hits && !ST.chest
-            , label ": краткая потеря: помним место, но не разрешаем идти")
+        missed := TwoChestFrame(352, w, h, true, false), ST.scanWork := 0
+        Check(TryApproach(missed, missed.capturedAt) && !ST.walkTarget.samples.hits && ST.chest.x > w * 0.6
+            && ST.walkTarget.samples.x < w * 0.6 && ST.walkTarget.missSeq = missed.captureId
+            , label ": краткая потеря: не берём ближайшего соседа сразу, помним прежний центр")
         next := TwoChestFrame(353, w, h, true), ST.scanWork := 0
         Check(TryApproach(next, next.capturedAt) && ST.chest.x < w * 0.6 && ST.walkTarget.samples.hits = 1
             && ST.lastAction = "свечение: жду повторный кадр", label ": после появления не идём по одному замеру")
