@@ -440,7 +440,7 @@ global CFG := {
     sleepAction:    "wake",   ; экран спящего режима Fortnite: "wake" | "stop" | "wait"
     sleepNavyMin:   0.55,     ; доля тёмно-синего фона на экране спящего режима
     sleepCooldownMs: 8000,    ; минимальный интервал между кликами по «Продолжить игру»
-    endReturnAfterMs: 22000,  ; на итогах без «Играть снова» искать кнопку «В лобби» после N мс
+    endReturnAfterMs: 22000,  ; резервный выход при отсутствии повтора или после лимита попыток
     regModalBtn:    [0.32, 0.54, 0.68, 0.84], ; кнопка закрытия модалки / пропуска опроса
     stopOnToken:    false,    ; остановить запуск новых матчей после обнаружения жетона
     treasureHour:   false,    ; множитель 1.5x в «Час сокровищ» при расчёте шанса жетона
@@ -690,6 +690,7 @@ global ST := {
     endRetry:     0,
     endReturnRetry: 0,
     endClickSeq:  0,
+    endClickAt:   0,
     actionTimes:  [],
     chests:       0,
     loots:        0,
@@ -5868,6 +5869,7 @@ ForwardStep(shot, ms := 430) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
+    continuing := ST.guidedUntil && ST.held.Has(SC.w)
     ClearMatchStrafe()
     SprintSet(false), CrouchSet(false)
     if !WorldFrameCurrent(shot)
@@ -5881,7 +5883,9 @@ ForwardStep(shot, ms := 430) {
             return false
     }
     ST.segUntil := 0, ST.guidedUntil := A_TickCount + ms
-    ResetMoveWatch()
+    ; Продление той же ходьбы не стирает наблюдения о застревании.
+    if !continuing
+        ResetMoveWatch()
     return true
 }
 
@@ -5893,7 +5897,12 @@ WalkTo(targetX, targetY, shot) {
     ; Горизонтальная коррекция по центру пятна; его y не измеряет высоту.
     ; После поворота следующий шаг планируется по новому кадру.
     turn := Round(Clamp(dx * 0.12, -26, 26) * CFG.mouseGain * (CFG.invertTurn ? -1 : 1))
-    if (Abs(dx) > Max(12, shot.w * 0.032) && turn && (CFG.dryRun || MouseAllowed(shot.hwnd))) {
+    if (Abs(dx) > Max(12, shot.w * 0.032)) {
+        if (!turn || (!CFG.dryRun && !MouseAllowed(shot.hwnd))) {
+            if ST.guidedUntil
+                HaltMatchMovement()
+            return false
+        }
         HaltMatchMovement()
         if !WorldFrameCurrent(shot)
             return false
@@ -7358,11 +7367,25 @@ HandleSleep(shot, now) {
     Log("[>] Спящий режим Fortnite: нажал «Продолжить игру» (всего: " ST.sleepWakes ")")
 }
 
+SceneFrameCurrent(shot) {
+    ; Для меню не требуем фокуса и допускаем захват в «Умном фоне».
+    global CFG, ST
+    age := A_TickCount - shot.capturedAt
+    return ST.running && !ST.paused && !ST.tickAbort && !ST.mouseCalActive
+        && shot.hwnd && shot.hwnd = ST.hwnd && shot.captureId && shot.inputEpochAtCapture = ST.inputEpoch
+        && age >= 0 && age <= CFG.tickBudgetMs
+}
+
+ResetEndHandoff() {
+    global ST
+    ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0
+    ST.endClickSeq := 0, ST.endClickAt := 0
+}
+
 HandleEndScreen(shot, now) {
     global CFG, ST
-    if (!ST.running || ST.paused || ST.tickAbort || CFG.botMode = "antiafk" || CFG.botMode = "xp"
-        || ST.cancelHold || ST.queuePending
-        || shot.hwnd != ST.hwnd || shot.inputEpochAtCapture != ST.inputEpoch || !shot.captureId)
+    if (!SceneFrameCurrent(shot) || CFG.botMode = "antiafk" || CFG.botMode = "xp"
+        || ST.cancelHold || ST.queuePending)
         return
     if (ST.endFirstSeen = 0)
         ST.endFirstSeen := now
@@ -7374,17 +7397,17 @@ HandleEndScreen(shot, now) {
     if (box && !ST.roundCounted) {
         ST.roundActive := true
         RecordRoundCompleted("итоги матча")
-        if ST.tokenStopArmed {
+    }
+    if ST.tokenStopArmed {
+        if ST.roundCounted {
             Log("[+] Жетон найден и матч завершён — останавливаю авто-очередь.")
             PlayAlertBeep(1040, 180)
             OnStop("жетон найден")
-            return
         }
-        if CheckSessionLimits(now, false)
-            return
-    } else if (ST.finishMatchArmed && CheckSessionLimits(now, false)) {
         return
     }
+    if ((ST.roundCounted || ST.finishMatchArmed) && CheckSessionLimits(now, false))
+        return
 
     if (!CFG.featPlayAgain || ST.tokenShown || shot.captureId <= ST.endClickSeq)
         return
@@ -7393,7 +7416,7 @@ HandleEndScreen(shot, now) {
     ; В lobby_only этот поиск идёт сразу и не нажимает кнопку повтора.
     preferLobby := CFG.endAction = "lobby_only"
     if (!preferLobby && box && ST.endRetry < CFG.clickRetries) {
-        if (ST.lastClickT && now - ST.lastClickT < CFG.verifyMs)
+        if (ST.endClickAt && now - ST.endClickAt < CFG.verifyMs)
             return
         if EndScreenClick(shot, box, "Играть снова", "play_again", now) {
             ST.endRetry += 1
@@ -7406,7 +7429,7 @@ HandleEndScreen(shot, now) {
     waited := now - ST.endFirstSeen
     needWait := preferLobby ? 2200 : CFG.endReturnAfterMs
     gapWait := preferLobby ? CFG.verifyMs : CFG.retryAfterMs
-    if (waited >= needWait && (!ST.lastClickT || now - ST.lastClickT >= gapWait)
+    if (waited >= needWait && (!ST.endClickAt || now - ST.endClickAt >= gapWait)
         && ST.endReturnRetry < CFG.clickRetries) {
         retBtn := FindLightPlateButton(shot, CFG.regReturnBtn, 0.08, 0.30, 2.0, 8.0, false)
         if !retBtn {
@@ -7427,7 +7450,7 @@ HandleEndScreen(shot, now) {
 
     ; Послематчевый опрос: по-прежнему проверяем только обнаруженную кнопку.
     if (waited >= 6500 && now - ST.lastSurveyAt >= 9000
-        && (!ST.lastClickT || now - ST.lastClickT >= CFG.verifyMs)) {
+        && (!ST.endClickAt || now - ST.endClickAt >= CFG.verifyMs)) {
         modalBtn := FindModalDismissButton(shot)
         if (modalBtn && EndScreenClick(shot, modalBtn, "Пропустить опрос", "skip_survey", now)) {
             ST.lastSurveyAt := now
@@ -7445,9 +7468,9 @@ EndScreenClick(shot, box, label, key, now) {
     global ST
     ST.uiBoxCache := box, ST.uiBoxSeq := shot.captureId
     ReleaseKeys()
-    if (!Throttle() || !ClickMenuBox(shot, box, label, key))
+    if (!SceneFrameCurrent(shot) || !Throttle() || !ClickMenuBox(shot, box, label, key))
         return false
-    ST.lastClickT := now, ST.endClickSeq := shot.captureId, ST.clickAgain += 1
+    ST.lastClickT := now, ST.endClickAt := now, ST.endClickSeq := shot.captureId, ST.clickAgain += 1
     return true
 }
 
@@ -7585,10 +7608,10 @@ CheckToken(shot, now, press := true) {
 HandleDeath(shot, now) {
     ; Мы устранены: отпускаем управление, при живом отряде спокойно ждём финала
     ; или возрождения (Reboot Van), а когда отряд выбыл — переходим на итоги/в лобби.
-    global CFG, SC, ST
+    global CFG, ST
     MacroPlayReset()
     ReleaseKeys()
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !SceneFrameCurrent(shot))
         return
     ST.wasDeadScene := true
     if (ST.tokenShown || ST.tokenFoundMatch) {
@@ -7609,8 +7632,8 @@ HandleDeath(shot, now) {
             . " союзн. — жду возрождения или финала матча (" Round(elapsed / 1000) " с).", 15000)
         return
     }
-    if (elapsed < CFG.deathEscMs || !CFG.featPlayAgain || !FrameHasMatchHud(shot)
-        || !MenuClickPossible(shot.hwnd) || !Throttle())
+    if (elapsed < CFG.deathEscMs || (CFG.botMode != "queue" && !CFG.featPlayAgain) || !FrameHasMatchHud(shot)
+        || !SceneFrameCurrent(shot) || !MenuClickPossible(shot.hwnd) || !Throttle())
         return
     ; Авто-игра использует тот же проверяемый выход, что и AFK-очередь.
     ; Один Esc без последующих кадров не возвращает в лобби.
@@ -7639,8 +7662,9 @@ HandleUnknown(shot, now) {
 AcceptLobbyReturn(shot, now) {
     global CFG, ST
     if (!ST.roundActive || ST.cancelHold || ST.queuePending || !FrameActionButton(shot, "MENU")
-        || shot.hwnd != ST.hwnd || shot.inputEpochAtCapture != ST.inputEpoch)
+        || !SceneFrameCurrent(shot))
         return false
+    ResetEndHandoff()
     ST.roundActive := false, ST.lobbyRequeue := true, ST.queueTries := 0
     if (CFG.lobbyDelaySec > 0 && !ST.lobbyCooldownUntil)
         ST.lobbyCooldownUntil := now + CFG.lobbyDelaySec * 1000
@@ -7653,7 +7677,7 @@ HandleMenu(shot, now) {
     global CFG, ST
     MacroPlayReset()
     ST.wasDeadScene := false
-    if (CFG.botMode = "antiafk" || CFG.botMode = "xp")
+    if (CFG.botMode = "antiafk" || CFG.botMode = "xp" || !SceneFrameCurrent(shot))
         return
     AcceptLobbyReturn(shot, now)
     if !CFG.featAutoQueue
@@ -9191,7 +9215,12 @@ Roam(shot, now) {
         return
     }
 
-    if (ProDecision(shot, now) || TryApproach(shot, now) || BreakObstacle(shot, now))
+    if ProDecision(shot, now)
+        return
+    ; Следим за направленным W до его продления. Подтверждённые E и бой
+    ; уже обработаны выше; они по-прежнему могут прервать обход.
+    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil
+    if ((watchGuided && MoveWatch(shot, now)) || TryApproach(shot, now) || BreakObstacle(shot, now))
         return
     if (!WorldFrameCurrent(shot) || FightBack(shot, now))
         return
@@ -9214,7 +9243,7 @@ Roam(shot, now) {
         ST.lastAction := "движение выключено (галочка «Ходить»)"
         return
     }
-    if (!WorldFrameCurrent(shot) || MoveWatch(shot, now) || CheckStormAndZone(shot, now)
+    if (!WorldFrameCurrent(shot) || (!watchGuided && MoveWatch(shot, now)) || CheckStormAndZone(shot, now)
         || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now))
         return
     if (now < ST.pauseUntil || !WorldFrameCurrent(shot))
@@ -10155,7 +10184,7 @@ TickBody(profile) {
         Log("[state] " StateRu(ST.state) " -> " StateRu(scene))
         ST.state := scene
         ST.sceneSince := A_TickCount
-        ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.endClickSeq := 0
+        ; Не сбрасываем лимит итогов при мерцании между итогами и загрузкой.
         ST.lastClickT := 0
         ST.prompt := 0
         ST.chest := 0
@@ -10165,6 +10194,7 @@ TickBody(profile) {
         if (scene != "GAME")
             ST.segUntil := 0
         if (scene = "MATCHMAKING") {
+            ResetEndHandoff()
             ST.mmSince := A_TickCount
             ST.mmEnterAt := A_TickCount
             ST.roundActive := false, ST.lobbyRequeue := false, ST.roundCounted := false
@@ -10193,6 +10223,7 @@ TickBody(profile) {
             ST.tokenPresses := 0
             ST.tokenFoundMatch := false
             ST.matchStartT := A_TickCount
+            ResetEndHandoff()
             ResetNavigation()
             ST.groundAt := 0
             ST.squadCheckAt := 0, ST.squadEmptyCount := 0, ST.squadEverSeen := false
@@ -13277,6 +13308,7 @@ ResetSceneEvidence() {
     ST.lastShot := 0, ST.lastShotAt := 0, ST.prevShot := 0
     ST.deadSince := 0, ST.hpPrev := -1
     ST.uiBoxCache := 0, ST.uiBoxSeq := 0
+    ResetEndHandoff()
 }
 
 StartPermit(gen) {

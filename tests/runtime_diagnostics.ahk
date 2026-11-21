@@ -23,7 +23,8 @@ try {
     } else {
         for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestInputGuards, TestPixelRatios
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
-            , TestQueueOutcome, TestEndHandoff, TestCalibrationIsolation, TestNavigationState, TestMotionUsesSameWindow
+            , TestQueueOutcome, TestEndHandoff, TestEndStopGuards, TestCalibrationIsolation
+            , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
             , TestEnemyEvidence, TestCombatPreemption, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
@@ -595,14 +596,23 @@ CheckEndHandoff() {
     CFG.clickRetries := 2, CFG.verifyMs := 400, CFG.retryAfterMs := 600, CFG.endReturnAfterMs := 1200
     CFG.scanMenuMs := 0, CFG.lobbyDelaySec := 2, CFG.stopAfterMin := 0, CFG.maxRounds := 0
     CFG.lobbyStableMs := 400, CFG.playConfirmMs := 400, CFG.maxActionsPerMin := 0
-    ST.lastClickT := 0, ST.endFirstSeen := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.endClickSeq := 0
-    ST.state := "END_SCREEN", ST.roundActive := true, ST.roundCounted := false
+    ResetEndHandoff()
+    ST.lastClickT := 0, ST.state := "END_SCREEN", ST.roundActive := true, ST.roundCounted := false
     ST.queuePending := false, ST.cancelHold := false, ST.tokenShown := false, ST.tokenFoundMatch := false
     ST.tokenStopArmed := false, ST.finishMatchArmed := false, ST.lobbyRequeue := false, ST.lobbyCooldownUntil := 0
     ST.playSeenAt := 0, ST.inMatchT := 0, ST.mmEnterAt := 0, ST.menuCache := 0
     t := A_TickCount, rounds := ST.rounds, again := ST.clickAgain, queues := ST.clickQueue
     first := FixtureEnd(200), ST.scanWork := 0
     Check(DetectState(first, 0, t) = "END_SCREEN" && FrameActionButton(first, "END_SCREEN"), "вижу плашку итогов")
+    for latch in ["cancelHold", "queuePending", "paused"] {
+        ST.%latch% := true
+        HandleEndScreen(first, t)
+        Check(!ST.endRetry && ST.clickAgain = again && ST.rounds = rounds, "плашка не обходит блокировку " latch)
+        ST.%latch% := false
+    }
+    stale := first.Clone(), stale.capturedAt -= CFG.tickBudgetMs + 1
+    HandleEndScreen(stale, t)
+    Check(!ST.endRetry && ST.rounds = rounds, "не используем распознанную плашку из просроченного кадра")
     HandleEndScreen(first, t)
     HandleEndScreen(first, t + 1000)
     Check(ST.endRetry = 1 && ST.clickAgain = again + 1 && ST.rounds = rounds + 1 && !ST.lobbyRequeue
@@ -625,29 +635,62 @@ CheckEndHandoff() {
     ST.state := "MENU"
     HandleMenu(SceneFixture(204, A_TickCount), t + 1300)
     Check(!ST.lobbyRequeue && ST.clickQueue = queues, "одна принятая сцена не подтверждает возврат")
-    lobby := SceneFixture(205, t + 1400, "play"), ST.scanWork := 0
+    lobby := SceneFixture(205, A_TickCount, "play"), ST.scanWork := 0
     Check(DetectState(lobby, 0, t + 1400) = "MENU", "свежая плашка лобби")
+    stale := lobby.Clone(), stale.inputEpochAtCapture -= 1
+    HandleMenu(stale, t + 1400)
+    Check(!ST.lobbyRequeue && !ST.lobbyCooldownUntil && ST.roundActive && ST.clickQueue = queues
+        , "старое поколение ввода не подтверждает возврат")
     HandleMenu(lobby, t + 1400)
     Check(ST.lobbyRequeue && !ST.roundActive && ST.lobbyCooldownUntil = t + 3400 && ST.clickQueue = queues
-        && ST.rounds = rounds + 1, "подтверждаем возврат один раз и выдерживаем паузу перед очередью")
-    lobby := SceneFixture(206, t + 3400, "play"), ST.scanWork := 0
+        && ST.rounds = rounds + 1 && !ST.endRetry && !ST.endReturnRetry && !ST.endClickAt
+        , "подтверждаем возврат один раз и выдерживаем паузу перед очередью")
+    lobby := SceneFixture(206, A_TickCount, "play"), ST.scanWork := 0
     DetectState(lobby, 0, t + 3400)
     HandleMenu(lobby, t + 3400)
     Check(!ST.lobbyRequeue && ST.clickQueue = queues + 1 && !ST.held.Count, "следующий матч запрашивается через лобби только в DryRun")
 
     CFG.endAction := "lobby_only", ST.state := "END_SCREEN", ST.roundCounted := false
-    ST.roundActive := true, ST.endClickSeq := 0, ST.endRetry := 0, ST.endReturnRetry := 0, ST.lastClickT := 0
-    ST.endFirstSeen := t, ST.lobbyRequeue := false
+    ResetEndHandoff()
+    ST.roundActive := true, ST.lastClickT := 0, ST.endFirstSeen := t, ST.lobbyRequeue := false
     dark := FixtureEnd(207, false)
     HandleEndScreen(dark, t + 3500)
     Check(!ST.endRetry && ST.endReturnRetry = 1 && ST.rounds = rounds + 1 && !ST.lobbyRequeue
         , "при выходе вместо повтора запись матча ждёт реального лобби, а не клика")
 
+    HandleEndScreen(FixtureEnd(208, false), t + 3900)
+    HandleEndScreen(FixtureEnd(209, false), t + 4500)
+    Check(ST.endReturnRetry = 2 && ST.clickAgain = again + 5 && !ST.lobbyRequeue
+        , "резервный выход также ограничен и не ставит очередь по клику")
+
     CFG.waitSquadOnDeath := false, CFG.deathEscMs := 1, ST.state := "DEATH", ST.deadSince := t
-    death := WorldFixture(208), death.hudEvidence := {confirmed:true}
-    HandleDeath(death, t + 3600)
+    HandleDeath(WorldFixture(210), t + 4600)
+    Check(!ST.leaveActive, "без HUD наблюдения не начинаем выход вслепую")
+    death := WorldFixture(211), death.hudEvidence := {confirmed:true}
+    HandleDeath(death, t + 4700)
     Check(ST.leaveActive && ST.leaveStep = 1 && !ST.held.Count, "Авто-игра начинает тот же проверяемый выход после наблюдения")
     LeaveCancel()
+}
+
+TestEndStopGuards() {
+    for reason in ["token", "rounds", "finish"]
+        WithGroundFixture(CheckEndStopGuard.Bind(reason))
+}
+
+CheckEndStopGuard(reason) {
+    global CFG, ST
+    CFG.featPlayAgain := true, CFG.endAction := "play_again", CFG.scanMenuMs := 0
+    CFG.stopAfterMin := 0, CFG.maxRounds := reason = "rounds" ? ST.rounds + 1 : 0
+    CFG.stopAction := "none"
+    ResetEndHandoff()
+    ST.state := "END_SCREEN", ST.roundActive := true, ST.roundCounted := reason = "token"
+    ST.cancelHold := false, ST.queuePending := false, ST.tokenStopArmed := reason = "token"
+    ST.tokenShown := false, ST.finishMatchArmed := reason = "finish"
+    clicks := ST.clickAgain, shot := FixtureEnd(212), now := shot.capturedAt
+    Check(DetectState(shot, 0, now) = "END_SCREEN" && FrameActionButton(shot, "END_SCREEN"), "есть кнопка на итогах")
+    HandleEndScreen(shot, now)
+    Check(!ST.running && ST.clickAgain = clicks && !ST.held.Count
+        , "приоритет остановки выше повтора матча: " reason)
 }
 
 TestCalibrationIsolation() {
