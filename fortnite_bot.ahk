@@ -1,5 +1,6 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+#Include %A_LineFile%\..\pixel_backend.ahk
 ; ---- ДИРЕКТИВЫ СБОРКИ В EXE (читает Ahk2Exe, на запуск .ahk не влияют) -------
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
@@ -10,7 +11,8 @@
 ; ============================================================================
 ;  FORMA v11.0.14 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
-;  Встроенный анализ пикселей на AutoHotkey v2. Среда включена в переносимый EXE:
+;  Анализ кадров на AutoHotkey v2 с необязательными сканами на Rust.
+;  Среда AHK включена в переносимый EXE:
 ;    • GDI-захват клиентской области игры (PrintWindow + резерв DC окна),
 ;      поддержка нативного Fortnite и облачного гейминга (GeForce NOW,
 ;      GeForce Infinity, Xbox Cloud Gaming, Amazon Luna);
@@ -2172,6 +2174,15 @@ RgbAt(shot, x, y) {
 
 ; --- кластеризация цветовой маски в блоки (общая для кнопок/лута/врагов) -----
 MaskClustersMulti(shot, region, modes, cell := 14, step := 4, minCells := 2) {
+    r := RegionToPixels(shot, region), buf := shot.buf, stride := shot.stride
+    if (backend := PixelBackend()) {
+        if (masks := PixelNativeClusters(backend.clusters, shot, r, buf, modes, cell, step, minCells))
+            return masks
+    }
+    return MaskClustersMultiAhk(buf, stride, r, modes, cell, step, minCells)
+}
+
+MaskClustersMultiAhk(buf, stride, r, modes, cell, step, minCells) {
     ; ОДИН проход по области сразу для нескольких цветов.
     ; Возвращает Map: цвет -> массив блоков.
     ; Зачем (run-13.log): на область лута делалось четыре отдельных прохода
@@ -2179,8 +2190,6 @@ MaskClustersMulti(shot, region, modes, cell := 14, step := 4, minCells := 2) {
     ; и тик не укладывался в бюджет. Один проход делает ту же работу вчетверо
     ; дешевле.
     global CFG
-    r := RegionToPixels(shot, region)
-    buf := shot.buf, stride := shot.stride
     want := Map()
     for m in modes
         want[m] := true
@@ -2365,35 +2374,13 @@ LobbyButton(shot) {
     global CFG
     r := RegionToPixels(shot, CFG.regLobbyPanel)
     buf := shot.buf, stride := shot.stride
-    yRMin := CFG.yRMin, yGMin := CFG.yGMin, yBMax := CFG.yBMax, yRGDelta := CFG.yRGDelta
-    startByte := r.x1 * 4, endByte := r.x2 * 4
-    rows := []
-    bestRun := 0
-    y := r.y1
-    while (y < r.y2) {
-        TickCheck("скан пикселей")
-        run := 0, start := 0, bestRow := 0, bcx := 0
-        rowBase := y * stride, o := rowBase + startByte, limit := rowBase + endByte
-        ; Та же сетка по 2 px. Увеличиваем смещение вместо пересчёта и
-        ; выделяем R/G из BGRX только после дешёвой проверки синего.
-        while (o < limit) {
-            px := NumGet(buf, o, "UInt")
-            if ((px & 0xFF) <= yBMax && (rr := (px >> 16) & 0xFF) >= yRMin
-                && (g := (px >> 8) & 0xFF) >= yGMin && Abs(rr - g) <= yRGDelta) {
-                if !run
-                    start := (o - rowBase) // 4
-                run += 2
-                if (run > bestRow)
-                    bestRow := run, bcx := start + run // 2
-            } else
-                run := 0
-            o += 8
-        }
-        rows.Push({run: bestRow, cx: bcx})
-        if (bestRow > bestRun)
-            bestRun := bestRow
-        y += 2
-    }
+    yellow := [CFG.yRMin, CFG.yGMin, CFG.yBMax, CFG.yRGDelta]
+    scan := 0
+    if (backend := PixelBackend())
+        scan := PixelNativeRows(backend.rows, shot, r, buf, 2, 2, 0, "скан пикселей", yellow)
+    if !scan
+        scan := LobbyRowsAhk(buf, stride, r, yellow)
+    rows := scan.rows, bestRun := scan.bestRun
     if (bestRun < shot.w * 0.08)
         return 0
 
@@ -2444,6 +2431,39 @@ LobbyButton(shot) {
         return 0
     return {x: best.cx - bw // 2, y: r.y1 + best.top * 2, w: bw, h: bh
           , cx: best.cx, cy: r.y1 + best.top * 2 + bh // 2, fill: 1.0, area: bw * bh}
+}
+
+LobbyRowsAhk(buf, stride, r, yellow) {
+    yRMin := yellow[1], yGMin := yellow[2], yBMax := yellow[3], yRGDelta := yellow[4]
+    startByte := r.x1 * 4, endByte := r.x2 * 4
+    rows := []
+    bestRun := 0
+    y := r.y1
+    while (y < r.y2) {
+        TickCheck("скан пикселей")
+        run := 0, start := 0, bestRow := 0, bcx := 0
+        rowBase := y * stride, o := rowBase + startByte, limit := rowBase + endByte
+        ; Та же сетка по 2 px. Увеличиваем смещение вместо пересчёта и
+        ; выделяем R/G из BGRX только после дешёвой проверки синего.
+        while (o < limit) {
+            px := NumGet(buf, o, "UInt")
+            if ((px & 0xFF) <= yBMax && (rr := (px >> 16) & 0xFF) >= yRMin
+                && (g := (px >> 8) & 0xFF) >= yGMin && Abs(rr - g) <= yRGDelta) {
+                if !run
+                    start := (o - rowBase) // 4
+                run += 2
+                if (run > bestRow)
+                    bestRow := run, bcx := start + run // 2
+            } else
+                run := 0
+            o += 8
+        }
+        rows.Push({y:y, run:bestRow, cx:bcx})
+        if (bestRow > bestRun)
+            bestRun := bestRow
+        y += 2
+    }
+    return {rows:rows, bestRun:bestRun}
 }
 
 FindCreamButton(shot, region := 0) {
@@ -2636,34 +2656,12 @@ FindLightPlateButton(shot, region, minWFrac := 0.08, maxWFrac := 0.36, minAsp :=
     buf := shot.buf, stride := shot.stride
     stepX := Max(2, ScanStep(3)), stepY := Max(2, ScanStep(3))
     minRun := Max(24, Round(shot.w * minWFrac))
-    rows := [], bestRun := 0
-    y := r.y1
-    while (y < r.y2) {
-        TickCheck("скан кнопки")
-        row := y * stride, run := 0, stX := -1, bRun := 0, bCx := 0
-        x := r.x1
-        while (x < r.x2) {
-            px := NumGet(buf, row + x * 4, "UInt")
-            b := px & 0xFF, g := (px >> 8) & 0xFF, rr := (px >> 16) & 0xFF
-            ok := (rr >= 188 && g >= 188 && b >= 192 && Max(rr, g, b) - Min(rr, g, b) <= 36)
-            if (!ok && allowLavender)
-                ok := (rr >= 150 && g >= 158 && b >= 185 && b >= rr && b - rr <= 72)
-            if ok {
-                if (stX < 0)
-                    stX := x
-                run += stepX
-                if (run > bRun)
-                    bRun := run, bCx := stX + run // 2
-            } else {
-                run := 0, stX := -1
-            }
-            x += stepX
-        }
-        rows.Push({y: y, run: bRun, cx: bCx})
-        if (bRun > bestRun)
-            bestRun := bRun
-        y += stepY
-    }
+    scan := 0
+    if (backend := PixelBackend())
+        scan := PixelNativeRows(backend.rows, shot, r, buf, stepX, stepY, allowLavender ? 2 : 1, "скан кнопки", [0, 0, 0, 0])
+    if !scan
+        scan := LightPlateRowsAhk(buf, stride, r, stepX, stepY, allowLavender)
+    rows := scan.rows, bestRun := scan.bestRun
     if (bestRun < minRun)
         return 0
     thr := Max(minRun, Round(bestRun * 0.62))
@@ -2713,6 +2711,38 @@ FindLightPlateButton(shot, region, minWFrac := 0.08, maxWFrac := 0.36, minAsp :=
     return best
 }
 
+LightPlateRowsAhk(buf, stride, r, stepX, stepY, allowLavender) {
+    rows := [], bestRun := 0
+    y := r.y1
+    while (y < r.y2) {
+        TickCheck("скан кнопки")
+        row := y * stride, run := 0, stX := -1, bRun := 0, bCx := 0
+        x := r.x1
+        while (x < r.x2) {
+            px := NumGet(buf, row + x * 4, "UInt")
+            b := px & 0xFF, g := (px >> 8) & 0xFF, rr := (px >> 16) & 0xFF
+            ok := (rr >= 188 && g >= 188 && b >= 192 && Max(rr, g, b) - Min(rr, g, b) <= 36)
+            if (!ok && allowLavender)
+                ok := (rr >= 150 && g >= 158 && b >= 185 && b >= rr && b - rr <= 72)
+            if ok {
+                if (stX < 0)
+                    stX := x
+                run += stepX
+                if (run > bRun)
+                    bRun := run, bCx := stX + run // 2
+            } else {
+                run := 0, stX := -1
+            }
+            x += stepX
+        }
+        rows.Push({y: y, run: bRun, cx: bCx})
+        if (bRun > bestRun)
+            bestRun := bRun
+        y += stepY
+    }
+    return {rows:rows, bestRun:bestRun}
+}
+
 FindResultReturnButton(shot, replay := 0) {
     global CFG
     ; Только отдельная светлая плашка со штрихами и тёмной окантовкой.
@@ -2733,31 +2763,12 @@ FindRedMenuButton(shot, region := 0) {
     buf := shot.buf, stride := shot.stride
     stepX := Max(2, ScanStep(3)), stepY := Max(2, ScanStep(3))
     minRun := Max(28, Round(shot.w * 0.085))
-    rows := [], bestRun := 0
-    y := r.y1
-    while (y < r.y2) {
-        TickCheck("скан кнопки выхода")
-        row := y * stride, run := 0, stX := -1, bRun := 0, bCx := 0
-        x := r.x1
-        while (x < r.x2) {
-            px := NumGet(buf, row + x * 4, "UInt")
-            b := px & 0xFF, g := (px >> 8) & 0xFF, rr := (px >> 16) & 0xFF
-            if (rr >= 160 && g <= 82 && b <= 92 && rr - g >= 92 && rr - b >= 82) {
-                if (stX < 0)
-                    stX := x
-                run += stepX
-                if (run > bRun)
-                    bRun := run, bCx := stX + run // 2
-            } else {
-                run := 0, stX := -1
-            }
-            x += stepX
-        }
-        rows.Push({y: y, run: bRun, cx: bCx})
-        if (bRun > bestRun)
-            bestRun := bRun
-        y += stepY
-    }
+    scan := 0
+    if (backend := PixelBackend())
+        scan := PixelNativeRows(backend.rows, shot, r, buf, stepX, stepY, 3, "скан кнопки выхода", [0, 0, 0, 0])
+    if !scan
+        scan := RedMenuRowsAhk(buf, stride, r, stepX, stepY)
+    rows := scan.rows, bestRun := scan.bestRun
     if (bestRun < minRun)
         return 0
     thr := Max(minRun, Round(bestRun * 0.65))
@@ -2797,6 +2808,35 @@ FindRedMenuButton(shot, region := 0) {
             bestArea := area, best := {x: cx - bw // 2, y: bl.topY, w: bw, h: bh, cx: cx, cy: bl.topY + bh // 2, area: area}
     }
     return best
+}
+
+RedMenuRowsAhk(buf, stride, r, stepX, stepY) {
+    rows := [], bestRun := 0
+    y := r.y1
+    while (y < r.y2) {
+        TickCheck("скан кнопки выхода")
+        row := y * stride, run := 0, stX := -1, bRun := 0, bCx := 0
+        x := r.x1
+        while (x < r.x2) {
+            px := NumGet(buf, row + x * 4, "UInt")
+            b := px & 0xFF, g := (px >> 8) & 0xFF, rr := (px >> 16) & 0xFF
+            if (rr >= 160 && g <= 82 && b <= 92 && rr - g >= 92 && rr - b >= 82) {
+                if (stX < 0)
+                    stX := x
+                run += stepX
+                if (run > bRun)
+                    bRun := run, bCx := stX + run // 2
+            } else {
+                run := 0, stX := -1
+            }
+            x += stepX
+        }
+        rows.Push({y: y, run: bRun, cx: bCx})
+        if (bRun > bestRun)
+            bestRun := bRun
+        y += stepY
+    }
+    return {rows:rows, bestRun:bestRun}
 }
 
 FindSleepScreen(shot) {
@@ -5015,6 +5055,15 @@ LightRatio(shot, rect) {
 BrightRatio(shot, region, thr := 165) {
     r := RegionToPixels(shot, region)
     buf := shot.buf, stride := shot.stride
+    if (backend := PixelBackend()) {
+        ratio := PixelNativeRatio(backend.ratio, shot, r, buf, 0, thr)
+        if (ratio >= 0)
+            return ratio
+    }
+    return BrightRatioAhk(buf, stride, r, thr)
+}
+
+BrightRatioAhk(buf, stride, r, thr) {
     cnt := 0, tot := 0
     y := r.y1
     while (y < r.y2) {
@@ -5166,6 +5215,15 @@ FrameHasMatchHud(shot) {
 DarkRatio(shot, region) {
     r := RegionToPixels(shot, region)
     buf := shot.buf, stride := shot.stride
+    if (backend := PixelBackend()) {
+        ratio := PixelNativeRatio(backend.ratio, shot, r, buf, 1, 0)
+        if (ratio >= 0)
+            return ratio
+    }
+    return DarkRatioAhk(buf, stride, r)
+}
+
+DarkRatioAhk(buf, stride, r) {
     cnt := 0, tot := 0
     y := r.y1
     while (y < r.y2) {
@@ -11954,6 +12012,7 @@ BuildStartupReport() {
         . "Windows: " A_OSVersion " · AutoHotkey: " A_AhkVersion " · админ: " (A_IsAdmin ? "да" : "нет") "`n"
         . "Экран: " A_ScreenWidth " × " A_ScreenHeight " · " A_ScreenDPI " DPI`n"
         . "Режим: " ModeRu(CFG.botMode) " · DryRun: " (CFG.dryRun ? "включён" : "выключен") "`n"
+        . "Пиксельные сканы: " PixelBackendName() "`n"
         . "Сеанс: " PanelBadge() "`n"
         . "Окно Fortnite: " game "`n"
         . "Горячие клавиши: " registered " зарегистрировано · аварийный Esc: " (escapeBound ? "да" : "нет") "`n"
@@ -15141,6 +15200,7 @@ Init() {
         . " · ЦП: " PerfRu(CFG.perfProfile)
         . " · " (CFG.dryRun ? "DryRun (без нажатий)" : "БОЕВОЙ")
         . " · админ: " (A_IsAdmin ? "да" : "НЕТ (рекомендуется запуск от администратора)") " ===")
+    Log("[i] Пиксельные сканы: " PixelBackendName())
     if (CFG.totalRounds > 0 || CFG.totalRuntimeSec > 0 || CFG.totalChests > 0)
         Log("[i] Накопительная статистика: раундов " CFG.totalRounds
             . " · наработка " FmtLifetime(CFG.totalRuntimeSec)

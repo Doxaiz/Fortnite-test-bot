@@ -39,7 +39,7 @@ jobs:
         run: |
           $tag = .\tests\portable_release_tag.ps1
           "tag=$tag" >> $env:GITHUB_OUTPUT
-      - name: Build with the expected tag and test startup and upgrade
+      - name: Build with the expected tag and test Rust, fallback and upgrades
         shell: pwsh
         env:
           FORMA_TEST_TAG: ${{ steps.tag_gate.outputs.tag }}

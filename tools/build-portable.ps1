@@ -55,9 +55,63 @@ function Invoke-AhkCheck([string]$Runtime, [string]$Arguments, [string]$Check, [
     }
 }
 
+function Assert-WindowsDllImports([string]$Dll) {
+    # Inspect the PE instead of relying on a runner that already has VC++ DLLs.
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (!(Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw 'Install the Visual Studio C++ Build Tools (x64) with a Windows SDK.'
+    }
+    $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+    if (!$dumpbin) {
+        throw 'Could not locate the MSVC x64 dumpbin.exe.'
+    }
+    $pe = & $dumpbin /nologo /dependents $Dll
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not inspect Rust DLL dependencies (exit code $LASTEXITCODE)."
+    }
+    $imports = @($pe | Where-Object { $_ -match '^\s+[a-zA-Z0-9_.-]+\.dll\s*$' } | ForEach-Object { $_.Trim() })
+    if ($imports.Count -eq 0) {
+        throw 'No import list found in MSVC dumpbin output.'
+    }
+    Write-Host "Rust DLL imports: $($imports -join ', ')"
+    foreach ($import in $imports) {
+        if ($import -notmatch '^(?:kernel32|ntdll|advapi32|bcrypt|bcryptprimitives|userenv|ws2_32|dbghelp|api-ms-win-core-[a-z0-9-]+)\.dll$') {
+            throw "Non-system import in Rust DLL: $import"
+        }
+    }
+}
+
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('forma-build-' + [guid]::NewGuid().ToString('N'))
 New-Item -Path $temp -ItemType Directory | Out-Null
 try {
+    # This runs only after the expected-tag gate. The pinned Rust toolchain is
+    # selected from rust-toolchain.toml; the crate itself has no dependencies.
+    if (!(Get-Command cargo.exe -ErrorAction SilentlyContinue)) {
+        throw 'Install Rust with rustup and the Visual Studio C++ Build Tools (x64) with a Windows SDK.'
+    }
+    $target = 'x86_64-pc-windows-msvc'
+    $rustBuild = Join-Path $temp 'rust-target'
+    $cargoArgs = @('--manifest-path', 'native\pixels\Cargo.toml', '--locked', '--offline', '--target', $target, '--target-dir', $rustBuild)
+    Push-Location -LiteralPath $repo
+    try {
+        if ($SmokeTest) {
+            & cargo test @cargoArgs
+            if ($LASTEXITCODE -ne 0) { throw "Rust pixel tests failed (exit code $LASTEXITCODE)." }
+        }
+        & cargo build --release @cargoArgs
+        if ($LASTEXITCODE -ne 0) { throw "Rust DLL build failed (exit code $LASTEXITCODE)." }
+        $sysroot = & rustc --print sysroot
+        if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Rust toolchain licenses.' }
+    } finally {
+        Pop-Location
+    }
+    $nativeDll = Join-Path $rustBuild "$target\release\forma_pixels.dll"
+    if (!(Test-Path -LiteralPath $nativeDll -PathType Leaf)) {
+        throw 'Cargo did not produce forma_pixels.dll.'
+    }
+    Assert-WindowsDllImports $nativeDll
+
     $compilerZip = Join-Path $temp 'compiler.zip'
     $runtimeZip = Join-Path $temp 'runtime.zip'
     $runtimeSource = Join-Path $temp $runtimeSourceName
@@ -93,15 +147,36 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $packageDir
     Copy-Item -LiteralPath (Join-Path $repo 'docs\portable.txt') -Destination (Join-Path $packageDir 'README.txt')
     Copy-Item -LiteralPath $runtimeLicense -Destination (Join-Path $licensesDir 'AutoHotkey-GPL-2.0.txt')
+    Copy-Item -LiteralPath $nativeDll -Destination $packageDir
+    foreach ($file in 'COPYRIGHT', 'LICENSE-APACHE', 'LICENSE-MIT') {
+        Copy-Item -LiteralPath (Join-Path $sysroot "share\doc\rust\$file") -Destination (Join-Path $licensesDir "Rust-$file.txt")
+    }
 
     $archiveName = "FORMA-v$version-windows-x64.zip"
     $archive = Join-Path $temp $archiveName
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $archive -CompressionLevel Optimal
     if ($SmokeTest) {
-        foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_panel') {
-            $script = Join-Path $repo "tests\$suite.ahk"
-            Write-Host "Smoke test: $suite"
-            Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$suite test" $temp
+        # Exercise both modes in separate processes; never read or replace a
+        # developer's local DLL. The script/include layout mirrors the repo.
+        $sourceChecks = Join-Path $temp 'source-checks'
+        New-Item -ItemType Directory -Path $sourceChecks | Out-Null
+        Copy-Item -LiteralPath $source, (Join-Path $repo 'pixel_backend.ahk') -Destination $sourceChecks
+        Copy-Item -LiteralPath (Join-Path $repo 'tests'), (Join-Path $repo 'tools') -Destination $sourceChecks -Recurse
+        foreach ($backend in 'AutoHotkey', 'Rust') {
+            if ($backend -eq 'Rust') {
+                Copy-Item -LiteralPath $nativeDll -Destination $sourceChecks
+                $parityScript = Join-Path $sourceChecks 'tests\native_pixels.ahk'
+                Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $parityScript) 'Rust/AHK parity' $temp
+            }
+            foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_panel') {
+                $script = Join-Path $sourceChecks "tests\$suite.ahk"
+                Write-Host "Smoke test ($backend): $suite"
+                Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$backend $suite test" $temp
+            }
+            # Compare the complete FrameMenu scan on identical in-memory
+            # fixtures, on the same runner. No timing assertion in CI.
+            $bench = Join-Path $sourceChecks 'tests\runtime_diagnostics.ahk'
+            Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench-menu' -f $bench) "$backend menu benchmark" $temp
         }
 
         $archivesToTest = [ordered]@{ built = $archive }
@@ -122,6 +197,7 @@ try {
             Expand-Archive -LiteralPath $item.Value -DestinationPath $extracted
             $smokeExe = Join-Path $extracted 'FORMA.exe'
             $smokeArgs = '/ErrorStdOut=UTF-8 "{0}" "{1}"' -f $smokeScript, $smokeExe
+            if ($item.Key -eq 'built') { $smokeArgs += ' --require-rust' }
             Invoke-AhkCheck $runtime $smokeArgs "The $($item.Key) portable startup test" $temp
         }
     }

@@ -509,7 +509,7 @@ BenchmarkFrameMenu() {
     global ST, CFG, FORMA_VERSION
     ResetSceneFixture()
     DllCall("QueryPerformanceFrequency", "Int64*", &freq := 0)
-    FileAppend("FORMA v" FORMA_VERSION " / AHK " A_AhkVersion " / FrameMenu (ms)`n", "*", "UTF-8")
+    FileAppend("FORMA v" FORMA_VERSION " / AHK " A_AhkVersion " / " PixelBackendName() " / FrameMenu (ms)`n", "*", "UTF-8")
     ST.running := true, ST.tickBusy := true, ST.tickDeadline := 0
     try {
         for size in [[1280, 720], [1920, 1080]] {

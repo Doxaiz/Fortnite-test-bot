@@ -2,20 +2,28 @@
 #NoTrayIcon
 #SingleInstance Off
 
-; Both scenarios run a copy of the compiled EXE, never the user's own folder.
-if (A_Args.Length != 1 || !FileExist(A_Args[1])) {
-    FileAppend("Usage: AutoHotkey64.exe tests/portable_startup.ahk <path-to-FORMA.exe>`n", "**", "UTF-8-RAW")
+; Run copies of the packaged files, never in the user's own folder.
+if (A_Args.Length < 1 || A_Args.Length > 2 || (A_Args.Length = 2 && A_Args[2] != "--require-rust") || !FileExist(A_Args[1])) {
+    FileAppend("Usage: AutoHotkey64.exe tests/portable_startup.ahk <path-to-FORMA.exe> [--require-rust]`n", "**", "UTF-8-RAW")
     ExitApp(2)
 }
+SplitPath(A_Args[1], , &sourceDir)
+dll := (sourceDir != "" ? sourceDir : ".") "\forma_pixels.dll"
+dll := FileExist(dll) ? dll : ""
+if (!dll && A_Args.Length = 2) {
+    FileAppend("FAIL: forma_pixels.dll is missing from the extracted package`n", "**", "UTF-8-RAW")
+    ExitApp(1)
+}
 SetTitleMatchMode(3)
-for scenario in ["clean", "upgrade"] {
-    code := TestPortableExe(A_Args[1], scenario)
+scenarios := dll ? ["clean", "upgrade", "exe-only", "invalid-dll"] : ["clean", "upgrade"]
+for scenario in scenarios {
+    code := TestPortableExe(A_Args[1], scenario, dll)
     if code
         ExitApp(code)
 }
 ExitApp(0)
 
-TestPortableExe(source, scenario) {
+TestPortableExe(source, scenario, dll) {
     pid := 0, code := 0
     scratch := A_Temp "\FORMA тест EXE " ProcessExist() "-" A_TickCount
     folder := scratch "\portable", launchDir := scratch "\working-dir"
@@ -27,6 +35,20 @@ TestPortableExe(source, scenario) {
         DirCreate(launchDir)
         exe := folder "\FORMA.exe"
         FileCopy(source, exe)
+        backend := ""
+        if dll {
+            if (scenario = "clean" || scenario = "upgrade") {
+                FileCopy(dll, folder "\forma_pixels.dll")
+                backend := "Rust DLL (ABI 1)"
+            } else {
+                ; An unrelated working directory may contain even a valid DLL.
+                ; FORMA must ignore it and keep working with just the EXE.
+                FileCopy(dll, launchDir "\forma_pixels.dll")
+                if (scenario = "invalid-dll")
+                    FileAppend("Not a Windows DLL", folder "\forma_pixels.dll", "UTF-8-RAW")
+                backend := "AutoHotkey (резерв)"
+            }
+        }
         legacy := scenario = "upgrade" ? SeedLegacyProfile(folder, ini, logPath) : 0
         savedLog := legacy ? legacy.log : ""
         ; Даже при ином рабочем каталоге данные должны оставаться рядом с EXE.
@@ -38,6 +60,8 @@ TestPortableExe(source, scenario) {
         for required in ["=== Запуск: FORMA v" version[1] " · EXE «FORMA.exe»", "DryRun (без нажатий)", "горячие клавиши:"]
             PortableCheck(InStr(text, required), "Нет записи в свежей части run.log: " required)
         CheckPortableLog(text)
+        if backend
+            PortableCheck(InStr(text, "Пиксельные сканы: " backend), "Бэкенд не подтверждён в журнале: " backend)
 
         win := "ahk_id " hwnd
         if legacy
@@ -55,6 +79,8 @@ TestPortableExe(source, scenario) {
             PortableCheck(InStr(report, required), "Нет значения в сводке запуска: " required)
         if legacy
             PortableCheck(InStr(report, "Режим: AFK-очередь"), "Не загружен прежний режим в сводку")
+        if backend
+            PortableCheck(InStr(report, "Пиксельные сканы: " backend), "Бэкенд не указан в сводке: " backend)
 
         ClosePortableExe(pid)
         pid := 0
@@ -71,9 +97,11 @@ TestPortableExe(source, scenario) {
                 actual := IniRead(ini, setting[1], setting[2], "<missing>")
                 PortableCheck(actual == setting[3], "Не сохранён раздел [" setting[1] "] " setting[2])
             }
-            FileAppend("OK: FORMA " version[1] " EXE x64 upgrade · режим, таймеры, клавиши, статистика и прежние файлы`n", "*", "UTF-8-RAW")
+            FileAppend("OK: FORMA " version[1] " EXE x64 upgrade · режим, таймеры, клавиши, статистика и прежние файлы"
+                . (backend ? " · " backend : "") "`n", "*", "UTF-8-RAW")
         } else {
-            FileAppend("OK: FORMA " version[1] " EXE x64 clean · DryRun, сводка, локальные run.log и forma.ini`n", "*", "UTF-8-RAW")
+            FileAppend("OK: FORMA " version[1] " EXE x64 " scenario " · DryRun, сводка, локальные run.log и forma.ini"
+                . (backend ? " · " backend : "") "`n", "*", "UTF-8-RAW")
         }
     } catch as e {
         FileAppend("FAIL (" scenario "): " e.Message " (line " e.Line ")`n" e.Stack "`n", "**", "UTF-8-RAW")
