@@ -728,7 +728,6 @@ global ST := {
     aimDamp:      1.0,          ; затухание при «перелёте» цели (0.45..1.0)
     aimLastDx:    0,
     scanEnemyFastAt: 0,
-    capSource:    "",           ; чем реально сняли кадр: PrintWindow / DC окна
     ; ---- v7.5: критические участки, непрерывный бег, ящик, фокус, зрение ----
     actCritical:  0,            ; >0 — сейчас нельзя рвать тик бюджетом (движение)
     actWhy:       "",           ; что именно делаем в критическом участке
@@ -756,7 +755,6 @@ global ST := {
     breakTimes:   [],           ; времена подходов с киркой (лимит в минуту)
     breakBefore:  0,            ; «подпись» картинки у цели до ударов
     breakNoChange: 0,           ; сколько ударов не изменили картинку
-    capMs:        0,            ; сколько длился последний захват
     ; ---- v9.0: цикл AFK-очереди, отряд, умный фон, спящий режим, статистика ----
     rounds:            0,       ; завершённых раундов за текущий запуск
     roundCounted:      false,   ; текущий матч уже засчитан в rounds
@@ -860,7 +858,6 @@ global ST := {
     uiBoxSeq:          0,
     capNoPrintT:  0,            ; до какого времени DC пробуется первым
     capSlowN:     0,            ; сколько успешных медленных PrintWindow подряд
-    visSrc:       "",           ; чем снят кадр для окна зрения
     mouseBlocked: 0,            ; сколько попыток трогать мышь отбито в фоне
     mouseBlockedAt: 0,
     lastClickAt:  0,            ; для clickGapMs (не чаще одного клика)
@@ -1725,13 +1722,15 @@ GameWindowCount() {
 
 ; Координаты клиентской области Fortnite на виртуальном рабочем столе.
 ; Корректно работает при любом расположении мониторов (в т.ч. отрицательные X/Y).
-GetClientArea(hwnd) {
+GetClientArea(hwnd, clientOnly := false) {
     try {
         WinGetClientPos(&cx, &cy, &cw, &ch, "ahk_id " hwnd)
         if (cw >= 50 && ch >= 50)
             return {x: cx, y: cy, w: cw, h: ch}
     } catch {
     }
+    if clientOnly
+        return 0
     try {
         WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
         if (ww >= 50 && wh >= 50)
@@ -1913,104 +1912,161 @@ ClickMenuBox(shot, box, label := "", alertKey := "") {
 ;   2) BitBlt с DC самого окна (GetDC(hwnd)).
 ; Если оба вернули пустоту — честно говорим причину.
 ; ----------------------------------------------------------------------------
-CaptureClient(hwnd) {
+CaptureCounter() {
+    DllCall("kernel32\QueryPerformanceCounter", "Int64*", &count := 0)
+    return count
+}
+
+CaptureElapsedMs(start) {
+    static freq := 0
+    if !freq
+        DllCall("kernel32\QueryPerformanceFrequency", "Int64*", &freq)
+    return (CaptureCounter() - start) * 1000.0 / freq
+}
+
+CaptureTimingText(timing) {
+    text := (timing.w ? timing.w "×" timing.h " · " : "") . Format("{:.2f}", timing.ms) " мс всего"
+    for attempt in timing.attempts {
+        text .= " · " attempt.method " " Format("{:.2f}", attempt.ms) " мс"
+            . (attempt.gdiMs >= 0 ? " (GDI " Format("{:.2f}", attempt.gdiMs) " мс)" : "")
+            . ": " attempt.outcome
+    }
+    return text " · итог: " timing.outcome
+}
+
+CaptureClient(hwnd, &timing := 0) {
     global ST, CFG
-    if (!hwnd || !IsWindow(hwnd))
-        return 0
-    if DllCall("user32\IsIconic", "Ptr", hwnd, "Int")
-        return 0                        ; свёрнуто в панель задач — не снять
-    area := GetClientArea(hwnd)
-    if !area
-        return 0
-    ; Три подряд медленных успешных PrintWindow временно меняют порядок
-    ; методов, но не отключают запасной: оба могут отказать на разных ПК.
+    timing := {w:0, h:0, ms:0, outcome:"прервано", attempts:[]}
+    ; Метки кадра относятся к началу первой попытки, включая возможный резерв.
+    ; QPC для диагностики, A_TickCount для существующего шлюза свежести.
     previous := Critical("On")
     try {
+        started := CaptureCounter()
         t0 := A_TickCount, cameraAtStart := ST.cameraSeq, inputEpochAtStart := ST.inputEpoch
         cameraCmdXAtStart := ST.cameraCmdX, cameraCmdYAtStart := ST.cameraCmdY
     } finally {
         Critical(previous)
     }
-    shot := 0, source := "", primaryPrint := false, printMs := 0, printOk := false
-    if (ST.capNoPrintT && A_TickCount < ST.capNoPrintT) {
-        shot := CaptureWindowDC(hwnd, area)
-        if shot
-            source := "DC окна (первый выбор)"
-        else {
-            shot := CaptureWindowPrint(hwnd, area)
-            if shot
-                source := "PrintWindow (резерв DC)"
+    try {
+        if !IsWindow(hwnd) {
+            timing.outcome := "нет окна"
+            return 0
         }
-    } else {
-        primaryPrint := true
-        printStart := A_TickCount
-        shot := CaptureWindowPrint(hwnd, area)
-        printMs := A_TickCount - printStart, printOk := !!shot
-        if shot
-            source := "PrintWindow"
-        else {
-            shot := CaptureWindowDC(hwnd, area)
-            if shot
-                source := "DC окна (резерв PrintWindow)"
+        if DllCall("user32\IsIconic", "Ptr", hwnd, "Int") {
+            timing.outcome := "окно свёрнуто"
+            return 0
         }
-    }
-    ST.capMs := A_TickCount - t0
-    ; Учитываем только время самого первого PrintWindow, не резервного DC.
-    ; Медленный DC не продлевает отсрочку PrintWindow бесконечно.
-    if primaryPrint {
-        if (printOk && printMs > CFG.capSlowMs) {
-            ST.capSlowN += 1
-            if (ST.capSlowN >= 3) {
-                ST.capSlowN := 0
-                ST.capNoPrintT := A_TickCount + CFG.capCooldownMs
-                Log("[i] PrintWindow занял " printMs " мс; сначала пробую DC окна "
-                    . Round(CFG.capCooldownMs / 1000) " с, затем снова PrintWindow. Скорость и качество DC не гарантированы.")
+        area := GetClientArea(hwnd, true)
+        if (!area || !CaptureDibSizeOk(area.w, area.h)) {
+            timing.outcome := "некорректная клиентская область"
+            return 0
+        }
+        timing.w := area.w, timing.h := area.h
+        preferDc := ST.capNoPrintT && t0 < ST.capNoPrintT
+        for i, viaDc in [preferDc, !preferDc] {
+            TickCheck("перед захватом кадра")
+            shot := CaptureAttempt(hwnd, area, viaDc, timing.attempts)
+            TickCheck("после захвата кадра")
+            current := CaptureAreaCurrent(hwnd, area)
+            ; Долгий, но неверный кадр не считается успешным PrintWindow.
+            if (i = 1 && !viaDc)
+                TrackPrimaryPrint(shot && current, timing.attempts[1].ms)
+            if !current {
+                timing.outcome := "окно или клиентская область изменились"
+                return 0 ; резерву нельзя передавать устаревшую область
             }
-        } else
-            ST.capSlowN := 0
-    }
-    if !shot {
-        ST.capSource := ""
-        ST.visSrc := ""
+            if !shot
+                continue
+            shot.captureId := ++ST.captureSeq
+            shot.source := viaDc ? (i = 1 ? "DC окна (первый выбор)" : "DC окна (резерв PrintWindow)")
+                : (i = 1 ? "PrintWindow" : "PrintWindow (резерв DC)")
+            shot.hwnd := hwnd, shot.capturedAt := t0
+            shot.cameraSeqAtCapture := cameraAtStart, shot.inputEpochAtCapture := inputEpochAtStart
+            shot.cameraCmdXAtCapture := cameraCmdXAtStart, shot.cameraCmdYAtCapture := cameraCmdYAtStart
+            timing.outcome := "кадр #" shot.captureId
+            shot.captureTiming := timing
+            return shot
+        }
+        timing.outcome := "нет изображения"
         return 0
+    } finally {
+        timing.ms := CaptureElapsedMs(started)
     }
-    ST.capSource := source, ST.visSrc := source
-    shot.captureId := ++ST.captureSeq
-    shot.source := source
-    shot.hwnd := hwnd
-    ; Время НАЧАЛА захвата — консервативная оценка возраста кадра. При медленном
-    ; PrintWindow время детектора нельзя принимать за время съёмки.
-    shot.capturedAt := t0
-    shot.cameraSeqAtCapture := cameraAtStart
-    shot.inputEpochAtCapture := inputEpochAtStart
-    shot.cameraCmdXAtCapture := cameraCmdXAtStart
-    shot.cameraCmdYAtCapture := cameraCmdYAtStart
-    return shot
+}
+
+TrackPrimaryPrint(ok, ms) {
+    global ST, CFG
+    ; Как раньше: три медленных успешных PrintWindow подряд временно меняют
+    ; порядок, а длительность резервного метода не продлевает отсрочку.
+    if (!ok || ms <= CFG.capSlowMs) {
+        ST.capSlowN := 0
+        return
+    }
+    ST.capSlowN += 1
+    if (ST.capSlowN >= 3) {
+        ST.capSlowN := 0
+        ST.capNoPrintT := A_TickCount + CFG.capCooldownMs
+        Log("[i] PrintWindow занял " Round(ms, 1) " мс; сначала пробую DC окна "
+            . Round(CFG.capCooldownMs / 1000) " с, затем снова PrintWindow. Скорость и качество DC не гарантированы.")
+    }
+}
+
+CaptureAreaCurrent(hwnd, area) {
+    if (!IsWindow(hwnd) || DllCall("user32\IsIconic", "Ptr", hwnd, "Int"))
+        return false
+    after := GetClientArea(hwnd, true)
+    return after && after.w = area.w && after.h = area.h && after.x = area.x && after.y = area.y
 }
 
 IsWindow(hwnd) {
     return hwnd && DllCall("user32\IsWindow", "Ptr", hwnd, "Int") ? true : false
 }
 
-; --- способ 1: PrintWindow всего окна, потом вырезаем клиентскую область ------
-CaptureWindowPrint(hwnd, area) {
-    wx := 0, wy := 0, ww := 0, wh := 0
-    try
-        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " hwnd)
-    catch
-        return 0
-    if (ww < 50 || wh < 50)
-        return 0
-    ; смещение клиентской области внутри окна (рамка/заголовок)
-    ox := Max(0, area.x - wx), oy := Max(0, area.y - wy)
-    if (ox + area.w > ww)
-        ox := Max(0, ww - area.w)
-    if (oy + area.h > wh)
-        oy := Max(0, wh - area.h)
+CaptureDibSizeOk(w, h) {
+    ; Будущий BGRX: те же пределы, что у экспорта BMP и Rust.
+    return w >= 50 && w <= 8192 && h >= 50 && h <= 8192 && w * h <= 32 * 1024 * 1024
+}
 
-    hdcScreen := 0, hdcMem := 0, hbm := 0, old := 0
+CaptureAttempt(hwnd, area, viaDc, attempts) {
+    entry := {method:(viaDc ? "DC окна" : "PrintWindow"), ms:0, gdiMs:-1, outcome:"ошибка"}
+    attempts.Push(entry)
+    started := CaptureCounter()
     try {
-        hdcScreen := DllCall("GetDC", "Ptr", 0, "Ptr")
+        return CaptureWindowPixels(hwnd, area, viaDc, entry)
+    } catch TickInterrupted as e {
+        entry.outcome := "прервано: " e.Message
+        throw e
+    } finally {
+        entry.ms := CaptureElapsedMs(started)
+    }
+}
+
+CaptureWindowPixels(hwnd, area, viaDc, timing) {
+    ; PrintWindow рисует полное окно; BitBlt читает клиентский DC того же HWND.
+    ; DC экрана нужен только для совместимого приёмника, не как источник пикселей.
+    timing.outcome := "границы клиента"
+    if !CaptureDibSizeOk(area.w, area.h)
+        return 0
+    ww := area.w, wh := area.h, ox := 0, oy := 0
+    if !viaDc {
+        try WinGetPos(&wx := 0, &wy := 0, &ww, &wh, "ahk_id " hwnd)
+        catch
+            return 0
+        ox := area.x - wx, oy := area.y - wy
+        ; Не сдвигаем область наугад, если изменился размер окна или DPI.
+        if (!CaptureDibSizeOk(ww, wh) || ox < 0 || oy < 0 || ox + area.w > ww || oy + area.h > wh)
+            return 0
+    }
+
+    hdcWin := 0, hdcScreen := 0, hdcMem := 0, hbm := 0, old := 0
+    timing.outcome := "ошибка GDI"
+    try {
+        if viaDc {
+            hdcWin := DllCall("user32\GetDC", "Ptr", hwnd, "Ptr")
+            if !hdcWin
+                return 0
+        }
+        hdcScreen := DllCall("user32\GetDC", "Ptr", 0, "Ptr")
         if !hdcScreen
             return 0
         bi := Buffer(40, 0)
@@ -2029,71 +2085,39 @@ CaptureWindowPrint(hwnd, area) {
             old := 0
             return 0
         }
-        if !DllCall("user32\PrintWindow", "Ptr", hwnd, "Ptr", hdcMem, "UInt", 0x00000002, "Int")
+        drawAt := CaptureCounter()
+        if viaDc
+            ok := DllCall("gdi32\BitBlt", "Ptr", hdcMem, "Int", 0, "Int", 0, "Int", ww, "Int", wh
+                , "Ptr", hdcWin, "Int", 0, "Int", 0, "UInt", 0x00CC0020, "Int")
+        else
+            ok := DllCall("user32\PrintWindow", "Ptr", hwnd, "Ptr", hdcMem, "UInt", 0x00000002, "Int")
+        ; Завершаем операции над DIB перед чтением через указатель.
+        flushed := DllCall("gdi32\GdiFlush", "Int")
+        timing.gdiMs := CaptureElapsedMs(drawAt)
+        if (!ok || !flushed)
             return 0
-        stride := area.w * 4
-        buf := Buffer(stride * area.h, 0)
-        ; Вырезаем клиентскую область построчно: ширина может отличаться.
-        rowBytes := area.w * 4
-        y := 0
-        while (y < area.h) {
-            src := pbits + (oy + y) * ww * 4 + ox * 4
-            dst := buf.Ptr + y * stride
-            DllCall("kernel32\RtlMoveMemory", "Ptr", dst, "Ptr", src, "UPtr", rowBytes)
-            y += 1
-        }
-        if IsBlankPixels(buf, area.w, area.h)
-            return 0
-        return {buf: buf, w: area.w, h: area.h, stride: stride, x: area.x, y: area.y}
-    } finally {
-        ; Даже при TickCheck/ошибке сначала отвязать bitmap, потом освободить.
-        if (old && hdcMem)
-            DllCall("gdi32\SelectObject", "Ptr", hdcMem, "Ptr", old, "Ptr")
-        if hdcMem
-            DllCall("gdi32\DeleteDC", "Ptr", hdcMem)
-        if hbm
-            DllCall("gdi32\DeleteObject", "Ptr", hbm)
-        if hdcScreen
-            DllCall("ReleaseDC", "Ptr", 0, "Ptr", hdcScreen)
-    }
-}
+        TickCheck("после GDI-захвата")
 
-; --- способ 2: BitBlt с DC окна (тоже окно, не экран) -------------------------
-CaptureWindowDC(hwnd, area) {
-    hdcWin := 0, hdcScreen := 0, hdcMem := 0, hbm := 0, old := 0
-    try {
-        hdcWin := DllCall("user32\GetDC", "Ptr", hwnd, "Ptr")
-        if !hdcWin
-            return 0
-        hdcScreen := DllCall("GetDC", "Ptr", 0, "Ptr")
-        if !hdcScreen
-            return 0
-        bi := Buffer(40, 0)
-        NumPut("UInt", 40, bi, 0), NumPut("Int", area.w, bi, 4), NumPut("Int", -area.h, bi, 8)
-        NumPut("UShort", 1, bi, 12), NumPut("UShort", 32, bi, 14)
-        pbits := 0
-        hbm := DllCall("gdi32\CreateDIBSection", "Ptr", hdcScreen, "Ptr", bi
-            , "UInt", 0, "Ptr*", &pbits, "Ptr", 0, "UInt", 0, "Ptr")
-        if (!hbm || !pbits)
-            return 0
-        hdcMem := DllCall("gdi32\CreateCompatibleDC", "Ptr", hdcScreen, "Ptr")
-        if !hdcMem
-            return 0
-        old := DllCall("gdi32\SelectObject", "Ptr", hdcMem, "Ptr", hbm, "Ptr")
-        if (!old || old = -1) {
-            old := 0
+        stride := area.w * 4, sourceStride := ww * 4
+        buf := Buffer(stride * area.h, 0), src := pbits + oy * sourceStride + ox * 4
+        if (stride = sourceStride) {
+            ; Безрамочное окно уже лежит подряд: один вызов вместо одной
+            ; копии на строку. Для окна с рамкой оставляем точную обрезку.
+            DllCall("kernel32\RtlMoveMemory", "Ptr", buf, "Ptr", src, "UPtr", buf.Size)
+        } else {
+            Loop area.h {
+                y := A_Index - 1
+                DllCall("kernel32\RtlMoveMemory", "Ptr", buf.Ptr + y * stride, "Ptr", src + y * sourceStride, "UPtr", stride)
+            }
+        }
+        if IsBlankPixels(buf, area.w, area.h) {
+            timing.outcome := "одноцветный кадр"
             return 0
         }
-        if !DllCall("gdi32\BitBlt", "Ptr", hdcMem, "Int", 0, "Int", 0, "Int", area.w, "Int", area.h
-            , "Ptr", hdcWin, "Int", 0, "Int", 0, "UInt", 0x00CC0020, "Int")
-            return 0
-        stride := area.w * 4
-        buf := Buffer(stride * area.h, 0)
-        DllCall("kernel32\RtlMoveMemory", "Ptr", buf, "Ptr", pbits, "UPtr", stride * area.h)
-        if IsBlankPixels(buf, area.w, area.h)
-            return 0
-        return {buf: buf, w: area.w, h: area.h, stride: stride, x: area.x, y: area.y}
+        timing.outcome := "изображение"
+        return {buf:buf, w:area.w, h:area.h, stride:stride, x:area.x, y:area.y}
     } finally {
+        ; Порядок важен и при прерывании: сначала отвязать DIB от контекста.
         if (old && hdcMem)
             DllCall("gdi32\SelectObject", "Ptr", hdcMem, "Ptr", old, "Ptr")
         if hdcMem
@@ -2101,13 +2125,13 @@ CaptureWindowDC(hwnd, area) {
         if hbm
             DllCall("gdi32\DeleteObject", "Ptr", hbm)
         if hdcScreen
-            DllCall("ReleaseDC", "Ptr", 0, "Ptr", hdcScreen)
+            DllCall("user32\ReleaseDC", "Ptr", 0, "Ptr", hdcScreen)
         if hdcWin
-            DllCall("ReleaseDC", "Ptr", hwnd, "Ptr", hdcWin)
+            DllCall("user32\ReleaseDC", "Ptr", hwnd, "Ptr", hdcWin)
     }
 }
 
-; Пустой кадр: однотонный (обычно чёрный) — значит окно содержимое не отдало.
+; Почти одноцветный RGB (обычно чёрный) не считаем полезным кадром.
 IsBlankPixels(buf, w, h) {
     stepY := Max(2, h // 24), stepX := Max(2, w // 24)
     seen := Map()
@@ -2117,9 +2141,8 @@ IsBlankPixels(buf, w, h) {
         x := 0
         while (x < w) {
             o := y * (w * 4) + x * 4
-            ; v7.5: ключом служит само значение пикселя (UInt), а не строка —
-            ; проверка «кадр пустой» перестала быть дорогой
-            seen[NumGet(buf, o, "UInt")] := true
+            ; X-байт BGRX не является цветом и не доказывает, что кадр живой.
+            seen[NumGet(buf, o, "UInt") & 0xFFFFFF] := true
             if (seen.Count > 24)
                 return false
             x += stepX
@@ -10181,6 +10204,7 @@ TickProfileText(profile) {
         . " · исход: " profile.outcome " · шаг: " profile.step
         . (profile.frame != "" ? " · кадр " profile.frame : "")
         . parts " · сканов отложено +" profile.skipped
+        . (profile.HasOwnProp("capture") && profile.capture ? " · захват: " CaptureTimingText(profile.capture) : "")
 }
 
 TuneScanStep(ms) {
@@ -10586,18 +10610,16 @@ TickBody(profile) {
     TickStage(profile, "захват")
     TraceStep("захват кадра")
 
-    shot := CaptureClient(hwnd)
+    capture := 0
+    try shot := CaptureClient(hwnd, &capture)
+    finally profile.capture := capture
     if !shot {
         SuspendPlayInput("нет кадра окна")
-        iconic := false
-        try
-            iconic := (WinGetMinMax("ahk_id " hwnd) = -1)
-        LogThrottledKey("[nocap]", iconic
-            ? "[!] Кадр не взят: окно игры СВЁРНУТО. Разверните Fortnite (в «Умном фоне»"
-              . " можно просто перекрыть его другим окном, не сворачивая)."
-            : "[!] Кадр не взят: окно игры не отдало изображение. Нажмите F7 для диагностики.")
+        LogThrottledKey("[nocap]", "[capture] Кадр не взят: " CaptureTimingText(capture) ". Нажмите F7 для диагностики.")
         return "кадр недоступен"
     }
+    if (A_TickCount - shot.capturedAt > 250)
+        LogThrottledKey("[caplate]", "[capture] Уже старше 250 мс после захвата: " CaptureTimingText(capture), 5000)
     if IsSelfWindow(hwnd) {
         SuspendPlayInput("кадр отклонён")
         LogThrottledKey("[selfwin]", "[!] Пропущен кадр собственного окна бота — жду окно Fortnite.")
@@ -11132,7 +11154,7 @@ DrawVisionFrame() {
         return
     }
     brightPct := ShotBrightPct(shot)
-    VIS.mode.Value := "источник: " (ST.visSrc != "" ? ST.visSrc : "окно игры")
+    VIS.mode.Value := "источник: " shot.source
         . " · GDI AHK v2 · " shot.w "x" shot.h " · возраст " Max(0, A_TickCount - shot.capturedAt)
         . " мс · показ " VIS.fps " кадр/с"
         . " · фокус: " (WinActive("ahk_id " hwnd) ? "игра" : (CFG.smartRestore ? "умный фон" : "другое окно"))
@@ -14706,14 +14728,14 @@ OnCheckCapture(*) {
     ; Зафиксировать состояние ДО первого кадра: старт/стоп между кадрами
     ; не должен казаться непрерывным покоем только потому, что running снова false.
     calGuard := MouseCalF7Guard()
-    shot := CaptureClient(hwnd)
+    shot := CaptureClient(hwnd, &capture := 0)
+    Log("  [capture] " CaptureTimingText(capture))
     if !shot {
         if iconic
             Log("  [!] захват не удался — причина выше: окно свёрнуто")
         else
-            Log("  [!] захват не удался — окно не отдало кадр (PrintWindow и экран пусты)."
-                . " Попробуйте нажать «Проверить захват» ещё раз или сменить"
-                . " «Оконный без рамки».")
+            Log("  [!] захват не удался — см. время и итог попыток выше."
+                . " Попробуйте ещё раз при стабильном размере окна или включите «Оконный без рамки».")
         Flash(iconic ? "Игра свёрнута — разверните окно" : "Захват не удался", 4000)
         return
     }
@@ -14808,8 +14830,7 @@ OnCheckCapture(*) {
         . " · нажатий Пробела в полёте " ST.glidePresses
         . " · пауза между отрезками: " (ST.pauseUntil ? "идёт" : "нет"))
     ; ---- v7.6: видно, почему кирка молчит и сколько кадров реально выходит ----
-    Log("  v7.6: кадр " Round(ST.capMs) " мс (" (ST.visSrc != "" ? ST.visSrc : "—") ")"
-        . " · захват в цикле средний " Fps() " кадр/с (не FPS зрения)"
+    Log("  захват в цикле средний " Fps() " кадр/с (не FPS зрения)"
         . " · тик " Round(ST.lastTickMs) " мс = "
         . Round(10000 / Max(1, ST.lastTickMs)) / 10 " 1/с (обратная длительность, не FPS)"
         . " · кирка: попыток " ST.breaks " · мест в чёрном списке " ST.badSpots.Length
@@ -14992,6 +15013,8 @@ BuildCalibrationReport(shot) {
     lines.Push("  кадр #" shot.captureId " · " shot.w "x" shot.h " · края " dens " (для справки)")
     if shot.HasOwnProp("source")
         lines.Push("  источник: " shot.source)
+    if shot.HasOwnProp("captureTiming")
+        lines.Push("  захват: " CaptureTimingText(shot.captureTiming))
     lines.Push("  слоты внизу справа " Round(hud.slots, 3))
     lines.Push("  HUD на диагностическом кадре: " (hud.confirmed ? "есть признаки матча" : "не подтверждён")
         . " · " hud.score " (" (hud.why != "" ? hud.why : "нет") ") · память HUD цикла не меняю")

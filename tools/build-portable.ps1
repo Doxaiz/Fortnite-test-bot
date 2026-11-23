@@ -194,6 +194,21 @@ try {
             }
         }
 
+        # GDI acquisition precedes any pixel backend. Measure once, using
+        # a separate window/process, without running the game loop.
+        $capture = Join-Path $sourceChecks 'tests\capture_window.ahk'
+        $captureLog = Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench' -f $capture) 'GDI capture tests and benchmark' $temp
+        $captureLog | Write-Output
+        $captureSamples = @($captureLog | Where-Object { $_ -match '^(CAPTURE|SKIP capture) \d+x\d+' })
+        foreach ($method in 'PrintWindow', 'BitBlt') {
+            if (!($captureSamples -match "^CAPTURE 480x288 ${method}: median=\d+\.\d+ p95=\d+\.\d+")) {
+                throw "Missing GDI benchmark for $method."
+            }
+        }
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            Write-Host "::notice title=Window capture (GDI)::$($captureSamples -join ' | ')"
+        }
+
         $archivesToTest = [ordered]@{ built = $archive }
         $published = Join-Path $repo "portable\$archiveName"
         if (Test-Path -LiteralPath $published -PathType Leaf) {

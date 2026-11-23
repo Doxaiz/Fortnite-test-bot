@@ -75,7 +75,9 @@ TestPromptRoundTrip(a, b) {
     ExpectKey(a, SC.e, 1, 1, 2000)
     ExpectKey(b, SC.e, 0, 0)
     Check(!ST.held.Has(SC.e) && !ST.chests, "отпускание не считается открытием сундука")
-    FileAppend("  захват 480×288: " ST.capSource "`n", "*", "UTF-8")
+    Check(ST.tickProfile.capture = second.captureTiming && second.captureTiming.attempts.Length >= 1
+        && InStr(TickProfileText(ST.tickProfile), second.captureTiming.attempts[1].method), "замер захвата относится к тику")
+    FileAppend("  захват 480×288: " second.source "`n", "*", "UTF-8")
 }
 
 TestMinimizedMove(a, b) {
@@ -222,17 +224,19 @@ TestSavedWindowFrame(a, b) {
     global CFG, ST, SC
     Check(CFG.dryRun && GetGameWindow() = a, "экспорт проверяется на выбранном тестовом окне")
     SetFixtureFrame(a, 1)
-    live := ST.lastShot, epoch := ST.inputEpoch
+    live := ST.lastShot, epoch := ST.inputEpoch, lastTiming := ST.tickProfile.capture
     shot := CaptureCalibrationFrame()
     Check(shot && shot.hwnd = a && shot.captureId > live.captureId && shot.source != ""
-        , "экспорт получает отдельный реальный кадр окна")
+        && shot.captureTiming != lastTiming && ST.tickProfile.capture = lastTiming && live.captureTiming = lastTiming
+        , "отдельный захват экспорта не переписывает время рабочего кадра")
     folder := A_Temp "\forma-window-export-" ProcessExist() "-" A_TickCount
     try {
         saved := SaveCalibrationPair(shot, folder)
         report := FileRead(saved.txt, "UTF-8")
         Check(FileGetSize(saved.bmp) = 54 + shot.buf.Size && InStr(report, "плашка E: кандидат")
             && InStr(report, "кадр #" shot.captureId) && InStr(report, "источник: " shot.source)
-            , "на диске кадр GDI и его отчёт о плашке")
+            && InStr(report, CaptureTimingText(shot.captureTiming))
+            , "на диске кадр GDI, его замер захвата и отчёт о плашке")
         Check(ST.lastShot = live && ST.inputEpoch = epoch && !ST.held.Count
             , "диагностический кадр не подменяет рабочий и не даёт ввода")
         ExpectKey(a, SC.e, 3, 3)
