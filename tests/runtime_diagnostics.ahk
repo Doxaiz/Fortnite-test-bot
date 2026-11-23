@@ -26,7 +26,7 @@ try {
             , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
-            , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts
+            , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
             , TestEnemyEvidence, TestCombatPreemption, TestCombatRetreat, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
@@ -1145,12 +1145,13 @@ WorldFixture(id, kind := "blank", hwnd := 100) {
             FixtureRect(shot, kind = "center" ? 227 : 308, 148, 30, 24, kind = "rare" ? 0x58CBFE : 0xFFAA20)
         case "damage":
             FixtureRect(shot, 253, 123, 14, 14, 0xFFFFFF)
-        case "prompt", "redPrompt":
-            ; Текстура плашки: тёмный фон, компактный значок и строка с просветами.
-            FixtureRect(shot, 242, 134, 58, 21, 0x282828)
-            FixtureRect(shot, 245, 142, 3, 4, 0xEEEEEE)
-            Loop 9
-                FixtureRect(shot, 257 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
+        case "prompt", "redPrompt", "widePrompt":
+            ; Две строки разной длины с одинаковым центром и значком слева.
+            wide := kind = "widePrompt", left := wide ? 234 : 242
+            FixtureRect(shot, left, 134, wide ? 74 : 58, 21, 0x282828)
+            FixtureRect(shot, left + 3, 142, 3, 4, 0xEEEEEE)
+            Loop (wide ? 13 : 9)
+                FixtureRect(shot, left + 15 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
             if (kind = "redPrompt")
                 FixtureRect(shot, 236, 140, 9, 9, 0xEE2727)
         case "red", "white", "cyan":
@@ -1496,6 +1497,143 @@ CheckPromptAttempts() {
     shot := WorldFixture(118, "prompt")
     Check(TryInteract(shot, shot.capturedAt, false, sender) && InStr(ST.lastAction, "DryRun: E на 80 мс")
         && probe.calls.Length = 2 && !ST.held.Count && !ST.tgt, "DryRun не вызывает отправитель и не заводит удержание")
+
+    ; Лимит общий для разных плашек и не сбрасывается при потере фокуса.
+    CFG.dryRun := false, CFG.promptEcooldownMs := 0, CFG.promptScanMs := 0
+    Loop (CFG.promptWindowMax - ST.promptAttempts.Length)
+        ST.promptAttempts.Push(A_TickCount)
+    InvalidatePlayInput()
+    ObservePromptFixture(119, "widePrompt", sender)
+    limited := ObservePromptFixture(120, "widePrompt", sender)
+    Check(!limited.used && limited.shot.promptReading && ST.promptConfirm.hits = 2
+        && probe.calls.Length = 2 && ST.promptAttempts.Length = CFG.promptWindowMax && !ST.tgt
+        , "подтверждённая новая плашка не обходит общий лимит E")
+}
+
+TestPromptGeometry() {
+    WithGroundFixture(CheckPromptGeometry)
+}
+
+ObservePromptFixture(id, kind, sender) {
+    global ST
+    ST.scanWork := 0
+    shot := WorldFixture(id, kind)
+    return {shot:shot, used:TryInteract(shot, shot.capturedAt, false, sender)}
+}
+
+CheckPromptGeometry() {
+    global CFG, ST
+    CFG.dryRun := false, CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
+    probe := {calls:[], ok:true}, sender := PromptProbe.Bind(probe)
+    narrow := ObservePromptFixture(801, "prompt", sender).shot
+    wide := ObservePromptFixture(802, "widePrompt", sender).shot
+    a := narrow.promptReading, b := wide.promptReading
+    Check(a && b && a.cx = b.cx && b.w > a.w && ST.promptConfirm.hits = 1 && !probe.calls.Length
+        , "две строки у одного центра не наследуют подтверждение друг друга")
+    pair := ObservePromptFixture(803, "widePrompt", sender)
+    Check(pair.used && ST.tgt && ST.tgt.box.w = b.w && probe.calls.Length = 1
+        , "новая геометрия после собственного повтора разрешает попытку")
+    ST.tgt.until := A_TickCount - 20, CFG.interactVerifyMs := 0
+    changed := ObservePromptFixture(804, "prompt", sender)
+    Check(changed.used && !ST.tgt && !ST.promptMemory.Length && !ST.promptConfirm.hits
+        && probe.calls.Length = 1, "плашка другой ширины после E не считается неизменившейся")
+    Check(!TryInteract(changed.shot, changed.shot.capturedAt, false, sender) && !ST.promptConfirm.hits
+        , "закрывающий кадр не переносит подтверждение на новую попытку")
+    ObservePromptFixture(805, "prompt", sender)
+    Check(ST.promptConfirm.hits = 1 && probe.calls.Length = 1, "для следующей E снова нужна пара")
+
+    beforeTurn := ObservePromptFixture(806, "prompt", sender).shot, pending := ST.tgt
+    Check(pending && probe.calls.Length = 2, "начата отдельная попытка")
+    ST.cameraSeq += 1
+    TryInteract(beforeTurn, A_TickCount, false, sender)
+    Check(ST.tgt = pending && !ST.promptMemory.Length, "старый вид не публикует итог")
+    ObservePromptFixture(807, "prompt", sender)
+    Check(!ST.tgt && !ST.promptMemory.Length && ST.promptConfirm.hits = 1 && probe.calls.Length = 2
+        , "свежий кадр после поворота отменяет проверку и подтверждается с нуля")
+}
+
+TestUnchangedPrompt() {
+    WithGroundFixture(CheckUnchangedPrompt)
+}
+
+CheckUnchangedPrompt() {
+    global CFG, ST
+    CFG.dryRun := false, CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
+    probe := {calls:[], ok:true}, sender := PromptProbe.Bind(probe)
+    archived := CFG.totalChests, seq := 820
+    Loop 2 {
+        attempt := A_Index, CFG.interactVerifyMs := 1100
+        seen := ObservePromptFixture(++seq, "prompt", sender)
+        Check(seen.used && ST.promptConfirm.hits = 1 && probe.calls.Length = attempt - 1
+            , "первая плашка перед попыткой " attempt)
+        sent := ObservePromptFixture(++seq, "prompt", sender)
+        Check(sent.used && probe.calls.Length = attempt && ST.tgt && !ST.promptConfirm.hits
+            , "после попытки старые подтверждения сброшены")
+        p := ST.tgt, p.until := A_TickCount - 40
+        before := WorldFixture(++seq, "prompt"), before.capturedAt := p.until - 1, ST.scanWork := 0
+        Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits
+            , "кадр до планового отпускания не проверяет E")
+        p.keyHold := {target:ST.hwnd, releasedAt:p.until + 15}
+        before := WorldFixture(++seq, "prompt"), before.capturedAt := p.keyHold.releasedAt, ST.scanWork := 0
+        Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits && p.postSeq = sent.shot.captureId
+            , "при задержке таймера кадр должен быть строго новее фактического отпускания")
+        first := ObservePromptFixture(++seq, "prompt", sender).shot
+        Check(p.postSeq = first.captureId && p.sameHits = 1 && ST.promptMemory.Length = attempt - 1
+            , "один после отпускания ещё не пара")
+        Check(TryInteract(first, A_TickCount, false, sender) && p.sameHits = 1, "тот же кадр не учитывается второй раз")
+        late := WorldFixture(++seq, "prompt"), late.capturedAt -= 251
+        Check(TryInteract(late, A_TickCount, false, sender) && p.sameHits = 1, "просроченный кадр не проверяет E")
+        deferred := WorldFixture(++seq, "prompt"), ST.scanWork := CFG.scanPerTickMax
+        Check(TryInteract(deferred, A_TickCount, false, sender) && deferred.HasOwnProp("promptDeferred") && p.sameHits = 1
+            , "отложенный скан не превращается в повтор или исчезновение")
+        post := ObservePromptFixture(++seq, "prompt", sender)
+        Check(post.used && ST.tgt = p && p.sameHits = 2, "до конца окна проверки не торопимся с выводом")
+        CFG.interactVerifyMs := 0 ; дедлайн сдвинут для теста
+        final := WorldFixture(++seq, "prompt"), ST.scanWork := CFG.scanPerTickMax
+        used := TryInteract(final, final.capturedAt, false, sender)
+        Check(used = (attempt = 1) && !ST.tgt && final.HasOwnProp("promptDeferred") && ST.promptMemory.Length = 1
+            && ST.promptMemory[1].repeats = attempt, "недавняя измеренная пара: " (attempt = 1 ? "повтор" : "пропуск"))
+    }
+    record := ST.promptMemory[1], expiry := record.until, segment := A_TickCount + 3000, ST.segUntil := segment
+    same := ObservePromptFixture(++seq, "prompt", sender)
+    Check(!same.used && same.shot.promptReading && ST.segUntil = segment && !ST.promptConfirm.hits
+        && record.until = expiry && probe.calls.Length = 2, "исключённая плашка не останавливает ход и не продлевает пропуск")
+
+    ObservePromptFixture(++seq, "blank", sender)
+    Check(ST.promptMemory.Length = 1 && !ObservePromptFixture(++seq, "prompt", sender).used
+        , "одно мерцание не снимает исключение")
+    other := ObservePromptFixture(++seq, "widePrompt", sender)
+    Check(other.used && ST.promptConfirm.hits = 1 && ST.promptMemory.Length = 1 && probe.calls.Length = 2
+        , "другая плашка видна даже пока прежняя исключена")
+    Check(!ObservePromptFixture(++seq, "prompt", sender).used, "смена кандидата не снимает старое исключение")
+
+    ObservePromptFixture(++seq, "blank", sender)
+    missed := WorldFixture(++seq), ST.scanWork := CFG.scanPerTickMax
+    TryInteract(missed, missed.capturedAt, false, sender)
+    Check(ST.promptMemory.Length = 1, "отсрочка после одного пустого кадра не снимает память")
+    ObservePromptFixture(++seq, "blank", sender)
+    Check(!ST.promptMemory.Length, "два свежих пустых измерения снимают локальную память")
+    restarted := ObservePromptFixture(++seq, "prompt", sender)
+    Check(restarted.used && ST.promptConfirm.hits = 1 && probe.calls.Length = 2, "после исчезновения снова нужна пара")
+
+    ; Тот же вид после истечения; новый размер/камера/окно/поколение тоже не наследуют запись.
+    for reason in ["expiry", "camera", "window", "epoch", "size"] {
+        rec := record.Clone(), rec.until := A_TickCount + CFG.promptRepeatMs
+        rec.view := FrameView(WorldFixture(seq, "prompt", ST.hwnd)), ST.promptMemory := [rec]
+        ST.promptConfirm := NewPromptTracker()
+        switch reason {
+            case "expiry": rec.until := A_TickCount - 1
+            case "camera": ST.cameraSeq += 1
+            case "window": ST.hwnd += 1
+            case "epoch": ST.inputEpoch += 1
+            case "size": rec.view.w += 1
+        }
+        ST.scanWork := 0, shot := WorldFixture(++seq, "prompt", ST.hwnd)
+        Check(TryInteract(shot, shot.capturedAt, false, sender) && !ST.promptMemory.Length
+            && ST.promptConfirm.hits = 1 && probe.calls.Length = 2, reason ": не наследуем исключение")
+    }
+    Check(ST.promptN = 2 && !ST.chests && CFG.totalChests = archived && !ST.held.Count
+        , "неизменившаяся плашка не засчитывается ни как третье E, ни как открытие")
 }
 
 TestEnemyEvidence() {
@@ -1546,7 +1684,8 @@ CheckCombatPreemption() {
         FixtureRect(frame, 233, 124, 16, 32, color)
         frame.capturedAt := A_TickCount, ST.scanWork := 0
         if (i = 1) {
-            pending := {seq:300, view:FrameView(frame), until:A_TickCount + 5000, keyHold:0}
+            pending := {view:FrameView(frame), until:A_TickCount + 5000, keyHold:0
+                , box:0, postSeq:300, postAt:0, sameHits:0}
             ST.tgt := pending
         }
         RunFixtureRoam(frame)
@@ -1556,7 +1695,8 @@ CheckCombatPreemption() {
         ST.prevShot := frame
     }
     cache := ST.enemyCache, shots := ST.shots
-    pending := {seq:302, view:FrameView(frame), until:A_TickCount + 5000, keyHold:0}, ST.tgt := pending
+    pending := {view:FrameView(frame), until:A_TickCount + 5000, keyHold:0
+        , box:0, postSeq:302, postAt:0, sameHits:0}, ST.tgt := pending
     defer := WorldFixture(303), ST.scanWork := CFG.scanPerTickMax
     RunFixtureRoam(defer)
     Check(ST.tgt = pending && ST.enemyCache = cache && ST.shots = shots && !defer.HasOwnProp("enemyReading")
@@ -1686,7 +1826,8 @@ CheckCombatScanFreshness() {
         ST.scanEnemyFastAt := fastAt, ST.scanWideAt := wideAt, ST.scanWork := 0
         late := WorldFixture(base + 3, change = "age" ? "prompt" : "blank")
         segment := A_TickCount + 2000
-        pending := {seq:base + 2, view:FrameView(late), until:A_TickCount + 400, keyHold:0}
+        pending := {view:FrameView(late), until:A_TickCount + 400, keyHold:0
+            , box:0, postSeq:base + 2, postAt:0, sameHits:0}
         ST.segUntil := segment, ST.tgt := pending, ST.lastAction := "прямой ход"
         combatAt := ST.combatAt
         buf := late.buf, changes := {count:0}

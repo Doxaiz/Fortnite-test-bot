@@ -44,8 +44,7 @@ RunWindowTests() {
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
-            , TestResultBlink
-            , TestReturnOnlyResults] {
+            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -467,6 +466,57 @@ TestReturnOnlyResults(a, b) {
     ExpectKey(b, SC.e, 1, 1)
 }
 
+TestRepeatedPrompt(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featChest := true, CFG.featMove := true
+    CFG.featCombat := false, CFG.sprint := false, CFG.featParkour := false
+    CFG.chestHoldMs := 260, CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
+    CFG.scanLootMs := 0, CFG.pauseChance := 0, CFG.stuckMs := 2400
+    ResetSceneEvidence()
+    ResetNavigation()
+    ResetCaches()
+    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
+    ST.queuePending := false, ST.cancelHold := false, ST.promptAttempts := [], ST.lastPromptE := 0
+    baseline := ST.promptN
+    SetFixtureFrame(b, 1)
+    Loop 2 {
+        attempt := A_Index
+        TickFirstPrompt(b)
+        ExpectKey(b, SC.e, attempt, attempt)
+        TickFixture(b)
+        p := ST.tgt
+        Check(p && p.keyHold = ST.held.Get(SC.e, 0) && p.keyHold.target = b && ST.promptN = baseline + attempt
+            , "E доставляем только в B")
+        ExpectKey(b, SC.e, attempt + 1, attempt)
+        ExpectKey(b, SC.e, attempt + 1, attempt + 1, 1300)
+        Check(p.keyHold.HasOwnProp("releasedAt") && !ST.held.Has(SC.e), "таймер отметил отпускание своего E")
+        doneAt := Max(p.until, p.keyHold.releasedAt)
+        Sleep(Max(0, doneAt + 25 - A_TickCount))
+        TickFixture(b)
+        Check(ST.tgt = p && p.sameHits = 1, "первый замер после таймерного отпускания")
+        Sleep(Max(0, doneAt + CFG.interactVerifyMs + 25 - A_TickCount))
+        TickFixture(b)
+        Check(!ST.tgt && p.sameHits = 2 && ST.promptMemory[1].repeats = attempt, "оба подтверждения после E")
+    }
+    Check(ST.held.Has(SC.w) && ST.held[SC.w].target = b, "плашка больше не мешает начать ходьбу")
+    ExpectKey(b, SC.w, 4, 3)
+    TickFixture(b)
+    ExpectKey(b, SC.w, 4, 3)
+    ExpectKey(b, SC.e, 3, 3)
+
+    SetFixtureFrame(b, 16)
+    TickFirstPrompt(b)
+    Check(ST.promptMemory.Length = 1 && ST.promptMemory[1].repeats = 2, "другая строка не снимает пропуск старой")
+    ExpectKey(b, SC.w, 4, 4)
+    ExpectKey(b, SC.e, 3, 3)
+    TickFixture(b)
+    ExpectKey(b, SC.e, 4, 4, 1300)
+    Check(ST.promptN = baseline + 3 && !ST.chests && !ST.held.Count, "новая плашка работает после своей пары; открытия не засчитаны")
+    ExpectKey(a, SC.e, 3, 3)
+    ExpectKey(a, SC.w, 1, 1)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -527,7 +577,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 16
+    Loop 17
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -604,15 +654,16 @@ BuildFixtureFrame(scene) {
         }
     }
     if (scene < 7 || scene = 9 || scene = 10 || scene >= 13) {
-        PaintFixture(buf, w, 24, 256, scene >= 14 ? 28 : 80, 20, 0x2ABA31) ; HUD HP
+        PaintFixture(buf, w, 24, 256, (scene = 14 || scene = 15) ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
     }
-    if (scene = 1) {
-        PaintFixture(buf, w, 242, 134, 58, 21, 0x282828) ; тёмная плашка
-        PaintFixture(buf, w, 245, 142, 3, 4, 0xEEEEEE)    ; значок
-        Loop 9
-            PaintFixture(buf, w, 257 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
+    if (scene = 1 || scene = 16) {
+        wide := scene = 16, left := wide ? 234 : 242
+        PaintFixture(buf, w, left, 134, wide ? 74 : 58, 21, 0x282828)
+        PaintFixture(buf, w, left + 3, 142, 3, 4, 0xEEEEEE)
+        Loop (wide ? 13 : 9)
+            PaintFixture(buf, w, left + 15 + 4 * (A_Index - 1), 142, 2, 4, 0xEEEEEE)
     }
     if (scene >= 2 && scene <= 4) {
         ; Неизменная оранжевая опора и отдельная полоса продолжали её рамку в v11.0.8.
@@ -644,7 +695,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 156, 253, 104, 24, 0xF1F1F1) ; экран устранения поверх HUD
     if (scene = 12)
         PaintFixture(buf, w, 16, 224, 112, 32, 0xCBCB00) ; «Играть» в лобби
-    if (scene >= 13) {
+    if (scene >= 13 && scene <= 15) {
         ; Те же колонки, что в навигации: слева плавный перепад, справа плотные края.
         Loop 17 {
             col := A_Index - 1

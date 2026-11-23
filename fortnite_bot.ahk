@@ -287,6 +287,7 @@ global CFG := {
     zeroBuild:       true,      ; ZERO BUILD: укрытие рельефом, стрейфом, приседом и подкатом
     promptScanMs:    120,       ; быстрый отклик на плашку [E] у сундуков, дверей и лута
     promptEcooldownMs: 780,     ; пауза между нажатиями E
+    promptRepeatMs:  8000,     ; память о неизменившейся плашке только в том же виде
     promptWindowMs:  15000,     ; скользящее окно защиты от зацикливания E
     promptWindowMax: 6,         ; достаточно для сундука + 3–4 выпавших предметов подряд
     promptSpanMin:   44,        ; ширина строки подсказки, px при кадре 1280
@@ -569,7 +570,8 @@ global ST := {
     promptAt:     0,            ; время последнего завершённого сканирования
     promptAvailable: false,    ; есть актуальный результат, а не пропущенный скан
     promptSeq: 0,
-    promptConfirm: NewCandidateTracker(),
+    promptConfirm: NewPromptTracker(),
+    promptMemory: [],          ; недавние повторные плашки (до четырёх в одном виде)
     enemyConfirm:  NewCandidateTracker(),
     enemyWideConfirm: NewCandidateTracker(),
     captureSeq: 0,
@@ -4060,11 +4062,77 @@ ConfirmWorldCandidate(tr, shot, item, needed) {
     return ConfirmCandidate(tr, item, shot.captureId, shot.w, shot.h, shot.capturedAt, needed)
 }
 
-PromptConfirmFresh(shot, item) {
+NewPromptTracker(shot := 0, absent := false) {
+    return {seq:shot ? shot.captureId : 0, at:shot ? shot.capturedAt : 0
+        , view:shot ? FrameView(shot) : 0, hits:0, box:0, absent:absent}
+}
+
+SamePromptShape(a, b, shot) {
+    ; Геометрия, не OCR и не ID объекта. Одного совпадения центра мало:
+    ; соседняя или более длинная строка может появиться у того же прицела.
+    return a && b && Abs(a.cx - b.cx) <= Max(4, Round(shot.w * 0.012))
+        && Abs(a.cy - b.cy) <= Max(3, Round(shot.h * 0.015))
+        && Abs(a.w - b.w) <= Max(3, Round(Min(a.w, b.w) * 0.18))
+        && Abs(a.h - b.h) <= Max(2, Round(Min(a.h, b.h) * 0.30))
+}
+
+PromptMemoryInView(shot, now) {
+    global ST
+    records := []
+    for record in ST.promptMemory {
+        if (now < record.until && SameFrameView(record.view, shot))
+            records.Push(record)
+    }
+    return records
+}
+
+ObservePromptReading(shot, item) {
     global CFG, ST
-    if (!ST.promptAvailable || ST.promptSeq != shot.captureId)
-        return 0
-    return ConfirmWorldCandidate(ST.promptConfirm, shot, item, CFG.promptConfirmHits)
+    previous := Critical("On")
+    try {
+        tr := ST.promptConfirm
+        if (!ST.promptAvailable || ST.promptSeq != shot.captureId || !WorldFrameCurrent(shot)
+            || shot.captureId < tr.seq || shot.capturedAt < tr.at)
+            return false
+        same := SameFrameView(tr.view, shot)
+        if (shot.captureId = tr.seq)
+            return same && tr.hits > 0 && tr.box = item
+        recent := same && shot.capturedAt - tr.at <= CFG.confirmGapMs
+        ; Один пустой замер может быть мерцанием. Два новых пустых замера
+        ; снимают локальную память: похожая плашка может появиться заново.
+        records := (!item && recent && tr.absent) ? [] : PromptMemoryInView(shot, A_TickCount)
+        ST.promptMemory := records
+        ignored := false
+        for record in records {
+            if (record.repeats >= 2 && SamePromptShape(record.box, item, shot)) {
+                ignored := true
+                break
+            }
+        }
+        paired := recent && tr.hits && SamePromptShape(tr.box, item, shot)
+        tr.hits := (!item || ignored) ? 0 : (paired ? Min(CFG.promptConfirmHits, tr.hits + 1) : 1)
+        tr.seq := shot.captureId, tr.at := shot.capturedAt, tr.view := FrameView(shot)
+        tr.box := item, tr.absent := !item
+        return tr.hits > 0
+    } finally {
+        Critical(previous)
+    }
+}
+
+RememberUnchangedPrompt(shot, attempt, now) {
+    ; Вызывается только при публикации завершённой проверки после E.
+    global CFG, ST
+    records := PromptMemoryInView(shot, now), ST.promptMemory := records
+    for record in records {
+        if SamePromptShape(record.box, attempt.box, shot) {
+            record.repeats := Min(2, record.repeats + 1), record.until := now + CFG.promptRepeatMs
+            return record.repeats >= 2
+        }
+    }
+    if (records.Length >= 4)
+        records.RemoveAt(1)
+    records.Push({box:attempt.box, view:attempt.view, repeats:1, until:now + CFG.promptRepeatMs})
+    return false
 }
 
 ; --- канал 2: цифры урона (мы попали) ---------------------------------------
@@ -5411,6 +5479,10 @@ KeyUp(code, hold := 0, releaseId := 0) {
     previous := Critical("On")
     try {
         if (ST.held.Has(code) && ST.held[code] = origin) {
+            ; Для проверки после E важен момент отправки up, а не плановое
+            ; время таймера: на перегруженном тике эти времена различаются.
+            if (code = SC.e && IsObject(origin))
+                origin.releasedAt := A_TickCount
             ST.held.Delete(code)
             if (code = SC.shift)
                 ST.sprintOn := false
@@ -6172,12 +6244,22 @@ NearCrosshair(shot, x, y) {
 }
 
 HoldInteractKey(shot, holdMs) {
-    global SC
+    global CFG, SC, ST
     if !KeyDown(SC.e, shot.inputEpochAtCapture, 0, shot)
-        return false
-    ; Удержание не занимает весь тик. Таймер относится к этому нажатию;
-    ; Stop/пауза/смена окна могут отпустить клавишу раньше.
-    return InputReleaseLater("key", SC.e, holdMs)
+        return 0
+    ; Возвращаем владельца нажатия, а не ищем текущую E позже:
+    ; тот же объект получает время отпускания от своего таймера.
+    previous := Critical("On")
+    try {
+        hold := ST.held.Get(SC.e, 0)
+        if (hold && !CFG.dryRun && WorldViewCurrent(shot) && InputReleaseLater("key", SC.e, holdMs))
+            return hold
+    } finally {
+        Critical(previous)
+    }
+    if hold
+        KeyUp(SC.e, hold)
+    return 0
 }
 
 CancelInteraction() {
@@ -6185,7 +6267,7 @@ CancelInteraction() {
     if !ST.tgt
         return
     pending := ST.tgt, ST.tgt := 0
-    ST.promptConfirm := NewCandidateTracker()
+    ST.promptConfirm := NewPromptTracker()
     if pending.keyHold
         KeyUp(SC.e, pending.keyHold)
 }
@@ -6240,45 +6322,35 @@ TryInteract(shot, now, seek := true, sender := 0) {
         CancelInteraction()
         return false
     }
-    if (ST.tgt && !SameFrameView(ST.tgt.view, shot)) {
+    pending := ST.tgt
+    if !WorldFrameCurrent(shot)
+        return !!pending && A_TickCount - pending.until < CFG.interactVerifyMs
+    if (pending && !SameFrameView(pending.view, shot)) {
         CancelInteraction()
+        pending := 0
         LogThrottledKey("[prompt-view]", "[i] Проверка после E отменена: окно, камера, сессия или размер кадра изменились.")
     }
-    if (ST.tgt && (A_TickCount < ST.tgt.until
-        || (ST.tgt.keyHold && ST.held.Has(SC.e) && ST.held[SC.e] = ST.tgt.keyHold)))
+    if (pending && (A_TickCount < pending.until
+        || (pending.keyHold && ST.held.Get(SC.e, 0) = pending.keyHold)))
         return true
-    if !WorldFrameCurrent(shot)
-        return !!ST.tgt && A_TickCount - ST.tgt.until < CFG.interactVerifyMs
     pmRaw := FindInteractPrompt(shot)
     scanned := ST.promptAvailable && ST.promptSeq = shot.captureId && WorldFrameCurrent(shot)
-    pm := scanned ? PromptConfirmFresh(shot, pmRaw) : 0
-    if ST.tgt {
-        done := ST.tgt.until
-        postFrame := scanned && shot.captureId > ST.tgt.seq && shot.capturedAt >= done
-        if (postFrame && !pmRaw) {
-            ST.tgt := 0
-            ; Если это был подбор, в следующем свободном кадре попробуем
-            ; слот 1. Исчезновение плашки не считаем подбором/открытием.
-            ST.firstSlotDone := false, ST.weaponTries := 0
-            ST.lastAction := "плашка исчезла; результат E неизвестен"
-            LogThrottledKey("[prompt-result]", "[i] На новом кадре плашка не найдена; открытие сундука не подтверждено.")
+    if pending {
+        if VerifyPromptAttempt(pending, shot, scanned, pmRaw)
             return true
-        }
-        if (A_TickCount - done < CFG.interactVerifyMs)
-            return true
-        ST.tgt := 0
-        LogThrottledKey("[prompt-result]", postFrame ? "[~] После E плашка ещё видна; возможен повтор."
-            : "[~] После E нет свежего скана; результат неизвестен.")
-        return true
+        ; После двух неизменившихся проверок даём продолжить поиск сразу.
+        return seek && TryApproach(shot, now)
     }
+    eligible := scanned && ObservePromptReading(shot, pmRaw)
     tr := ST.promptConfirm
     waiting := !scanned && tr.hits && SameFrameView(tr.view, shot)
         && A_TickCount - tr.at <= CFG.confirmGapMs
-    ; Даже остановку движения нельзя выбирать по просроченному кандидату.
-    if (((scanned && pmRaw) || waiting) && WorldFrameCurrent(shot)) {
+    ; Отложенный скан не подтверждает E, а пропускаемая плашка больше
+    ; не останавливает движение и не удерживает приоритет над поиском.
+    if ((eligible || waiting) && WorldFrameCurrent(shot)) {
         HaltMatchMovement()
         ST.lastAction := "подсказка: жду свежий кадр"
-        if !pm {
+        if (!eligible || tr.hits < CFG.promptConfirmHits) {
             LogThrottledKey("[prompt-candidate]", "[i] Похоже на подсказку; жду повторный свежий кадр (текст не распознан).", 7000)
             return true
         }
@@ -6291,11 +6363,63 @@ TryInteract(shot, now, seek := true, sender := 0) {
     return seek && TryApproach(shot, now)
 }
 
+VerifyPromptAttempt(p, shot, scanned, item) {
+    global CFG, ST
+    previous := Critical("On")
+    try {
+        if (p != ST.tgt || !WorldFrameCurrent(shot) || !SameFrameView(p.view, shot)
+            || shot.captureId < p.postSeq || shot.capturedAt < p.postAt)
+            return true
+        now := A_TickCount
+        releasedAt := p.keyHold && p.keyHold.HasOwnProp("releasedAt") ? p.keyHold.releasedAt : 0
+        doneAt := Max(p.until, releasedAt)
+        ; Захват мог начаться до запоздавшего up, даже если скан завершился после него.
+        fresh := scanned && shot.captureId > p.postSeq && shot.capturedAt >= p.until
+            && (!p.keyHold || (releasedAt && shot.capturedAt > releasedAt))
+        if fresh {
+            paired := p.sameHits > 0 && shot.capturedAt - p.postAt <= CFG.confirmGapMs
+            p.postSeq := shot.captureId, p.postAt := shot.capturedAt
+            p.sameHits := SamePromptShape(p.box, item, shot) ? (paired ? 2 : 1) : 0
+        }
+        gone := fresh && !item
+        if (!gone && now - doneAt < CFG.interactVerifyMs)
+            return true
+        ST.tgt := 0, ST.promptConfirm := NewPromptTracker(shot, gone)
+        skipped := false, repeated := false
+        if gone {
+            ; Освобождаем проверку и слот, но не объявляем сундук открытым.
+            ST.firstSlotDone := false, ST.weaponTries := 0
+            ST.lastAction := "плашка исчезла; результат E неизвестен"
+        } else {
+            ; Нужны два раздельных чтения после отпускания. Если новый
+            ; скан отложен, годится только недавняя уже измеренная пара.
+            age := now - p.postAt
+            repeated := p.sameHits >= 2 && age >= 0 && age <= Max(250, CFG.promptScanMs * 3)
+            skipped := repeated && RememberUnchangedPrompt(shot, p, now)
+            ST.lastAction := skipped ? "пропускаю неизменившуюся подсказку"
+                : (repeated ? "та же подсказка: для повтора нужны свежие кадры" : "после E результат неизвестен")
+        }
+    } finally {
+        Critical(previous)
+    }
+    if gone
+        LogThrottledKey("[prompt-result]", "[i] На новом кадре плашка не найдена; открытие сундука не подтверждено.")
+    else if skipped
+        LogThrottledKey("[prompt-skip]", "[prompt-skip] После двух попыток E та же плашка в (" p.box.cx "," p.box.cy
+            . "); пропускаю её на " Round(CFG.promptRepeatMs / 1000) " с в этом виде.")
+    else if repeated
+        LogThrottledKey("[prompt-repeat]", "[i] После E дважды измерена та же плашка; повтор только по новой паре кадров.")
+    else
+        LogThrottledKey("[prompt-result]", "[i] Нет свежей пары совпадающих замеров после E; результат неизвестен.")
+    return !skipped
+}
+
 StartPromptAttempt(shot, sender := 0) {
     global CFG, SC, ST
     TickCheck("перед E по подсказке")
-    if (ST.tgt || !WorldFrameCurrent(shot) || !shot.HasOwnProp("promptReading")
-        || !PromptConfirmFresh(shot, shot.promptReading))
+    tr := ST.promptConfirm
+    if (ST.tgt || !WorldFrameCurrent(shot) || !ST.promptAvailable || ST.promptSeq != shot.captureId
+        || tr.seq != shot.captureId || !SameFrameView(tr.view, shot) || !tr.box || tr.hits < CFG.promptConfirmHits)
         return true
     attemptNow := A_TickCount, recentAttempts := []
     for t in ST.promptAttempts {
@@ -6321,18 +6445,22 @@ StartPromptAttempt(shot, sender := 0) {
     if !sender
         sender := HoldInteractKey
     sent := sender(shot, holdMs)
+    keyHold := IsObject(sent) ? sent : 0 ; подставной отправитель в тесте возвращает true без клавиши
     previous := Critical("On")
     try {
-        accepted := sent && WorldViewCurrent(shot)
+        accepted := sent && !CFG.dryRun && WorldViewCurrent(shot)
         if accepted {
-            keyHold := ST.held.Has(SC.e) ? ST.held[SC.e] : 0
-            ST.tgt := {until:A_TickCount + holdMs, seq:shot.captureId, view:FrameView(shot), keyHold:keyHold}
+            ST.tgt := {until:A_TickCount + holdMs, view:FrameView(shot), keyHold:keyHold
+                , box:tr.box, postSeq:shot.captureId, postAt:0, sameHits:0}
+            ST.promptConfirm := NewPromptTracker(shot)
             ST.promptN += 1
             ST.lastAction := "попытка E (" holdMs " мс); результат неизвестен"
         }
     } finally {
         Critical(previous)
     }
+    if (!accepted && keyHold)
+        KeyUp(SC.e, keyHold)
     if accepted
         LogThrottledKey("[promptE]", "[?] Попытка E " holdMs " мс по плашке (" ST.promptN "); открытие не подтверждено.")
     else
@@ -7238,7 +7366,7 @@ ResetCaches() {
     ST.enemyLastAt := 0, ST.enemyLastCameraSeq := -1, ST.enemyVelX := 0, ST.enemyVelY := 0
     ST.enemyConfirm := NewCandidateTracker()
     ST.enemyWideConfirm := NewCandidateTracker()
-    ST.promptConfirm := NewCandidateTracker()
+    ST.promptConfirm := NewPromptTracker(), ST.promptMemory := []
     ST.promptCache := 0, ST.promptAt := 0, ST.promptAvailable := false, ST.promptSeq := 0
     ST.breakTarget := 0, ST.breakNoChange := 0
     if (ST.stuckRecoverKey != "")
@@ -13658,7 +13786,7 @@ OnStart(expectedGen := 0, *) {
     ST.mmEnterAt := 0, ST.mmSince := 0
     ST.matchStarted := false, ST.matchFromQueue := false
     ST.roundActive := false, ST.lobbyRequeue := false
-    ST.promptConfirm := NewCandidateTracker()
+    ST.promptConfirm := NewPromptTracker()
     ST.enemyConfirm := NewCandidateTracker()
     ST.enemyWideConfirm := NewCandidateTracker()
     ResetMoveWatch(true)
@@ -13855,7 +13983,7 @@ OnStop(reason := "", *) {
         ST.promptAvailable := false
         ST.enemyConfirm := NewCandidateTracker()
         ST.enemyWideConfirm := NewCandidateTracker()
-        ST.promptConfirm := NewCandidateTracker()
+        ST.promptConfirm := NewPromptTracker(), ST.promptMemory := []
         ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
         ResetMoveWatch(true)
         StopTickSlots()
