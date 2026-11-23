@@ -3815,6 +3815,12 @@ FindEnemyMotion(shot) {
         || prev.inputEpochAtCapture != shot.inputEpochAtCapture || shot.inputEpochAtCapture != ST.inputEpoch
         || prev.hwnd != shot.hwnd || prev.w != shot.w || prev.h != shot.h || prev.stride != shot.stride)
         return 0
+    return ReadEnemyMotionPair(shot, prev)
+}
+
+; Только чтение пикселей двух буферов одинакового формата и размера.
+; В цикле вызывается после проверок выше; офлайн не выдаёт допуск к вводу.
+ReadEnemyMotionPair(shot, prev) {
     x1 := Round(shot.w * 0.14), x2 := Round(shot.w * 0.86)
     y1 := Round(shot.h * 0.18), y2 := Round(shot.h * 0.82)
     step := Max(6, Round(ScanStep(7) * Max(1.0, shot.w / 1280, shot.h / 720)))

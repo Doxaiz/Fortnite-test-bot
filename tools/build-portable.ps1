@@ -168,7 +168,7 @@ try {
                 $parityScript = Join-Path $sourceChecks 'tests\native_pixels.ahk'
                 Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $parityScript) 'Rust/AHK parity' $temp
             }
-            foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'main_panel') {
+            foreach ($suite in 'runtime_diagnostics', 'window_input', 'replay_f5', 'evaluate_vision', 'main_panel') {
                 $script = Join-Path $sourceChecks "tests\$suite.ahk"
                 Write-Host "Smoke test ($backend): $suite"
                 Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$backend $suite test" $temp
