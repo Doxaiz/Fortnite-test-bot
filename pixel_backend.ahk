@@ -27,7 +27,8 @@ PixelBackend() {
                         motion := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_motion_cells", "Ptr")
                         if (!warm || !motion)
                             warm := 0, motion := 0
-                        ready := {clusters:clusters, rows:rows, ratio:ratio, warm:warm, motion:motion}
+                        warmPeak := warm ? DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_warm_grid_peak", "Ptr") : 0
+                        ready := {clusters:clusters, rows:rows, ratio:ratio, warm:warm, motion:motion, warmPeak:warmPeak}
                     }
                 }
             }
@@ -198,24 +199,36 @@ PixelNativeRatio(entry, shot, r, buf, mode, threshold) {
     return total ? hits / total : 0.0
 }
 
-PixelNativeWarmGrid(entry, shot, buf, geo) {
-    cap := geo.cw * geo.ch
-    if (!PixelFrameSupported(shot, buf) || cap < 1 || cap > 131072)
+PixelNativeWarmGrid(entry, shot, buf, geo, withPeak := false) {
+    cells := geo.cw * geo.ch
+    if (!PixelFrameSupported(shot, buf) || cells < 1 || cells > 131072)
         return 0
+    cap := cells + (withPeak ? 3 : 0)
     q := Buffer(24, 0), out := Buffer(cap * 4, 0)
     NumPut("UInt", geo.x, "UInt", geo.y, "UInt", geo.x + geo.w, "UInt", geo.y + geo.h
         , "UInt", geo.cell, "UInt", geo.step, q)
     n := PixelNativeCall(entry, shot, buf, q, "скан фигуры врага", out, cap)
     if (n < 0 || n > 262144)
         return 0
-    cnt := [], cnt.Capacity := cap
-    Loop cap {
+    peak := 0
+    if withPeak {
+        end := cells * 4
+        col := NumGet(out, end, "UInt"), row := NumGet(out, end + 4, "UInt"), score := NumGet(out, end + 8, "UInt")
+        if (n < 3 || geo.cw < 3 || geo.ch < 3) {
+            if (col || row || score)
+                return 0
+        } else if (!score || score > n || col < 1 || row < 1 || col > geo.cw - 2 || row > geo.ch - 2)
+            return 0
+        peak := {col:col, row:row, score:score}
+    }
+    cnt := [], cnt.Capacity := cells
+    Loop cells {
         if (Mod(A_Index, 512) = 0)
             TickCheck("чтение сетки фигуры")
         cnt.Push(NumGet(out, (A_Index - 1) * 4, "UInt"))
     }
     TickCheck("чтение сетки фигуры")
-    return {cnt:cnt, totalSkin:n}
+    return {cnt:cnt, totalSkin:n, peak:peak}
 }
 
 PixelNativeMotion(entry, shot, prev, r, step, cols) {

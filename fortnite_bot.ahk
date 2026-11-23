@@ -3513,11 +3513,15 @@ SkinGrid(shot, frac := 0, stepIn := 0) {
     step := Max(1, Round(ScanStep(stepIn > 0 ? stepIn : CFG.skinStep) * scale))
     geo := {x:x1, y:y1, w:x2 - x1, h:y2 - y1, cell:cell, step:step
         , cw:(x2 - x1) // cell + 2, ch:(y2 - y1) // cell + 2, seedCol:0, seedRow:0}
-    buf := shot.buf, backend := PixelBackend()
-    reading := backend && backend.warm ? PixelNativeWarmGrid(backend.warm, shot, buf, geo) : 0
+    buf := shot.buf, backend := PixelBackend(), reading := 0
+    if (backend && backend.warm) {
+        usePeak := !!backend.warmPeak
+        reading := PixelNativeWarmGrid(usePeak ? backend.warmPeak : backend.warm, shot, buf, geo, usePeak)
+    }
     if !reading
         reading := SkinGridAhk(buf, shot.stride, geo)
     geo.cnt := reading.cnt, geo.totalSkin := reading.totalSkin
+    geo.peak := reading.HasOwnProp("peak") ? reading.peak : 0
     return geo
 }
 
@@ -3614,11 +3618,10 @@ TransientOk(x, y) {
 }
 
 ; --- канал 1: фигура игрока -------------------------------------------------
-FindEnemySkin(shot, g, diagnostic := 0) {
-    ; 1) максимум в окне 3×3. На пустой маске даже не строим окна;
-    ; на непустой читаем те же девять ячеек без вложенных массивов.
+FindWarmPeakAhk(g) {
+    ; Резерв для старой DLL и без DLL. Первый максимум в порядке строк.
     if (g.totalSkin < 3)
-        return 0
+        return {col:0, row:0, score:0}
     bx := 0, by := 0, best := 0, counts := g.cnt
     row := 1
     while (row <= g.ch - 2) {
@@ -3634,10 +3637,19 @@ FindEnemySkin(shot, g, diagnostic := 0) {
         }
         row += 1
     }
+    return {col:bx, row:by, score:best}
+}
+
+FindEnemySkin(shot, g, diagnostic := 0) {
+    if (g.totalSkin < 3)
+        return 0
+    peak := g.HasOwnProp("peak") && g.peak ? g.peak : FindWarmPeakAhk(g)
+    best := peak.score
     if (best < 3)
         return 0
+    bx := peak.col, by := peak.row
     g.seedCol := bx, g.seedRow := by
-    ; 2) растягиваем бокс в стороны, пока в соседних столбцах/строках есть кожа
+    ; Растягиваем бокс в стороны, пока в соседних столбцах/строках есть кожа
     thr := Max(2, best // 10)
     c0 := bx, c1 := bx + 1, r0 := by, r1 := by + 1
     while (c0 > 1 && GridColSum(g, c0 - 1) >= thr)

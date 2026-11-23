@@ -6,8 +6,8 @@
 ; reference on the exact same Buffer. No game window, Init, timers, or input.
 try {
     backend := PixelBackend()
-    RequirePixelTest(backend && backend.warm && backend.motion && !UI.gui && !ST.running
-        , "Rust backend (including combat exports) required without Init()")
+    RequirePixelTest(backend && backend.warm && backend.motion && backend.warmPeak && !UI.gui && !ST.running
+        , "Rust backend (including the peak export) required without Init()")
     for test in [TestMasks, TestRows, TestRatios, TestWarmGrid, TestMotionCells, TestCombatLayouts
         , TestCapacityFallback, TestNativeInterrupt] {
         test(backend)
@@ -126,15 +126,34 @@ TestWarmGrid(backend) {
     for cell in [3, 8, 17] {
         for step in [1, 4, 9, 12] {
             geo := {x:3, y:5, w:138, h:101, cell:cell, step:step, cw:138 // cell + 2, ch:101 // cell + 2}
-            native := PixelNativeWarmGrid(backend.warm, shot, buf, geo)
             expected := SkinGridAhk(buf, shot.stride, geo)
-            label := "warm grid " cell "/" step
-            RequirePixelTest(native && native.totalSkin = expected.totalSkin && native.totalSkin > 0
-                && native.cnt.Length = expected.cnt.Length, label ": population and length")
-            for i, n in expected.cnt
-                RequirePixelTest(native.cnt[i] = n, label " cell " i)
+            geo.cnt := expected.cnt, geo.totalSkin := expected.totalSkin
+            peak := FindWarmPeakAhk(geo)
+            for optedIn in [false, true] {
+                entry := optedIn ? backend.warmPeak : backend.warm
+                native := PixelNativeWarmGrid(entry, shot, buf, geo, optedIn)
+                label := "warm grid " cell "/" step " peak=" optedIn
+                RequirePixelTest(native && native.totalSkin = expected.totalSkin && native.totalSkin > 0
+                    && native.cnt.Length = expected.cnt.Length && !!native.peak = optedIn, label ": population, length and ABI")
+                for i, n in expected.cnt
+                    RequirePixelTest(native.cnt[i] = n, label " cell " i)
+                if optedIn {
+                    for key in ["col", "row", "score"]
+                        RequirePixelTest(native.peak.%key% = peak.%key%, label ": " key)
+                }
+            }
         }
     }
+    empty := NewPixelFixture(16, 16)
+    geo := {x:0, y:0, w:16, h:16, cell:8, step:1, cw:4, ch:4}
+    native := PixelNativeWarmGrid(backend.warmPeak, empty, empty.buf, geo, true)
+    RequirePixelTest(native && !native.totalSkin && !native.peak.col && !native.peak.row && !native.peak.score
+        , "empty mask is a successful zero peak")
+    PixelTestRect(empty, 0, 0, 2, 2, 0xD08048)
+    geo.w := 2, geo.h := 2, geo.cw := 2, geo.ch := 2
+    native := PixelNativeWarmGrid(backend.warmPeak, empty, empty.buf, geo, true)
+    RequirePixelTest(native && native.totalSkin = 4 && native.cnt[1] = 4 && !native.peak.score
+        , "grid too small for a full window still reports its warm samples")
 }
 
 CompareMotionCells(backend, shot, prev, r, step, wantChanges) {
@@ -171,6 +190,7 @@ TestCombatLayouts(backend) {
     ; Rejection of the sample limit comes from the DLL, not the AHK layout check.
     geo := {x:0, y:0, w:shot.w, h:shot.h, cell:8, step:1, cw:shot.w // 8 + 2, ch:shot.h // 8 + 2}
     RequirePixelTest(!PixelNativeWarmGrid(backend.warm, shot, shot.buf, geo), "warm sample limit")
+    RequirePixelTest(!PixelNativeWarmGrid(backend.warmPeak, shot, shot.buf, geo, true), "peak uses the same sample limit")
     r := {x1:0, y1:0, x2:shot.w, y2:shot.h}
     RequirePixelTest(!PixelNativeMotion(backend.motion, shot, prev, r, 1, (shot.w + 1) // 2)
         , "motion sample limit")

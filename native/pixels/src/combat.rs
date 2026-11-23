@@ -28,7 +28,11 @@ pub struct MotionCell {
     n: u32,
 }
 
-fn warm_grid(frame: &Frame<'_>, q: WarmQuery, out: &mut [u32]) -> Result<usize, i32> {
+const WARM_PEAK_LEN: usize = 3;
+
+fn warm_grid(
+    frame: &Frame<'_>, q: WarmQuery, out: &mut [u32], emit_peak: bool,
+) -> Result<usize, i32> {
     if !(1..=MAX_SIDE).contains(&q.cell) {
         return Err(INVALID);
     }
@@ -37,7 +41,9 @@ fn warm_grid(frame: &Frame<'_>, q: WarmQuery, out: &mut [u32]) -> Result<usize, 
     // Preserve the two sentinel cells used by the AHK 3x3 window search.
     let cols = ((x2 - x1) / q.cell + 2) as usize;
     let rows = ((y2 - y1) / q.cell + 2) as usize;
-    let cells = out.get_mut(..cols * rows).ok_or(CAPACITY)?;
+    let len = cols * rows;
+    let used = len + if emit_peak { WARM_PEAK_LEN } else { 0 };
+    let (cells, peak) = out.get_mut(..used).ok_or(CAPACITY)?.split_at_mut(len);
     cells.fill(0);
     let mut count = 0;
     for y in (y1..y2).step_by(q.step as usize) {
@@ -54,7 +60,30 @@ fn warm_grid(frame: &Frame<'_>, q: WarmQuery, out: &mut [u32]) -> Result<usize, 
             }
         }
     }
+    if emit_peak {
+        peak.copy_from_slice(&warm_peak(cells, cols, count));
+    }
     Ok(count)
+}
+
+fn warm_peak(cells: &[u32], cols: usize, total: usize) -> [u32; WARM_PEAK_LEN] {
+    let mut peak = [0; WARM_PEAK_LEN];
+    if total < 3 || cols < 3 {
+        return peak;
+    }
+    for (row, band) in cells.windows(3 * cols).step_by(cols).enumerate() {
+        let (a, rest) = band.split_at(cols);
+        let (b, c) = rest.split_at(cols);
+        for x in 0..cols - 2 {
+            let score = a[x] + a[x + 1] + a[x + 2]
+                + b[x] + b[x + 1] + b[x + 2] + c[x] + c[x + 1] + c[x + 2];
+            // Visit rows first, keep the first equal maximum, use AHK's one-based indices.
+            if score > peak[2] {
+                peak = [x as u32 + 1, row as u32 + 1, score];
+            }
+        }
+    }
+    peak
 }
 
 fn motion_cells(
@@ -134,16 +163,52 @@ pub unsafe extern "C" fn forma_pixels_warm_grid(
     out: *mut u32,
     cap: usize,
 ) -> i32 {
+    unsafe { warm_grid_entry(pixels, len, w, h, stride, query, out, cap, false) }
+}
+
+/// Same grid and total as `forma_pixels_warm_grid`. Immediately after the grid,
+/// write three `u32`s: one-based top-left column, row and sum of the first
+/// maximum 3x3 window. All are zero for fewer than three hits or no full window.
+///
+/// # Safety
+/// Same contract as `forma_pixels_warm_grid`; `cap` includes the three extra
+/// entries. The entire output must be initialized, aligned and disjoint.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn forma_pixels_warm_grid_peak(
+    pixels: *const u8,
+    len: usize,
+    w: u32,
+    h: u32,
+    stride: usize,
+    query: *const WarmQuery,
+    out: *mut u32,
+    cap: usize,
+) -> i32 {
+    unsafe { warm_grid_entry(pixels, len, w, h, stride, query, out, cap, true) }
+}
+
+unsafe fn warm_grid_entry(
+    pixels: *const u8,
+    len: usize,
+    w: u32,
+    h: u32,
+    stride: usize,
+    query: *const WarmQuery,
+    out: *mut u32,
+    cap: usize,
+    emit_peak: bool,
+) -> i32 {
     call(|| {
+        let extra = if emit_peak { WARM_PEAK_LEN } else { 0 };
         if query.is_null() || out.is_null() || !out.is_aligned()
-            || !(1..=MAX_TILES as usize).contains(&cap)
+            || !(1 + extra..=MAX_TILES as usize + extra).contains(&cap)
         {
             return Err(INVALID);
         }
         let frame = unsafe { read_frame(pixels, len, w, h, stride)? };
         let query = unsafe { query.read_unaligned() };
         let out = unsafe { slice::from_raw_parts_mut(out, cap) };
-        warm_grid(&frame, query, out)
+        warm_grid(&frame, query, out, emit_peak)
     })
 }
 

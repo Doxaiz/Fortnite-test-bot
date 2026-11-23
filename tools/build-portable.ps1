@@ -194,6 +194,19 @@ try {
             }
         }
 
+        # Both variants read the same native grid. Alternate just the 3x3
+        # reduction on one runner; the script checks boxes and diagnostics.
+        $script = Join-Path $sourceChecks 'tests\runtime_diagnostics.ahk'
+        $peakLog = Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench-combat-peak' -f $script) 'Paired warm peak benchmark' $temp
+        $peakLog | Write-Output
+        $peakSamples = @($peakLog | Where-Object { $_ -match '^\d+x\d+ (static|figure|isolated|motion|changed|broad): ahk_peak=\d+\.\d+ rust_peak=\d+\.\d+ \(n=11\)$' })
+        if ($peakSamples.Count -ne 12 -or !($peakLog -match ' / Rust DLL / FindEnemyMulti paired warm peak \(ms\)')) {
+            throw 'Missing paired warm peak measurements.'
+        }
+        if ($env:GITHUB_ACTIONS -eq 'true') {
+            Write-Host "::notice title=FindEnemyMulti (paired 3x3 peak)::$($peakSamples -join ' | ')"
+        }
+
         # GDI acquisition precedes any pixel backend. Measure once, using
         # a separate window/process, without running the game loop.
         $capture = Join-Path $sourceChecks 'tests\capture_window.ahk'

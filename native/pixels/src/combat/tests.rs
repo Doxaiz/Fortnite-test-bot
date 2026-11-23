@@ -25,14 +25,33 @@ fn warm_origin_sentinels_and_colour_edges() {
     let frame = Frame { pixels: &pixels, w, h, stride };
     let q = WarmQuery { rect: Rect { x1: 1, y1: 1, x2: 10, y2: 7 }, cell: 3, step: 2 };
     let mut cells = [17; 21];
-    assert_eq!(warm_grid(&frame, q, &mut cells), Ok(3));
+    assert_eq!(warm_grid(&frame, q, &mut cells, false), Ok(3));
     let mut expected = [0; 21];
     expected[0] = 2;
     expected[7] = 1;
     expected[20] = 17; // the caller can supply extra capacity
     assert_eq!(cells, expected);
-    assert_eq!(warm_grid(&frame, q, &mut cells[..19]), Err(CAPACITY));
+    assert_eq!(warm_grid(&frame, q, &mut cells[..19], false), Err(CAPACITY));
     assert_eq!(cells, expected);
+
+    let mut with_peak = [17; 24];
+    assert_eq!(warm_grid(&frame, q, &mut with_peak, true), Ok(3));
+    assert_eq!(&with_peak[..20], &cells[..20]);
+    assert_eq!(&with_peak[20..], &[1, 1, 3, 17]);
+}
+
+#[test]
+fn warm_peak_keeps_first_tie_and_visits_last_full_window() {
+    let mut cells = [0; 6 * 5];
+    cells[1] = 3;
+    cells[29] = 3;
+    assert_eq!(warm_peak(&cells, 6, 6), [1, 1, 3]);
+    cells[1] = 0;
+    assert_eq!(warm_peak(&cells, 6, 3), [4, 3, 3]);
+    cells[29] = 2;
+    assert_eq!(warm_peak(&cells, 6, 2), [0, 0, 0]);
+    assert_eq!(warm_peak(&[3; 10], 2, 30), [0, 0, 0]);
+    assert_eq!(warm_peak(&[3; 12], 6, 36), [0, 0, 0]);
 }
 
 #[test]
@@ -82,6 +101,7 @@ fn combat_abi_layout_rejects_bad_buffers_and_capacity() {
     let q = WarmQuery { rect: r, cell: 1, step: 1 };
     let m = MotionQuery { rect: r, step: 1 };
     let mut warm = [17u32; 1];
+    let mut short_peak = [19u32; 22]; // 4x5 cells + only two of the three peak slots
     let mut motion = [MotionCell::default(); 1];
     // SAFETY: the inputs and outputs are initialized and disjoint. Bad layouts
     // and short output/previous capacities are rejected before any access to them.
@@ -90,11 +110,14 @@ fn combat_abi_layout_rejects_bad_buffers_and_capacity() {
             warm.as_mut_ptr(), warm.len()), CAPACITY);
         assert_eq!(forma_pixels_warm_grid(pixels.as_ptr(), 96, 4, 5, 15, &q,
             warm.as_mut_ptr(), warm.len()), INVALID);
+        assert_eq!(forma_pixels_warm_grid_peak(pixels.as_ptr(), 96, 4, 5, 19, &q,
+            short_peak.as_mut_ptr(), short_peak.len()), CAPACITY);
         assert_eq!(forma_pixels_motion_cells(pixels.as_ptr(), 96, 4, 5, 19, pixels.as_ptr(), 94,
             &m, motion.as_mut_ptr(), motion.len()), INVALID);
         assert_eq!(forma_pixels_motion_cells(pixels.as_ptr(), 96, 4, 5, 19, pixels.as_ptr(), 96,
             &m, motion.as_mut_ptr(), motion.len()), CAPACITY);
     }
     assert_eq!(warm, [17]);
+    assert_eq!(short_peak, [19; 22]);
     assert_eq!(motion, [MotionCell::default()]);
 }

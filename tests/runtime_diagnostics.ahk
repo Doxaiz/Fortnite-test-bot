@@ -20,6 +20,8 @@ try {
         BenchmarkPromptReader()
     } else if (A_Args.Length = 1 && A_Args[1] = "--bench-combat") {
         BenchmarkCombatScan()
+    } else if (A_Args.Length = 1 && A_Args[1] = "--bench-combat-peak") {
+        WithGroundFixture(MeasureCombatPeak)
     } else {
         for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestCaptureHistory, TestScanHistory
             , TestInputGuards, TestPixelRatios
@@ -2339,18 +2341,11 @@ MeasureCombatScan() {
     for size in [[1280, 720], [1920, 1080]] {
         w := size[1], h := size[2]
         for kind in ["static", "figure", "isolated", "motion", "changed", "broad"] {
-            pair := CombatPixelPair(w, h, kind), ST.prevShot := pair.prev, samples := ""
-            frac := 0, step := 0
-            if (kind = "isolated") {
-                DrawCombatDecoy(pair.shot)
-                DrawCombatFigure(pair.shot, w // 2, Round(h / 2 - 25 * w / 1280))
-                pair.prev.buf := pair.shot.buf
-                frac := 0.92, step := CFG.skinStepWide
-            }
+            pair := CombatBenchPair(w, h, kind), ST.prevShot := pair.prev, samples := ""
             want := (kind = "figure" || kind = "isolated") ? "фигура" : (kind = "motion" ? "движение" : "-")
             Loop 13 {
                 DllCall("QueryPerformanceCounter", "Int64*", &start := 0)
-                item := FindEnemyMulti(pair.shot, frac, step)
+                item := FindEnemyMulti(pair.shot, pair.frac, pair.step)
                 DllCall("QueryPerformanceCounter", "Int64*", &stop := 0)
                 Check((item ? item.src : "-") = want && (kind != "isolated" || item.HasOwnProp("isolated"))
                     , "bench: неверный результат " w "x" h " " kind)
@@ -2362,6 +2357,73 @@ MeasureCombatScan() {
                 . " min=" times[1] " max=" times[-1] " (n=11)`n", "*", "UTF-8")
         }
     }
+}
+
+CombatBenchPair(w, h, kind) {
+    global CFG
+    pair := CombatPixelPair(w, h, kind)
+    pair.frac := 0, pair.step := 0
+    if (kind = "isolated") {
+        DrawCombatDecoy(pair.shot)
+        DrawCombatFigure(pair.shot, w // 2, Round(h / 2 - 25 * w / 1280))
+        pair.prev.buf := pair.shot.buf
+        pair.frac := 0.92, pair.step := CFG.skinStepWide
+    }
+    return pair
+}
+
+MeasureCombatPeak() {
+    global CFG, ST, FORMA_VERSION
+    backend := PixelBackend()
+    Check(backend && backend.warm && backend.warmPeak, "bench: нужна DLL с новым экспортом 3×3")
+    entry := backend.warmPeak
+    CFG.featMotionEnemy := true, ST.tickBusy := true, ST.tickDeadline := 0
+    FileAppend("FORMA v" FORMA_VERSION " / Rust DLL / FindEnemyMulti paired warm peak (ms)`n", "*", "UTF-8")
+    try {
+        for size in [[1280, 720], [1920, 1080]] {
+            for kind in ["static", "figure", "isolated", "motion", "changed", "broad"] {
+                pair := CombatBenchPair(size[1], size[2], kind), ST.prevShot := pair.prev
+                label := size[1] "x" size[2] " " kind, samples := ["", ""]
+                for mode in [1, 2] {
+                    backend.warmPeak := mode = 2 ? entry : 0
+                    grid := SkinGrid(pair.shot, pair.frac, pair.step)
+                    Check(!!grid.peak = (mode = 2), "bench: неверный путь 3×3 " label)
+                }
+                Loop 13 {
+                    iteration := A_Index, boxes := [0, 0], diagnostics := [{}, {}]
+                    ; Парное сравнение: чередуем порядок на одном кадре и одной DLL.
+                    for mode in (Mod(iteration, 2) ? [1, 2] : [2, 1]) {
+                        backend.warmPeak := mode = 2 ? entry : 0
+                        start := CaptureCounter()
+                        box := FindEnemyMulti(pair.shot, pair.frac, pair.step, diagnostics[mode])
+                        elapsed := CaptureElapsedMs(start)
+                        boxes[mode] := box
+                        if (iteration > 2)
+                            samples[mode] .= Format("{:.3f}", elapsed) "`n"
+                    }
+                    Check(SameCombatBenchFields(boxes[1], boxes[2]) && SameCombatBenchFields(diagnostics[1], diagnostics[2])
+                        , "bench: рамка или причина отказа изменились " label)
+                }
+                a := StrSplit(Sort(RTrim(samples[1], "`n"), "N"), "`n")[6]
+                b := StrSplit(Sort(RTrim(samples[2], "`n"), "N"), "`n")[6]
+                FileAppend(label ": ahk_peak=" a " rust_peak=" b " (n=11)`n", "*", "UTF-8")
+            }
+        }
+    } finally backend.warmPeak := entry
+}
+
+SameCombatBenchFields(a, b) {
+    if (!a || !b)
+        return !a && !b
+    n := 0
+    for key, value in a.OwnProps() {
+        if (!b.HasOwnProp(key) || !(b.%key% == value))
+            return false
+        n += 1
+    }
+    for key in b.OwnProps()
+        n -= 1
+    return n = 0
 }
 
 TestLocalMotion() {
