@@ -176,7 +176,15 @@ try {
             # Compare the complete FrameMenu scan on identical in-memory
             # fixtures, on the same runner. No timing assertion in CI.
             $bench = Join-Path $sourceChecks 'tests\runtime_diagnostics.ahk'
-            Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench-menu' -f $bench) "$backend menu benchmark" $temp
+            $benchLog = Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench-menu' -f $bench) "$backend menu benchmark" $temp
+            $benchLog | Write-Output
+            $samples = @($benchLog | Where-Object { $_ -match '^\d+x\d+ (blank|mixed): median=\d+\.\d+' })
+            if ($samples.Count -ne 4 -or !($benchLog -match " / $backend .+ / FrameMenu \(ms\)")) {
+                throw "Missing or incorrect backend in $backend menu benchmark."
+            }
+            if ($env:GITHUB_ACTIONS -eq 'true') {
+                Write-Host "::notice title=FrameMenu ($backend)::$($samples -join ' | ')"
+            }
         }
 
         $archivesToTest = [ordered]@{ built = $archive }

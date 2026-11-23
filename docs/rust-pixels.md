@@ -26,7 +26,18 @@ cargo test --locked --offline --manifest-path native/pixels/Cargo.toml
 
 В Windows CI `dumpbin` проверяет, что у DLL только системные импорты (C runtime линкуется статически). Затем тесты сравнивают геометрию, порядок, число точек, доли и серии на одних и тех же буферах, запускают общие наборы с DLL и без неё, проверяют запуск и обновление из ZIP. Обязательный запуск с DLL не может пройти на AHK. Отдельные сценарии проверяют работу без DLL и с повреждённым файлом, даже если в другом рабочем каталоге лежит исправная DLL.
 
-В логе сборки `-SmokeTest` есть сравнение `--bench-menu`: медианы `FrameMenu` для пустых и смешанных синтетических кадров 720p и 1080p, два прогрева и 11 замеров в каждом режиме. Проверяется полный скан без переиспользования результатов кадра. Это время одного детектора на машине CI, без GDI-захвата и игры, а не FPS или задержка полного тика.
+В логе сборки `-SmokeTest` и в аннотациях Windows CI есть сравнение `--bench-menu`: медианы `FrameMenu` для пустых и смешанных синтетических кадров 720p и 1080p, два прогрева и 11 замеров в каждом режиме. Проверяется полный скан без переиспользования результатов кадра. Это время одного детектора на машине CI, без GDI-захвата и игры, а не FPS или задержка полного тика.
+
+Чтобы проверить DLL с исходным `.ahk`, соберите её отдельно и поместите рядом со скриптом:
+
+```powershell
+cargo build --locked --offline --release --target x86_64-pc-windows-msvc --manifest-path native/pixels/Cargo.toml
+Copy-Item .\native\pixels\target\x86_64-pc-windows-msvc\release\forma_pixels.dll .
+$ahk = "$env:ProgramFiles\AutoHotkey\v2\AutoHotkey64.exe"
+Start-Process $ahk -ArgumentList '/ErrorStdOut=UTF-8 tests\native_pixels.ahk' -NoNewWindow -Wait
+```
+
+Локальная DLL и файлы сборки Cargo не входят в Git.
 
 ## Документация
 
