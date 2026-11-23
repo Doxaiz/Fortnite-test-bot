@@ -858,6 +858,7 @@ global ST := {
     uiBoxSeq:          0,
     capNoPrintT:  0,            ; до какого времени DC пробуется первым
     capSlowN:     0,            ; сколько успешных медленных PrintWindow подряд
+    capHistory:   0,            ; последние замеры цикла для F7, без пикселей
     mouseBlocked: 0,            ; сколько попыток трогать мышь отбито в фоне
     mouseBlockedAt: 0,
     lastClickAt:  0,            ; для clickGapMs (не чаще одного клика)
@@ -1932,6 +1933,87 @@ CaptureTimingText(timing) {
             . ": " attempt.outcome
     }
     return text " · итог: " timing.outcome
+}
+
+RememberTickCapture(profile) {
+    global ST
+    static limit := 120
+    ; Берём только законченные профили владельца тика с известным размером.
+    ; F5/F7 и ранние выходы до захвата не добавляют выборку.
+    if (!profile.HasOwnProp("capture") || !(timing := profile.capture) || !timing.w)
+        return
+    ctx := profile.captureContext
+    sample := {timing:timing, focused:ctx.focused
+        , result:profile.HasOwnProp("captureResult") ? profile.captureResult : "aborted"}
+    previous := Critical("On")
+    try {
+        if (profile.gen != ST.tickGen)
+            return
+        h := ST.capHistory
+        if (!h || h.hwnd != ctx.hwnd || h.w != timing.w || h.h != timing.h || h.dry != ctx.dry || h.mode != ctx.mode)
+            h := ST.capHistory := {hwnd:ctx.hwnd, w:timing.w, h:timing.h, dry:ctx.dry, mode:ctx.mode, next:1, samples:[]}
+        if (h.next > h.samples.Length)
+            h.samples.Push(sample)
+        else
+            h.samples[h.next] := sample
+        h.next := Mod(h.next, limit) + 1
+    } finally Critical(previous)
+}
+
+CaptureHistoryLines(hwnd) {
+    global ST
+    ; Отсчёты уже завершены и не меняются, но кольцо может перезаписать
+    ; ячейку. Копируем ссылки под Critical, считаем процентили вне него.
+    previous := Critical("On")
+    try {
+        h := ST.capHistory
+        if (!h || h.hwnd != hwnd)
+            return []
+        samples := h.samples.Clone()
+    } finally Critical(previous)
+
+    lines := []
+    for focused in [true, false] {
+        times := "", n := 0, frames := 0, late := 0, failed := 0, aborted := 0, fallback := 0
+        pw := {times:"", n:0, image:0, empty:0}, dc := {times:"", n:0, image:0, empty:0}
+        for sample in samples {
+            if (sample.focused != focused)
+                continue
+            timing := sample.timing
+            times .= timing.ms "`n", n += 1
+            late += sample.result = "late"
+            frames += sample.result = "frame" || sample.result = "late"
+            failed += sample.result = "failed"
+            aborted += sample.result = "aborted"
+            fallback += timing.attempts.Length > 1
+            for attempt in timing.attempts {
+                m := attempt.method = "PrintWindow" ? pw : dc
+                m.times .= attempt.ms "`n", m.n += 1
+                m.image += attempt.outcome = "изображение"
+                m.empty += attempt.outcome = "одноцветный кадр"
+            }
+        }
+        if !n
+            continue
+        lines.Push("[capture-stats] " h.w "x" h.h " · " ModeShortRu(h.mode)
+            . (h.dry ? " / DryRun" : " / без DryRun") . (focused ? " / фокус" : " / фон")
+            . " · n=" n " frame=" frames " over250=" late " failed=" failed " aborted=" aborted " fallback=" fallback
+            . " · всего " CapturePercentileText(times)
+            . " · PrintWindow " CaptureMethodStatsText(pw) " · BitBlt " CaptureMethodStatsText(dc))
+    }
+    return lines
+}
+
+CaptureMethodStatsText(m) {
+    return "n=" m.n " image=" m.image " empty=" m.empty " other=" (m.n - m.image - m.empty)
+        . (m.n ? " " CapturePercentileText(m.times) : "")
+}
+
+CapturePercentileText(times) {
+    sorted := StrSplit(Sort(RTrim(times, "`n"), "N"), "`n")
+    n := sorted.Length, mid := (n + 1) // 2
+    median := Mod(n, 2) ? sorted[mid] : (sorted[mid] + sorted[mid + 1]) / 2
+    return Format("median={:.2f} p95={:.2f} мс", median, sorted[Ceil(n * 0.95)])
 }
 
 CaptureClient(hwnd, &timing := 0) {
@@ -10060,6 +10142,7 @@ Tick() {
     ; Только если мы всё ещё текущее поколение: иначе тик уже «осиротели», и
     ; чужие флаги трогать нельзя (иначе новый тик потеряет свой tickBusy).
     if (ST.tickGen = gen) {
+        RememberTickCapture(profile)
         ST.tickBusy := false
         ST.tickAbort := false
         ST.tickAborted := false
@@ -10610,15 +10693,19 @@ TickBody(profile) {
     TickStage(profile, "захват")
     TraceStep("захват кадра")
 
+    profile.captureContext := {hwnd:hwnd, focused:inFocus, dry:CFG.dryRun, mode:CFG.botMode}
     capture := 0
     try shot := CaptureClient(hwnd, &capture)
     finally profile.capture := capture
     if !shot {
+        profile.captureResult := "failed"
         SuspendPlayInput("нет кадра окна")
         LogThrottledKey("[nocap]", "[capture] Кадр не взят: " CaptureTimingText(capture) ". Нажмите F7 для диагностики.")
         return "кадр недоступен"
     }
-    if (A_TickCount - shot.capturedAt > 250)
+    lateAtCapture := A_TickCount - shot.capturedAt > 250
+    profile.captureResult := lateAtCapture ? "late" : "frame"
+    if lateAtCapture
         LogThrottledKey("[caplate]", "[capture] Уже старше 250 мс после захвата: " CaptureTimingText(capture), 5000)
     if IsSelfWindow(hwnd) {
         SuspendPlayInput("кадр отклонён")
@@ -13812,7 +13899,7 @@ ResetRunDiagnostics() {
     ; Alt+Tab до Stop. Первый новый переход не подавляем старым троттлом.
     ST.focusLostAt := 0, ST.focusBackAt := 0, ST.focusNoteAt := 0, ST.bgWarned := false
     ST.playInputSuspended := false, ST.playFocused := -1
-    ST.tickProfile := 0, ST.tickMs := 0, ST.lastTickMs := 0
+    ST.tickProfile := 0, ST.tickMs := 0, ST.lastTickMs := 0, ST.capHistory := 0
     ST.slowTicks := 0, ST.fastTicks := 0
     for key in ["[focusgrace]", "[focus]", "[tickperf]", "[tickcancel:бюджет]", "[tickcancel:запрос сторожа]"] {
         if LogThrMap.Has(key)
@@ -14712,6 +14799,11 @@ OnCheckCapture(*) {
         Flash("Окно игры не найдено", 4000)
         return
     }
+    capLines := CaptureHistoryLines(hwnd)
+    for line in capLines
+        Log("  " line)
+    if !capLines.Length
+        Log("  [capture-stats] нет замеров цикла для этого окна; пробный захват F7 ниже")
     ; --- ФОКУС НЕ ЗАБИРАЕМ (это и был баг: игра поднималась поверх всех) ---
     wasActive := WinActive("ahk_id " hwnd) ? true : false
     iconic := false

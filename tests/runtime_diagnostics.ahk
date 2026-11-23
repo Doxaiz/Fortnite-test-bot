@@ -21,7 +21,7 @@ try {
     } else if (A_Args.Length = 1 && A_Args[1] = "--bench-combat") {
         BenchmarkCombatScan()
     } else {
-        for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestInputGuards, TestPixelRatios
+        for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestCaptureHistory, TestInputGuards, TestPixelRatios
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
             , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
@@ -131,6 +131,72 @@ TestSkippedScanStages() {
         ST.running := false, ST.paused := false
         ST.playInputSuspended := false, ST.playFocused := -1
     }
+}
+
+TestCaptureHistory() {
+    global ST
+    a := 901234, b := 901235
+    ST.capHistory := 0
+    try {
+        old := CaptureHistoryFixture(a, 12, "frame")
+        old.gen -= 1
+        RememberTickCapture(old)
+        unknown := CaptureHistoryFixture(a, 12, "failed")
+        unknown.capture.w := 0
+        RememberTickCapture(unknown)
+        Check(!ST.capHistory && !CaptureHistoryLines(a).Length, "нет выборки без размера или от старого тика")
+
+        front := CaptureHistoryFixture(a, 20, "frame")
+        front.capture.attempts.Push({method:"PrintWindow", ms:10, outcome:"изображение"})
+        fallback := CaptureHistoryFixture(a, 260, "late")
+        fallback.capture.attempts.Push({method:"PrintWindow", ms:248, outcome:"одноцветный кадр"}
+            , {method:"DC окна", ms:10, outcome:"изображение"})
+        failed := CaptureHistoryFixture(a, 14, "failed", false)
+        failed.capture.attempts.Push({method:"PrintWindow", ms:8, outcome:"ошибка GDI"}
+            , {method:"DC окна", ms:4, outcome:"одноцветный кадр"})
+        aborted := CaptureHistoryFixture(a, 300, "", false)
+        aborted.capture.attempts.Push({method:"PrintWindow", ms:298, outcome:"прервано: бюджет"})
+        for profile in [front, fallback, failed, aborted]
+            RememberTickCapture(profile)
+        lines := CaptureHistoryLines(a)
+        Check(lines.Length = 2 && !CaptureHistoryLines(b).Length, "разные фокус и окно не смешиваются")
+        Check(InStr(lines[1], "[capture-stats] 800x450") && !InStr(lines[1], a)
+            && InStr(lines[1], "DryRun / фокус · n=2 frame=2 over250=1 failed=0 aborted=0 fallback=1")
+            && InStr(lines[1], "всего median=140.00 p95=260.00")
+            && InStr(lines[1], "PrintWindow n=2 image=1 empty=1 other=0 median=129.00 p95=248.00")
+            && InStr(lines[1], "BitBlt n=1 image=1 empty=0 other=0 median=10.00 p95=10.00")
+            , "резерв не удваивает кадры, просрочка входит в полученные, методы измеряются отдельно")
+        Check(InStr(lines[2], "DryRun / фон · n=2 frame=0 over250=0 failed=1 aborted=1 fallback=1")
+            && InStr(lines[2], "PrintWindow n=2 image=0 empty=0 other=2")
+            && InStr(lines[2], "BitBlt n=1 image=0 empty=1 other=0"), "отказы и прерывания в фоне не смешиваются с кадрами")
+
+        ; Первый замер другого размера сбрасывает группу. После 121 замера
+        ; остаются только 2..121, среднее двух центральных; p95 — ранг 114.
+        Loop 121
+            RememberTickCapture(CaptureHistoryFixture(a, A_Index, "frame", true, 480))
+        line := CaptureHistoryLines(a)[1]
+        Check(ST.capHistory.samples.Length = 120 && CaptureHistoryLines(a).Length = 1
+            && InStr(line, "480x450") && InStr(line, "n=120 frame=120 over250=0")
+            && InStr(line, "всего median=61.50 p95=115.00"), "ограниченное кольцо вытесняет старые замеры, размер не смешивается")
+        changed := CaptureHistoryFixture(a, 1, "frame", true, 480)
+        changed.captureContext.dry := false
+        RememberTickCapture(changed)
+        Check(ST.capHistory.samples.Length = 1 && InStr(CaptureHistoryLines(a)[1], "без DryRun"), "смена DryRun начинает новую группу")
+        RememberTickCapture(CaptureHistoryFixture(b, 2, "frame"))
+        Check(!CaptureHistoryLines(a).Length && ST.capHistory.hwnd = b
+            && ST.capHistory.samples.Length = 1, "смена окна начинает новую группу")
+        ResetRunDiagnostics()
+        Check(!ST.capHistory && !CaptureHistoryLines(b).Length, "новая сессия не наследует статистику")
+    } finally ST.capHistory := 0
+}
+
+CaptureHistoryFixture(hwnd, ms, result, focused := true, w := 800) {
+    global ST
+    profile := {gen:ST.tickGen, captureContext:{hwnd:hwnd, focused:focused, dry:true, mode:"auto"}
+        , capture:{w:w, h:450, ms:ms, attempts:[]}}
+    if (result != "")
+        profile.captureResult := result
+    return profile
 }
 
 TestInputGuards() {

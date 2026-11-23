@@ -77,6 +77,9 @@ TestPromptRoundTrip(a, b) {
     Check(!ST.held.Has(SC.e) && !ST.chests, "отпускание не считается открытием сундука")
     Check(ST.tickProfile.capture = second.captureTiming && second.captureTiming.attempts.Length >= 1
         && InStr(TickProfileText(ST.tickProfile), second.captureTiming.attempts[1].method), "замер захвата относится к тику")
+    stats := CaptureHistoryLines(a)
+    Check(stats.Length = 1 && InStr(stats[1], "480x288") && InStr(stats[1], "/ фон · n=2 frame=2")
+        && !CaptureHistoryLines(b).Length, "оба завершённых захвата учтены только для выбранного HWND")
     FileAppend("  захват 480×288: " second.source "`n", "*", "UTF-8")
 }
 
@@ -225,6 +228,8 @@ TestSavedWindowFrame(a, b) {
     Check(CFG.dryRun && GetGameWindow() = a, "экспорт проверяется на выбранном тестовом окне")
     SetFixtureFrame(a, 1)
     live := ST.lastShot, epoch := ST.inputEpoch, lastTiming := ST.tickProfile.capture
+    history := ST.capHistory, next := history.next, stats := CaptureHistoryLines(a)
+    Check(stats.Length > 0, "есть выборка до диагностических снимков")
     shot := CaptureCalibrationFrame()
     Check(shot && shot.hwnd = a && shot.captureId > live.captureId && shot.source != ""
         && shot.captureTiming != lastTiming && ST.tickProfile.capture = lastTiming && live.captureTiming = lastTiming
@@ -237,8 +242,15 @@ TestSavedWindowFrame(a, b) {
             && InStr(report, "кадр #" shot.captureId) && InStr(report, "источник: " shot.source)
             && InStr(report, CaptureTimingText(shot.captureTiming))
             , "на диске кадр GDI, его замер захвата и отчёт о плашке")
+        OnCheckCapture()
+        ToolTip()
+        logText := FileRead(CFG.logFile, "UTF-8")
+        for line in stats
+            Check(InStr(logText, line), "F7 выводит статистику тиков в журнал")
+        Check(ST.capHistory = history && history.next = next && InStr(logText, "[capture] " lastTiming.w "×" lastTiming.h)
+            , "снимки F7 и Ctrl+F5 не добавляются к статистике цикла")
         Check(ST.lastShot = live && ST.inputEpoch = epoch && !ST.held.Count
-            , "диагностический кадр не подменяет рабочий и не даёт ввода")
+            , "диагностические кадры не подменяют рабочий и не дают ввода")
         ExpectKey(a, SC.e, 3, 3)
         ExpectKey(b, SC.e, 1, 1)
     } finally {
