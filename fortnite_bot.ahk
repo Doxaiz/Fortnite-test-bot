@@ -7018,6 +7018,15 @@ Combat(shot, now) {
     dx := Round(tx - shot.w / 2), dy := Round(ty - shot.h / 2), err := Hypot(dx, dy)
     tolX := Min(CFG.fireTolerancePx * k, Max(4 * k, enemy.w * 0.30))
     tolY := Min(CFG.fireTolerancePx * 1.6 * k, Max(5 * k, enemy.h * 0.16))
+    leadAligned := Abs(dx) <= tolX && Abs(dy) <= tolY
+    seenDx := enemy.cx - shot.w / 2, seenDy := ty0 - shot.h / 2
+    underAim := leadAligned && Abs(seenDx) <= tolX && Abs(seenDy) <= tolY
+    if (leadAligned && !underAim) {
+        ; Прогноз уже в центре, а измеренная точка ещё вне допуска.
+        ; Ведём по кадру вместо ожидания, но очередь по нему не разрешаем.
+        tx := enemy.cx, ty := ty0
+        dx := Round(seenDx), dy := Round(seenDy), err := Hypot(dx, dy)
+    }
 
     ; Ноги принадлежат бою до конца кадра, даже если очередь ещё не нужна.
     if ST.stuckRecoverUntil
@@ -7051,11 +7060,10 @@ Combat(shot, now) {
     else
         ST.aimDamp := Min(1.0, ST.aimDamp * 1.03)
     ST.aimLastDx := dx
-    aligned := Abs(dx) <= tolX && Abs(dy) <= tolY
     aimed := false
-    ; Если прицел уже в допуске, не доворачиваем и не отменяем готовый
-    ; выстрел микрокоррекцией. После поворота ждём следующий кадр.
-    if (reacted && !aligned && combatNow - ST.lastAimT >= CFG.aimIntervalMs && EnemyOnFrame(shot, enemy)) {
+    ; Если обе точки в допуске, не отменяем готовый выстрел микрокоррекцией.
+    ; После поворота ждём следующий кадр.
+    if (reacted && !underAim && combatNow - ST.lastAimT >= CFG.aimIntervalMs && EnemyOnFrame(shot, enemy)) {
         gain := Clamp(CFG.aimGain + err / (shot.w * 1.4), CFG.aimGain, CFG.aimGainMax) * ST.aimDamp
         mdx := dx * gain - (dx - ST.aimPrevDx) * 0.14
         mdy := dy * gain * 0.68 - (dy - ST.aimPrevDy) * 0.10
@@ -7070,8 +7078,6 @@ Combat(shot, now) {
     }
     ST.aimPrevDx := dx, ST.aimPrevDy := dy
     ST.lastAction := "бой: веду кандидата"
-    ; Упреждение помогает вести рамку, но не подменяет положение на кадре.
-    underAim := aligned && Abs(enemy.cx - shot.w / 2) <= tolX && Abs(ty0 - shot.h / 2) <= tolY
     if (reacted && CanFireOnFrame(shot, enemy, underAim, aimed)) {
         if (CFG.featAds && err > CFG.adsRangePx && !ST.adsOn
             && combatNow - ST.lastAdsAt > CFG.adsHoldMs * 2 && AdsSet(true, shot)) {

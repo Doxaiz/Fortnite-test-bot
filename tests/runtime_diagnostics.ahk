@@ -27,7 +27,8 @@ try {
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
-            , TestEnemyEvidence, TestCombatPreemption, TestCombatRetreat, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
+            , TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
+            , TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
             test()
@@ -1714,6 +1715,33 @@ CheckCombatPreemption() {
     ST.enemyVelX := -100, ST.lastFire := 0
     Check(Combat(aim, aim.capturedAt) && ST.shots = shots && !ST.held.Count
         , "одного прогнозируемого попадания в прицел недостаточно для очереди")
+}
+
+TestCombatAimCorrection() {
+    WithGroundFixture(CheckCombatAimCorrection)
+}
+
+CheckCombatAimCorrection() {
+    global CFG, ST
+    CFG.aimReactMs := 0, CFG.aimLeadMs := 85
+    CFG.featFirstSlot := false, CFG.featAds := false, CFG.combatStrafe := false
+    ST.lastFire := 0
+    ; The detector/confirmation has already published this candidate. Check
+    ; the aim decision only, with a synthetic HWND and no real mouse input.
+    ; Measured offset X/Y, velocity X/Y, expected correction X/Y.
+    for i, test in [[6,0,-100,0,6,0], [0,-6,0,100,0,-6], [3,0,100,0,7,0], [0,0,0,0,0,0]] {
+        frame := WorldFixture(310 + i)
+        item := {src:"движение", cx:frame.w / 2 + test[1], cy:frame.h / 2 + test[2], w:16, h:32, dist:Abs(test[1])}
+        ST.enemyCache := item, ST.enemySeenSeq := frame.captureId, ST.enemySeenAt := frame.capturedAt
+        ST.enemyView := FrameView(frame), frame.enemyReading := item
+        ST.enemyVelX := test[3], ST.enemyVelY := test[4]
+        ST.aimPrevDx := 0, ST.aimPrevDy := 0, ST.aimLastDx := 0, ST.aimDamp := 1.0, ST.lastAimT := 0
+        aim := !!(test[5] || test[6]), shots := ST.shots, camera := ST.cameraSeq
+        Check(Combat(frame, frame.capturedAt) && !!ST.lastAimT = aim && ST.aimPrevDx = test[5] && ST.aimPrevDy = test[6]
+            , "наведение: прогноз и измерение не оставляют неподвижное расхождение, случай " i)
+        Check(ST.shots = shots + !aim && !ST.held.Count && !ST.leftDown && ST.cameraSeq = camera
+            , "виртуальная очередь только при двух точках в допуске, случай " i)
+    }
 }
 
 TestCombatRetreat() {
