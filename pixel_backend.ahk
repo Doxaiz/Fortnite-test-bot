@@ -20,8 +20,15 @@ PixelBackend() {
                     clusters := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_clusters", "Ptr")
                     rows := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_rows", "Ptr")
                     ratio := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_ratio_hits", "Ptr")
-                    if (clusters && rows && ratio)
-                        ready := {clusters:clusters, rows:rows, ratio:ratio}
+                    if (clusters && rows && ratio) {
+                        ; Optional, additive exports. An older ABI-1 DLL still
+                        ; accelerates menus and loot; combat stays on AHK.
+                        warm := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_warm_grid", "Ptr")
+                        motion := DllCall("kernel32\GetProcAddress", "Ptr", module, "AStr", "forma_pixels_motion_cells", "Ptr")
+                        if (!warm || !motion)
+                            warm := 0, motion := 0
+                        ready := {clusters:clusters, rows:rows, ratio:ratio, warm:warm, motion:motion}
+                    }
                 }
             }
         } catch {
@@ -37,6 +44,11 @@ PixelBackend() {
 
 PixelBackendName() {
     return PixelBackend() ? "Rust DLL (ABI 1)" : "AutoHotkey (резерв)"
+}
+
+PixelCombatBackendName() {
+    p := PixelBackend()
+    return p && p.warm ? "Rust DLL (ABI 1)" : "AutoHotkey (резерв)"
 }
 
 PixelFrameSupported(shot, buf) {
@@ -57,14 +69,17 @@ PixelRectPut(query, r) {
     NumPut("UInt", r.x1, "UInt", r.y1, "UInt", r.x2, "UInt", r.y2, query)
 }
 
-; The caller owns all three Buffers. A rejected or interrupted call never
+; The caller owns every Buffer. A rejected or interrupted call never
 ; contributes a partial observation. Do not catch TickInterrupted here.
-PixelNativeCall(entry, shot, buf, query, where, out := 0, cap := 0) {
+PixelNativeCall(entry, shot, buf, query, where, out := 0, cap := 0, oldBuf := 0) {
     w := shot.w, h := shot.h, stride := shot.stride, size := buf.Size
     TickCheck(where)
     result := -1
     try {
-        if out
+        if oldBuf
+            result := DllCall(entry, "Ptr", buf, "UPtr", size, "UInt", w, "UInt", h, "UPtr", stride
+                , "Ptr", oldBuf, "UPtr", oldBuf.Size, "Ptr", query, "Ptr", out, "UPtr", cap, "Int")
+        else if out
             result := DllCall(entry, "Ptr", buf, "UPtr", size, "UInt", w, "UInt", h, "UPtr", stride
                 , "Ptr", query, "Ptr", out, "UPtr", cap, "Int")
         else
@@ -181,4 +196,53 @@ PixelNativeRatio(entry, shot, r, buf, mode, threshold) {
         hits += n, total += band, y := y2
     }
     return total ? hits / total : 0.0
+}
+
+PixelNativeWarmGrid(entry, shot, buf, geo) {
+    cap := geo.cw * geo.ch
+    if (!PixelFrameSupported(shot, buf) || cap < 1 || cap > 131072)
+        return 0
+    q := Buffer(24, 0), out := Buffer(cap * 4, 0)
+    NumPut("UInt", geo.x, "UInt", geo.y, "UInt", geo.x + geo.w, "UInt", geo.y + geo.h
+        , "UInt", geo.cell, "UInt", geo.step, q)
+    n := PixelNativeCall(entry, shot, buf, q, "скан фигуры врага", out, cap)
+    if (n < 0 || n > 262144)
+        return 0
+    cnt := [], cnt.Capacity := cap
+    Loop cap {
+        if (Mod(A_Index, 512) = 0)
+            TickCheck("чтение сетки фигуры")
+        cnt.Push(NumGet(out, (A_Index - 1) * 4, "UInt"))
+    }
+    TickCheck("чтение сетки фигуры")
+    return {cnt:cnt, totalSkin:n}
+}
+
+PixelNativeMotion(entry, shot, prev, r, step, cols) {
+    ; Only the caller compares window/camera/epoch metadata. Neither buffer is copied.
+    buf := shot.buf, oldBuf := prev.buf
+    if (!PixelFrameSupported(shot, buf) || !PixelFrameSupported(prev, oldBuf)
+        || shot.w != prev.w || shot.h != prev.h || shot.stride != prev.stride || step < 1)
+        return 0
+    cell := step * 2, cap := cols * ((r.y2 - r.y1 + cell - 1) // cell)
+    if (cap < 1 || cap > 131072)
+        return 0
+    q := Buffer(20, 0), out := Buffer(20 * cap, 0)
+    PixelRectPut(q, r), NumPut("UInt", step, q, 16)
+    hits := PixelNativeCall(entry, shot, buf, q, "скан движения", out, cap, oldBuf)
+    if (hits < 0 || hits > 262144)
+        return 0
+    cells := Map()
+    if hits {
+        Loop cap {
+            if (Mod(A_Index, 512) = 0)
+                TickCheck("чтение сетки движения")
+            i := (A_Index - 1) * 20, n := NumGet(out, i + 16, "UInt")
+            if n
+                cells[A_Index - 1] := {x1:NumGet(out,i,"UInt"), y1:NumGet(out,i+4,"UInt")
+                    , x2:NumGet(out,i+8,"UInt"), y2:NumGet(out,i+12,"UInt"), n:n}
+        }
+    }
+    TickCheck("чтение сетки движения")
+    return {cells:cells, hits:hits}
 }

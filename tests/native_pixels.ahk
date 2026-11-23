@@ -6,8 +6,10 @@
 ; reference on the exact same Buffer. No game window, Init, timers, or input.
 try {
     backend := PixelBackend()
-    RequirePixelTest(backend && !UI.gui && !ST.running, "Rust backend required without Init()")
-    for test in [TestMasks, TestRows, TestRatios, TestCapacityFallback, TestNativeInterrupt] {
+    RequirePixelTest(backend && backend.warm && backend.motion && !UI.gui && !ST.running
+        , "Rust backend (including combat exports) required without Init()")
+    for test in [TestMasks, TestRows, TestRatios, TestWarmGrid, TestMotionCells, TestCombatLayouts
+        , TestCapacityFallback, TestNativeInterrupt] {
         test(backend)
         FileAppend("OK: " test.Name " · " PixelBackendName() "`n", "*", "UTF-8")
     }
@@ -116,6 +118,67 @@ TestRatios(backend) {
     }
 }
 
+TestWarmGrid(backend) {
+    shot := NewPixelFixture(145, 109), buf := shot.buf
+    palette := [0x78675E, 0x78685E, 0x82635E, 0x82645E, 0x78655F, 0x77665D, 0xE8E8E1, 0xD08048]
+    for i, rgb in palette
+        PixelTestRect(shot, 4 + (i - 1) * 17, 10 + Mod(i, 3) * 18, 13, 19, rgb)
+    for cell in [3, 8, 17] {
+        for step in [1, 4, 9, 12] {
+            geo := {x:3, y:5, w:138, h:101, cell:cell, step:step, cw:138 // cell + 2, ch:101 // cell + 2}
+            native := PixelNativeWarmGrid(backend.warm, shot, buf, geo)
+            expected := SkinGridAhk(buf, shot.stride, geo)
+            label := "warm grid " cell "/" step
+            RequirePixelTest(native && native.totalSkin = expected.totalSkin && native.totalSkin > 0
+                && native.cnt.Length = expected.cnt.Length, label ": population and length")
+            for i, n in expected.cnt
+                RequirePixelTest(native.cnt[i] = n, label " cell " i)
+        }
+    }
+}
+
+CompareMotionCells(backend, shot, prev, r, step, wantChanges) {
+    cols := (r.x2 - r.x1 + 2 * step - 1) // (2 * step)
+    native := PixelNativeMotion(backend.motion, shot, prev, r, step, cols)
+    expected := MotionGridAhk(shot, prev, r, step, cols)
+    label := "motion grid step " step
+    RequirePixelTest(native && !!native.hits = wantChanges && native.hits = expected.hits
+        && native.cells.Count = expected.cells.Count, label ": population and length")
+    for key, cell in expected.cells {
+        RequirePixelTest(native.cells.Has(key), label ": key " key)
+        for prop in ["x1", "y1", "x2", "y2", "n"]
+            RequirePixelTest(native.cells[key].%prop% = cell.%prop%, label " cell " key " " prop)
+    }
+}
+
+TestMotionCells(backend) {
+    shot := NewPixelFixture(145, 109), prev := NewPixelFixture(145, 109)
+    r := {x1:3, y1:5, x2:143, y2:107}
+    PixelTestRect(shot, 9, 14, 30, 45, 0x303030) ; X only
+    CompareMotionCells(backend, shot, prev, r, 1, false)
+    PixelTestRect(shot, 7, 17, 25, 22, 0x7D3030) ; RGB L1 distance 77
+    PixelTestRect(shot, 35, 18, 23, 22, 0x7E3030) ; distance 78
+    PixelTestRect(shot, 53, 77, 34, 28, 0xDEDEDE) ; own zone, not a hit
+    PixelTestRect(shot, 123, 90, 21, 18, 0xDEDEDE) ; clipped by ROI
+    for step in [1, 3, 7, 12]
+        CompareMotionCells(backend, shot, prev, r, step, true)
+    PixelTestRect(shot, 0, 0, shot.w, shot.h, 0xDEDEDE)
+    CompareMotionCells(backend, shot, prev, r, 3, false) ; widespread change
+}
+
+TestCombatLayouts(backend) {
+    shot := NewPixelFixture(801, 359), prev := NewPixelFixture(801, 359)
+    ; Rejection of the sample limit comes from the DLL, not the AHK layout check.
+    geo := {x:0, y:0, w:shot.w, h:shot.h, cell:8, step:1, cw:shot.w // 8 + 2, ch:shot.h // 8 + 2}
+    RequirePixelTest(!PixelNativeWarmGrid(backend.warm, shot, shot.buf, geo), "warm sample limit")
+    r := {x1:0, y1:0, x2:shot.w, y2:shot.h}
+    RequirePixelTest(!PixelNativeMotion(backend.motion, shot, prev, r, 1, (shot.w + 1) // 2)
+        , "motion sample limit")
+    prev.stride -= 1
+    RequirePixelTest(!PixelNativeMotion(backend.motion, shot, prev, r, 8, (shot.w + 15) // 16)
+        , "previous frame stride must match")
+}
+
 TestCapacityFallback(backend) {
     ; A cluster count above output capacity must never publish a partial list.
     shot := NewPixelFixture(133, 133), buf := shot.buf
@@ -152,6 +215,14 @@ TestNativeInterrupt(backend) {
             caught := true
         finally CallbackFree(callback)
         RequirePixelTest(caught && ST.tickAborted, "watchdog checked before returning results")
+
+        ST.tickAbort := false, ST.tickAborted := false, caught := false
+        previous := NewPixelFixture(15, 15), callback := CallbackCreate(AbortDuringCall, "Fast", 10)
+        try PixelNativeMotion(callback, shot, previous, r, 2, 4)
+        catch TickInterrupted
+            caught := true
+        finally CallbackFree(callback)
+        RequirePixelTest(caught && ST.tickAborted, "motion abort cannot publish a reading")
     } finally {
         ST.tickBusy := false, ST.running := false, ST.tickAbort := false, ST.tickAborted := false
     }

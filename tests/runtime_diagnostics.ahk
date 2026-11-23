@@ -1889,7 +1889,7 @@ CombatPixelPair(w, h, kind) {
         , cameraSeqAtCapture:ST.cameraSeq, inputEpochAtCapture:ST.inputEpoch}
     prev := frame.Clone(), prev.captureId := 1, prev.capturedAt := 10000
     prev.buf := Buffer(h * stride, 0x60)
-    frame.buf := Buffer(h * stride, kind = "changed" ? 0x64 : 0x60)
+    frame.buf := Buffer(h * stride, kind = "broad" ? 0xDE : kind = "changed" ? 0x64 : 0x60)
     if (kind = "motion") {
         FixtureRect(frame, Round(w * 0.55), Round(h * 0.39), Round(w * 0.022), Round(h * 0.072), 0xA2DEDEDE)
     } else if (kind = "figure" || kind = "teammate") {
@@ -2126,16 +2126,26 @@ MeasureCombatScan() {
     global CFG, ST, FORMA_VERSION
     CFG.featMotionEnemy := true, ST.tickBusy := true, ST.tickDeadline := 0
     DllCall("QueryPerformanceFrequency", "Int64*", &freq := 0)
-    FileAppend("FORMA v" FORMA_VERSION " / AHK " A_AhkVersion " / FindEnemyMulti (ms)`n", "*", "UTF-8")
+    FileAppend("FORMA v" FORMA_VERSION " / AHK " A_AhkVersion " / " PixelCombatBackendName()
+        . " / FindEnemyMulti (ms)`n", "*", "UTF-8")
     for size in [[1280, 720], [1920, 1080]] {
-        for kind in ["static", "figure", "motion", "changed"] {
-            pair := CombatPixelPair(size[1], size[2], kind), ST.prevShot := pair.prev, samples := ""
-            want := kind = "figure" ? "фигура" : (kind = "motion" ? "движение" : "-")
+        w := size[1], h := size[2]
+        for kind in ["static", "figure", "isolated", "motion", "changed", "broad"] {
+            pair := CombatPixelPair(w, h, kind), ST.prevShot := pair.prev, samples := ""
+            frac := 0, step := 0
+            if (kind = "isolated") {
+                DrawCombatDecoy(pair.shot)
+                DrawCombatFigure(pair.shot, w // 2, Round(h / 2 - 25 * w / 1280))
+                pair.prev.buf := pair.shot.buf
+                frac := 0.92, step := CFG.skinStepWide
+            }
+            want := (kind = "figure" || kind = "isolated") ? "фигура" : (kind = "motion" ? "движение" : "-")
             Loop 13 {
                 DllCall("QueryPerformanceCounter", "Int64*", &start := 0)
-                item := FindEnemyMulti(pair.shot)
+                item := FindEnemyMulti(pair.shot, frac, step)
                 DllCall("QueryPerformanceCounter", "Int64*", &stop := 0)
-                Check((item ? item.src : "-") = want, "bench: неверный результат " kind)
+                Check((item ? item.src : "-") = want && (kind != "isolated" || item.HasOwnProp("isolated"))
+                    , "bench: неверный результат " w "x" h " " kind)
                 if (A_Index > 2)
                     samples .= Format("{:.3f}", (stop - start) * 1000.0 / freq) "`n"
             }

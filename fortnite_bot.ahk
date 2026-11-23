@@ -3367,12 +3367,22 @@ SkinGrid(shot, frac := 0, stepIn := 0) {
     scale := Max(1.0, shot.w / 1280, shot.h / 720)
     cell := Round(CFG.skinCell * scale)
     step := Max(1, Round(ScanStep(stepIn > 0 ? stepIn : CFG.skinStep) * scale))
-    cw := (x2 - x1) // cell + 2
-    ch := (y2 - y1) // cell + 2
-    cnt := []
-    Loop cw * ch
+    geo := {x:x1, y:y1, w:x2 - x1, h:y2 - y1, cell:cell, step:step
+        , cw:(x2 - x1) // cell + 2, ch:(y2 - y1) // cell + 2, seedCol:0, seedRow:0}
+    buf := shot.buf, backend := PixelBackend()
+    reading := backend && backend.warm ? PixelNativeWarmGrid(backend.warm, shot, buf, geo) : 0
+    if !reading
+        reading := SkinGridAhk(buf, shot.stride, geo)
+    geo.cnt := reading.cnt, geo.totalSkin := reading.totalSkin
+    return geo
+}
+
+SkinGridAhk(buf, stride, geo) {
+    cell := geo.cell, step := geo.step, cw := geo.cw
+    x1 := geo.x, y1 := geo.y, x2 := x1 + geo.w, y2 := y1 + geo.h
+    totalSkin := 0, cnt := []
+    Loop cw * geo.ch
         cnt.Push(0)
-    buf := shot.buf, stride := shot.stride, totalSkin := 0
     startByte := x1 * 4, rowBytes := (x2 - x1) * 4, pitch := step * 4, cellBytes := cell * 4
     y := y1
     while (y < y2) {
@@ -3393,8 +3403,7 @@ SkinGrid(shot, frac := 0, stepIn := 0) {
         }
         y += step
     }
-    return {cnt:cnt, cw:cw, ch:ch, cell:cell, step:step, totalSkin:totalSkin
-        , x:x1, y:y1, w:x2 - x1, h:y2 - y1, seedCol:0, seedRow:0}
+    return {cnt:cnt, totalSkin:totalSkin}
 }
 
 SamplesInGridCells(first, last, length, cell, step) {
@@ -3705,6 +3714,15 @@ FindEnemyMotion(shot) {
     y1 := Round(shot.h * 0.18), y2 := Round(shot.h * 0.82)
     step := Max(6, Round(ScanStep(7) * Max(1.0, shot.w / 1280, shot.h / 720)))
     cell := step * 2, cols := (x2 - x1 + cell - 1) // cell
+    r := {x1:x1, y1:y1, x2:x2, y2:y2}, backend := PixelBackend()
+    reading := backend && backend.motion ? PixelNativeMotion(backend.motion, shot, prev, r, step, cols) : 0
+    if !reading
+        reading := MotionGridAhk(shot, prev, r, step, cols)
+    return reading.hits >= 7 ? PickLocalMotion(shot, prev, reading.cells, cols, step) : 0
+}
+
+MotionGridAhk(shot, prev, r, step, cols) {
+    x1 := r.x1, y1 := r.y1, x2 := r.x2, y2 := r.y2, cell := step * 2
     cells := Map(), hits := 0, sectors := Buffer(12 * 4, 0), spread := 0
     ; При широком изменении в нескольких частях кадра не выбираем маленький
     ; обрывок движения. Это отсечка, не компенсация поворота ручной мышью.
@@ -3730,7 +3748,7 @@ FindEnemyMotion(shot) {
                         n := NumGet(sectors, offset, "UInt") + 1
                         NumPut("UInt", n, sectors, offset)
                         if (n = sectorMin && ++spread >= 6)
-                            return 0
+                            return {cells:Map(), hits:0}
                         key := base + (x - x1) // cell
                         if cells.Has(key) {
                             c := cells[key]
@@ -3745,7 +3763,7 @@ FindEnemyMotion(shot) {
         }
         y += step
     }
-    return hits >= 7 ? PickLocalMotion(shot, prev, cells, cols, step) : 0
+    return {cells:cells, hits:hits}
 }
 
 PickLocalMotion(shot, prev, cells, cols, step) {
@@ -12259,6 +12277,7 @@ BuildStartupReport() {
         . "Экран: " A_ScreenWidth " × " A_ScreenHeight " · " A_ScreenDPI " DPI`n"
         . "Режим: " ModeRu(CFG.botMode) " · DryRun: " (CFG.dryRun ? "включён" : "выключен") "`n"
         . "Пиксельные сканы: " PixelBackendName() "`n"
+        . "Боевой скан: " PixelCombatBackendName() "`n"
         . "Сеанс: " PanelBadge() "`n"
         . "Окно Fortnite: " game "`n"
         . "Горячие клавиши: " registered " зарегистрировано · аварийный Esc: " (escapeBound ? "да" : "нет") "`n"
@@ -15447,7 +15466,7 @@ Init() {
         . " · ЦП: " PerfRu(CFG.perfProfile)
         . " · " (CFG.dryRun ? "DryRun (без нажатий)" : "БОЕВОЙ")
         . " · админ: " (A_IsAdmin ? "да" : "НЕТ (рекомендуется запуск от администратора)") " ===")
-    Log("[i] Пиксельные сканы: " PixelBackendName())
+    Log("[i] Пиксельные сканы: " PixelBackendName() " · Боевой скан: " PixelCombatBackendName())
     if (CFG.totalRounds > 0 || CFG.totalRuntimeSec > 0 || CFG.totalChests > 0)
         Log("[i] Накопительная статистика: раундов " CFG.totalRounds
             . " · наработка " FmtLifetime(CFG.totalRuntimeSec)

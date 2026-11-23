@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::slice;
 
+mod combat;
+
 const MAX_SIDE: u32 = 8192;
 const MAX_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SAMPLES: usize = 262_144;

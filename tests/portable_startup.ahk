@@ -62,6 +62,8 @@ TestPortableExe(source, scenario, dll) {
         CheckPortableLog(text)
         if backend
             PortableCheck(InStr(text, "Пиксельные сканы: " backend), "Бэкенд не подтверждён в журнале: " backend)
+        if (backend && A_Args.Length = 2)
+            PortableCheck(InStr(text, "Боевой скан: " backend), "Бэкенд боевого скана не подтверждён: " backend)
 
         win := "ahk_id " hwnd
         if legacy
@@ -81,6 +83,8 @@ TestPortableExe(source, scenario, dll) {
             PortableCheck(InStr(report, "Режим: AFK-очередь"), "Не загружен прежний режим в сводку")
         if backend
             PortableCheck(InStr(report, "Пиксельные сканы: " backend), "Бэкенд не указан в сводке: " backend)
+        if (backend && A_Args.Length = 2)
+            PortableCheck(InStr(report, "Боевой скан: " backend), "Бэкенд боевого скана не подтверждён: " backend)
 
         ClosePortableExe(pid)
         pid := 0

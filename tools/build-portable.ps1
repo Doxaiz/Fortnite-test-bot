@@ -173,17 +173,24 @@ try {
                 Write-Host "Smoke test ($backend): $suite"
                 Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}"' -f $script) "$backend $suite test" $temp
             }
-            # Compare the complete FrameMenu scan on identical in-memory
-            # fixtures, on the same runner. No timing assertion in CI.
-            $bench = Join-Path $sourceChecks 'tests\runtime_diagnostics.ahk'
-            $benchLog = Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" --bench-menu' -f $bench) "$backend menu benchmark" $temp
-            $benchLog | Write-Output
-            $samples = @($benchLog | Where-Object { $_ -match '^\d+x\d+ (blank|mixed): median=\d+\.\d+' })
-            if ($samples.Count -ne 4 -or !($benchLog -match " / $backend .+ / FrameMenu \(ms\)")) {
-                throw "Missing or incorrect backend in $backend menu benchmark."
-            }
-            if ($env:GITHUB_ACTIONS -eq 'true') {
-                Write-Host "::notice title=FrameMenu ($backend)::$($samples -join ' | ')"
+            # Compare complete detectors on identical in-memory fixtures, on
+            # the same runner. Check backend and outputs, not timing in CI.
+            $script = Join-Path $sourceChecks 'tests\runtime_diagnostics.ahk'
+            $benchmarks = @(
+                @{ Detector = 'FrameMenu'; Mode = '--bench-menu'; Cases = 'blank|mixed'; Count = 4 }
+                @{ Detector = 'FindEnemyMulti'; Mode = '--bench-combat'; Cases = 'static|figure|isolated|motion|changed|broad'; Count = 12 }
+            )
+            foreach ($bench in $benchmarks) {
+                $detector = $bench.Detector
+                $benchLog = Invoke-AhkCheck $runtime ('/ErrorStdOut=UTF-8 "{0}" {1}' -f $script, $bench.Mode) "$backend $detector benchmark" $temp
+                $benchLog | Write-Output
+                $samples = @($benchLog | Where-Object { $_ -match ('^\d+x\d+ ({0}): median=\d+\.\d+' -f $bench.Cases) })
+                if ($samples.Count -ne $bench.Count -or !($benchLog -match " / $backend .+ / $detector \(ms\)")) {
+                    throw "Missing or incorrect backend in $backend $detector benchmark."
+                }
+                if ($env:GITHUB_ACTIONS -eq 'true') {
+                    Write-Host "::notice title=$detector ($backend)::$($samples -join ' | ')"
+                }
             }
         }
 
