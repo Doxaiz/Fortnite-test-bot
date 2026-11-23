@@ -186,6 +186,9 @@ TestCapturedBody(a, b) {
     ST.scanWideAt := A_TickCount, ST.stepBoost := 0
     SetFixtureFrame(a, 2)
     TickFixture(a)
+    ; Переход из прошлого сценария может дать движение. Проверяем сводку
+    ; только по следующим четырём измеренным кадрам, без прогрева.
+    ST.capHistory := 0
     shot := TickFixture(a)
     Check(!shot.enemyReading && !ST.enemySeenSeq && !ST.shots && !ST.leftDown
         && shot.combatTrace.status = "negative", "два кадра с опорой и красным прицелом без фигуры не запускают бой")
@@ -232,9 +235,11 @@ TestSavedWindowFrame(a, b) {
     SetFixtureFrame(a, 1)
     live := ST.lastShot, epoch := ST.inputEpoch, lastTiming := ST.tickProfile.capture
     history := ST.capHistory, next := history.next, stats := CaptureHistoryLines(a)
-    Check(stats.Length >= 2 && InStr(stats[1], "[capture-stats] 480x288") && InStr(stats[2], "[scan-stats] 480x288")
-        && InStr(stats[2], "DryRun / фокус") && InStr(stats[2], "candidate=1") && InStr(stats[2], "confirmed=1")
-        , "сканы кадров тестового HWND уже учтены до снимков F7 и Ctrl+F5")
+    scanLine := stats.Length >= 2 ? stats[2] : "нет строки"
+    Check(stats.Length = 2 && InStr(stats[1], "[capture-stats] 480x288") && InStr(scanLine, "[scan-stats] 480x288")
+        && InStr(scanLine, "DryRun / фокус · n=4 attempted=4") && InStr(scanLine, "negative=2")
+        && InStr(scanLine, "candidate=1") && InStr(scanLine, "confirmed=1")
+        , "сканы четырёх кадров тестового HWND до снимков F7 и Ctrl+F5: " scanLine)
     ready := ST.dryPair
     pair := SnapshotDryPair(&why := "")
     Check(pair && pair.current = live && pair.previous.captureId < live.captureId
