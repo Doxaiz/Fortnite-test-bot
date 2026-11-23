@@ -28,7 +28,7 @@ try {
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
             , TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
-            , TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
+            , TestCombatScanFreshness, TestCombatTrace, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestDryPairGuards, TestCalibrationExport] {
             test()
@@ -1919,6 +1919,7 @@ CheckCombatScanFreshness() {
         fastAt := A_TickCount - CFG.enemyFastMs - 1, wideAt := A_TickCount - CFG.skinWideMs - 1
         ST.scanEnemyFastAt := fastAt, ST.scanWideAt := wideAt, ST.scanWork := 0
         late := WorldFixture(base + 3, change = "age" ? "prompt" : "blank")
+        late.combatTrace := NewCombatTrace(late)
         segment := A_TickCount + 2000
         pending := {view:FrameView(late), until:A_TickCount + 400, keyHold:0
             , box:0, postSeq:base + 2, postAt:0, sameHits:0}
@@ -1942,6 +1943,13 @@ CheckCombatScanFreshness() {
             }
             Check(changes.count && caught = (change = "interrupt") && !selected
                 && (change != "interrupt" || ST.tickAborted), change ": результат боевого скана отклонён")
+            trace := late.combatTrace
+            Check(trace.frame = late.captureId && trace.status = (caught ? "interrupted" : "not-current-after")
+                && trace.pass = (wide ? "wide" : "fast") && trace.attempt.scanMs >= 0
+                && !trace.attempt.HasOwnProp("hits") && (change != "age" || trace.attempt.ageAfter > 250)
+                && (caught ? trace.attempt.interrupt = "запрос сторожа"
+                    : (trace.attempt.HasOwnProp("raw") && trace.viewCurrent = (change = "age")))
+                , change ": отчёт различает прерывание и отбрасывание после замера, не подтверждая рамку")
             Check(!late.HasOwnProp("enemyReading") && ST.enemyCache = cache && ST.enemySeenSeq = base + 2
                 && ST.enemySeenAt = seenAt && ST.enemyView = view && tracker.hits = 2 && tracker.seq = base + 2
                 && ST.scanEnemyFastAt = fastAt && ST.scanWideAt = wideAt && ST.scanWork = 1
@@ -1973,6 +1981,45 @@ CheckCombatScanFreshness() {
             && active.seq = next.captureId && active.hits = (same ? 3 : 1) && !!confirmed = same
             , change ": следующий свежий кадр сканируется сразу; новый вид подтверждается заново")
     }
+}
+
+TestCombatTrace() {
+    WithGroundFixture(CheckCombatTrace)
+}
+
+CheckCombatTrace() {
+    global CFG, ST
+    ST.scanWork := 0, ST.scanWideAt := A_TickCount, ST.scanEnemyFastAt := A_TickCount
+    CFG.skinWideMs := 60000, CFG.enemyFastMs := 60000
+    id := 180, skipped := ST.scanSkipped
+    shot := WorldFixture(++id), shot.combatTrace := NewCombatTrace(shot)
+    Check(!CachedEnemy(shot) && shot.combatTrace.status = "interval" && shot.combatTrace.pass = "fast"
+        && !shot.combatTrace.HasOwnProp("attempt") && !ST.scanWork && ST.scanSkipped = skipped
+        , "интервал не расходует бюджет и не запускает скан")
+    CFG.enemyFastMs := 0, ST.scanWork := CFG.scanPerTickMax
+    shot := WorldFixture(++id), shot.combatTrace := NewCombatTrace(shot)
+    Check(!CachedEnemy(shot) && shot.combatTrace.status = "budget" && !shot.HasOwnProp("enemyReading")
+        && !shot.combatTrace.HasOwnProp("attempt") && ST.scanSkipped = skipped + 1, "отложенный скан не является отрицательным")
+    TraceCombatSkip(shot, "interact")
+    Check(shot.combatTrace.status = "budget", "более поздняя ветка не переписывает причину")
+
+    ST.scanWork := 0
+    shot := WorldFixture(++id), shot.combatTrace := NewCombatTrace(shot), shot.capturedAt := A_TickCount - 300
+    Check(!CachedEnemy(shot) && shot.combatTrace.status = "not-current-before" && shot.combatTrace.blockAge > 250
+        && shot.combatTrace.viewCurrent && !ST.scanWork, "просрочка до скана не запускает чтение при неизменном виде")
+    shot := WorldFixture(++id), shot.combatTrace := NewCombatTrace(shot)
+    CFG.teamSafe := true
+    Check(!Combat(shot, shot.capturedAt) && shot.combatTrace.status = "team" && !ST.scanWork
+        && !shot.HasOwnProp("enemyReading"), "в Команде бой остаётся вручную")
+    CFG.teamSafe := false
+
+    shot := WorldFixture(++id), shot.combatTrace := NewCombatTrace(shot)
+    Check(!CachedEnemy(shot) && shot.HasOwnProp("enemyReading") && !shot.enemyReading
+        && shot.combatTrace.status = "negative" && !shot.combatTrace.attempt.raw && ST.scanWork = 1
+        && InStr(CombatTraceText(shot.combatTrace), "сырая рамка: нет"), "только завершённый пустой скан — отрицательный")
+    owned := shot.combatTrace.attempt
+    CachedEnemy(shot)
+    Check(shot.combatTrace.attempt = owned && ST.scanWork = 1, "повтор того же кадра не подменяет след")
 }
 
 CombatPixelPair(w, h, kind) {
@@ -2384,13 +2431,16 @@ TestRoamPriority() {
 CheckRoamPriority() {
     global CFG, ST
     shot := WorldFixture(150, "prompt")
+    shot.combatTrace := NewCombatTrace(shot)
     ST.camPitch := 90, ST.segUntil := 0
     CFG.featParkour := true
     ; В low_cpu после HUD/меню может остаться ровно один слот. Сначала E.
     ST.scanWork := CFG.scanPerTickMax - 1
     RunFixtureRoam(shot)
     Check(ST.promptSeq = shot.captureId && ST.promptConfirm.hits = 1 && !ST.lastObsJump && !ST.navSteerAt
-        && !ST.segUntil && !ST.scanSoundAt && !shot.HasOwnProp("enemyReading"), "подсказка раньше скана фигуры, звука и навигации")
+        && !ST.segUntil && !ST.scanSoundAt && !shot.HasOwnProp("enemyReading")
+        && shot.combatTrace.status = "interact" && !shot.combatTrace.HasOwnProp("attempt")
+        , "подсказка раньше скана фигуры, звука и навигации")
     ST.scanWork := 0, ST.promptAt := 0
     red := WorldFixture(151, "redPrompt")
     Check(ReadInteractPrompt(red), "кадр содержит и плашку, и красный прицел")

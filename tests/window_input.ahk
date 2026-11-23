@@ -188,18 +188,21 @@ TestCapturedBody(a, b) {
     TickFixture(a)
     shot := TickFixture(a)
     Check(!shot.enemyReading && !ST.enemySeenSeq && !ST.shots && !ST.leftDown
-        , "два кадра с опорой и красным прицелом без фигуры не запускают бой")
+        && shot.combatTrace.status = "negative", "два кадра с опорой и красным прицелом без фигуры не запускают бой")
     BuildVisionGui() ; проверяем подпись и отрисовку, не показывая окно поверх приёмника
     try {
         SetFixtureFrame(a, 3)
         shot := TickFixture(a)
         Check(shot.enemyReading && shot.enemyReading.src = "движение" && !ST.enemySeenSeq && !ST.shots
+            && shot.combatTrace.status = "candidate" && shot.combatTrace.attempt.hits = 1
+            && shot.combatTrace.attempt.raw = shot.enemyReading && shot.combatTrace.pass = "fast"
             , "захваченный первый кандидат виден, но ещё не подтверждён")
         DrawVisionFrame()
         Check(VIS.lastId = shot.captureId && InStr(VIS.txt.Value, "первый: движение"), "F3 показывает первый замер на этом кадре")
         SetFixtureFrame(a, 4)
         shot := TickFixture(a)
         Check(ST.enemySeenSeq = shot.captureId && ST.enemySrc = "движение" && ST.shots = 1
+            && shot.combatTrace.status = "confirmed" && shot.combatTrace.attempt.hits = 2
             && !ST.leftDown && !ST.adsOn && !ST.held.Count
             , "тот же цвет прицела, второй кадр фигуры → виртуальная очередь без мыши")
         DrawVisionFrame()
@@ -233,7 +236,9 @@ TestSavedWindowFrame(a, b) {
     ready := ST.dryPair
     pair := SnapshotDryPair(&why := "")
     Check(pair && pair.current = live && pair.previous.captureId < live.captureId
-        && pair.tick = ST.tickProfile.gen && pair.gap >= 0, "снимок берёт два соседних тика без нового захвата: " why)
+        && pair.tick = ST.tickProfile.gen && pair.gap >= 0 && ST.tickProfile.combatTrace = live.combatTrace
+        && InStr(TickProfileText(ST.tickProfile), CombatTraceText(live.combatTrace))
+        , "снимок берёт два соседних тика и их собственные замеры без захвата: " why)
     SelectFixture(b)
     Check(!SnapshotDryPair(&why) && InStr(why, "изменились"), "снимок прежнего окна не выдаётся")
     SelectFixture(a)
@@ -279,7 +284,9 @@ TestDryPairBundle(pair, root) {
     report := FileRead(saved.folder "\report.txt", "UTF-8")
     Check(InStr(report, "Тик #" pair.tick) && InStr(report, "previous.bmp · кадр #" pair.previous.captureId)
         && InStr(report, "current.bmp · кадр #" pair.current.captureId) && InStr(report, "Возраст current при запросе: " pair.age)
-        && InStr(report, CaptureTimingText(pair.current.captureTiming)) && !InStr(report, root), "отчёт связывает исходные кадры и замеры")
+        && InStr(report, CaptureTimingText(pair.current.captureTiming)) && !InStr(report, root)
+        && InStr(report, CombatTraceText(pair.previous.combatTrace)) && InStr(report, CombatTraceText(pair.current.combatTrace))
+        , "оба кадра в отчёте несут каждый свой замер, а не время последнего F7")
     manifest := saved.folder "\vision.tsv", raw := FileRead(manifest, "UTF-8")
     unlabelled := false
     try ReadVisionSet(manifest)

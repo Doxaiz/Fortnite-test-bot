@@ -7071,6 +7071,7 @@ Combat(shot, now) {
     global CFG, SC, ST
     ST.enemy := 0
     if (!CFG.featCombat || CFG.teamSafe) {
+        TraceCombatSkip(shot, CFG.featCombat ? "team" : "disabled")
         ReleaseCombatStrafe()
         ST.enemyCache := 0, ST.enemyFirstAt := 0
         if (CFG.teamSafe && CFG.featCombat)
@@ -7397,10 +7398,64 @@ RecentEnemyCandidate(tr, shot) {
     return tr.hits && SameFrameView(tr.view, shot) && A_TickCount - tr.at <= CFG.enemyHoldMs
 }
 
+NewCombatTrace(shot) {
+    return {frame:shot.captureId, status:"not-reached"}
+}
+
+TraceCombatSkip(shot, status) {
+    ; След E или другой ветки не затирает уже выполненный или отложенный скан.
+    if (!shot.HasOwnProp("combatTrace") || shot.combatTrace.status != "not-reached")
+        return
+    t := shot.combatTrace
+    t.status := status
+    if (status = "not-current-before") {
+        t.blockAge := A_TickCount - shot.capturedAt
+        t.viewCurrent := WorldViewCurrent(shot)
+    }
+}
+
+CombatTraceText(t) {
+    static reasons := Map("not-reached", "ветка боя не вызвана", "not-current-before", "кадр неактуален до скана"
+        , "phase", "другая фаза матча", "hud", "нет подтверждения HUD", "retreat", "выполняется боковой шаг"
+        , "interact", "приоритет взаимодействия E", "team", "бой вручную в режиме Команда", "disabled", "бой выключен"
+        , "interval", "не истёк интервал скана", "budget", "нет бюджета скана", "started", "скан начат"
+        , "interrupted", "скан прерван", "error", "ошибка в скане", "not-current-after", "результат отброшен после скана"
+        , "negative", "кандидата нет", "candidate", "ждёт подтверждения", "not-counted", "наблюдение не вошло в подтверждение"
+        , "confirmed", "кандидат подтверждён")
+    text := "кадр #" t.frame " · " t.status " («" reasons[t.status] "»)"
+    if t.HasOwnProp("blockAge")
+        text .= " · возраст при отказе " t.blockAge " мс"
+    if t.HasOwnProp("viewCurrent")
+        text .= " · проверка вида: " (t.viewCurrent ? "пройдена" : "не пройдена")
+    if t.HasOwnProp("pass")
+        text .= " · проход " t.pass " · шаг +" t.boost
+    if t.HasOwnProp("attempt") {
+        a := t.attempt
+        text .= " · до скана " a.ageBefore " мс"
+        if a.HasOwnProp("scanMs")
+            text .= " · скан " Format("{:.2f}", a.scanMs) " мс"
+        if a.HasOwnProp("ageAfter")
+            text .= " · возраст после " a.ageAfter " мс"
+        if a.HasOwnProp("raw") {
+            box := a.raw
+            text .= " · сырая рамка: " (box ? (box.src " " box.x "," box.y "," box.w "," box.h) : "нет")
+            if (a.staticReject != "")
+                text .= " · статика: " a.staticReject
+        }
+        if a.HasOwnProp("interrupt")
+            text .= " · причина: " a.interrupt
+        if a.HasOwnProp("hits")
+            text .= " · подтверждения " a.hits "/" a.need
+    }
+    return text
+}
+
 CachedEnemy(shot) {
     global CFG, ST
-    if !WorldFrameCurrent(shot)
+    if !WorldFrameCurrent(shot) {
+        TraceCombatSkip(shot, "not-current-before")
         return 0
+    }
     now := A_TickCount
     if (ST.enemyCache && (!IsEnemyCandidate(ST.enemyCache) || now - ST.enemySeenAt > CFG.enemyHoldMs
         || !SameFrameView(ST.enemyView, shot))) {
@@ -7414,15 +7469,48 @@ CachedEnemy(shot) {
     fastRecent := RecentEnemyCandidate(ST.enemyConfirm, shot)
     wideRecent := RecentEnemyCandidate(ST.enemyWideConfirm, shot)
     wide := (wideRecent && !fastRecent) || (!fastRecent && now - ST.scanWideAt >= CFG.skinWideMs)
-    if ((!wide && now - ST.scanEnemyFastAt < CFG.enemyFastMs) || !ScanAllow(1))
+    trace := shot.HasOwnProp("combatTrace") ? shot.combatTrace : 0
+    if trace
+        trace.pass := wide ? "wide" : "fast", trace.boost := ST.stepBoost
+    if (!wide && now - ST.scanEnemyFastAt < CFG.enemyFastMs) {
+        TraceCombatSkip(shot, "interval")
         return ST.enemyCache
+    }
+    if !ScanAllow(1) {
+        TraceCombatSkip(shot, "budget")
+        return ST.enemyCache
+    }
     diagnostic := {}
-    item := FindEnemyMulti(shot, wide ? 0.92 : CFG.enemyFastFrac, wide ? CFG.skinStepWide : 0, diagnostic)
-    TickCheck("после скана боя")
+    if trace {
+        trace.status := "started"
+        attempt := trace.attempt := {ageBefore:A_TickCount - shot.capturedAt}
+        scanAt := CaptureCounter()
+    }
+    try {
+        item := FindEnemyMulti(shot, wide ? 0.92 : CFG.enemyFastFrac, wide ? CFG.skinStepWide : 0, diagnostic)
+        if trace {
+            attempt.scanMs := CaptureElapsedMs(scanAt)
+            attempt.raw := item
+            attempt.staticReject := diagnostic.HasOwnProp("figureReject") ? diagnostic.figureReject : ""
+        }
+        TickCheck("после скана боя")
+    } catch as e {
+        if trace {
+            if !attempt.HasOwnProp("scanMs")
+                attempt.scanMs := CaptureElapsedMs(scanAt)
+            attempt.ageAfter := A_TickCount - shot.capturedAt
+            trace.status := e is TickInterrupted ? "interrupted" : "error"
+            if e is TickInterrupted
+                attempt.interrupt := e.Message
+        }
+        throw e
+    }
     ; Не публикуем части опоздавшего измерения и не запускаем интервал
     ; ожидания от скана, который уже не относится к действующему виду.
     previous := Critical("On")
     try {
+        if trace
+            attempt.ageAfter := A_TickCount - shot.capturedAt
         if WorldFrameCurrent(shot) {
             if wide
                 ST.scanWideAt := now
@@ -7430,7 +7518,8 @@ CachedEnemy(shot) {
             if diagnostic.HasOwnProp("skinPct")
                 ST.enemySkinPct := diagnostic.skinPct
             tr := wide ? ST.enemyWideConfirm : ST.enemyConfirm
-            verified := ConfirmEnemyObservation(tr, shot, IsEnemyCandidate(item) ? item : 0)
+            candidate := IsEnemyCandidate(item) ? item : 0
+            verified := ConfirmEnemyObservation(tr, shot, candidate)
             shot.enemyReading := item
             if verified {
                 if !SameEnemyObservation(ST.enemyCache, verified, shot)
@@ -7445,7 +7534,16 @@ CachedEnemy(shot) {
                 ; прежнюю цель. Отложенный/просроченный скан сюда не попадает.
                 ST.enemyCache := 0, ST.enemyVelX := 0, ST.enemyVelY := 0, ST.enemyLastAt := 0
             }
+            if trace {
+                trace.status := !candidate ? "negative" : (verified ? "confirmed" : (tr.seq = shot.captureId ? "candidate" : "not-counted"))
+                if candidate
+                    attempt.hits := tr.seq = shot.captureId ? tr.hits : 0, attempt.need := CFG.enemyConfirmHits
+            }
             return ST.enemyCache
+        }
+        if trace {
+            trace.status := "not-current-after"
+            trace.viewCurrent := WorldViewCurrent(shot)
         }
     } finally {
         Critical(previous)
@@ -9787,12 +9885,14 @@ EnsureWeapon(now) {
 Roam(shot, now) {
     global CFG, SC, ST
     if !WorldFrameCurrent(shot) {
+        TraceCombatSkip(shot, "not-current-before")
         CancelRetreatStep()
         LogThrottledKey("[world-late]", "[i] После захвата/сцены нет актуального кадра для матча ("
             . (A_TickCount - shot.capturedAt) " мс); жду следующий.", 5000)
         return
     }
     if MatchPhase(shot, now) {
+        TraceCombatSkip(shot, "phase")
         ClearMatchStrafe()
         ResetMoveWatch()
         return
@@ -9800,14 +9900,17 @@ Roam(shot, now) {
     ; Память HUD удерживает сцену/таймер, но не разрешает надолго ехать
     ; вперёд через загрузку или поверх неизвестного экрана.
     if (!FrameHasMatchHud(shot) && !MatchHudRecentlySeen(now, 850)) {
+        TraceCombatSkip(shot, "hud")
         HaltMatchMovement()
         CancelInteraction()
         ReleaseMouseButtons()
         ST.lastAction := "жду подтверждение HUD матча"
         return
     }
-    if ContinueRetreatStep(shot)
+    if ContinueRetreatStep(shot) {
+        TraceCombatSkip(shot, "retreat")
         return
+    }
     ; Первый поиск E не отбираем у подсказки. Во время удержания/проверки E
     ; остаётся шанс увидеть опасность, но прервать E может только свежий повтор.
     combatFirst := CFG.featCombat && !CFG.teamSafe && CFG.combatOverLoot && (ST.tgt
@@ -9815,8 +9918,11 @@ Roam(shot, now) {
     if (combatFirst && (Combat(shot, now) || !WorldFrameCurrent(shot)))
         return
     ST.enemy := 0
-    if (TryInteract(shot, now, false) || !WorldFrameCurrent(shot))
+    handled := TryInteract(shot, now, false)
+    if (handled || !WorldFrameCurrent(shot)) {
+        TraceCombatSkip(shot, handled ? "interact" : "not-current-before")
         return
+    }
     if (!combatFirst && Combat(shot, now))
         return
     if !WorldFrameCurrent(shot)
@@ -10298,6 +10404,7 @@ TickProfileText(profile) {
         . (profile.frame != "" ? " · кадр " profile.frame : "")
         . parts " · сканов отложено +" profile.skipped
         . (profile.HasOwnProp("capture") && profile.capture ? " · захват: " CaptureTimingText(profile.capture) : "")
+        . (profile.HasOwnProp("combatTrace") ? " · боевой скан: " CombatTraceText(profile.combatTrace) : "")
 }
 
 TuneScanStep(ms) {
@@ -15051,6 +15158,7 @@ CollectDryPair(profile, shot) {
     if (!ctx.dry || !CFG.dryRun || ctx.mode != CFG.botMode || profile.gen != ST.tickGen || !WorldViewCurrent(shot))
         return
     shot.drySample := {tick:profile.gen, mode:ctx.mode, focus:ctx.focused}
+    shot.combatTrace := profile.combatTrace := NewCombatTrace(shot)
     prev := ST.prevShot
     ; ST.prevShot иногда отстаёт при прерывании. Нужны два соседних тика,
     ; а не обязательно соседние captureId: в промежутке мог быть снимок F5.
@@ -15159,6 +15267,8 @@ SaveDryPair(pair, root) {
         text .= label ".bmp · кадр #" frame.captureId " · источник: " frame.source "`r`n"
         if frame.HasOwnProp("captureTiming")
             text .= "  захват: " CaptureTimingText(frame.captureTiming) "`r`n"
+        if frame.HasOwnProp("combatTrace")
+            text .= "  боевой скан: " CombatTraceText(frame.combatTrace) "`r`n"
     }
     reading := shot.HasOwnProp("enemyReading") ? shot.enemyReading : 0
     text .= "Рамка current в цикле: " (reading ? (reading.src " · " reading.x "," reading.y "," reading.w "," reading.h)
