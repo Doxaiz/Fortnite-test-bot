@@ -21,7 +21,8 @@ try {
     } else if (A_Args.Length = 1 && A_Args[1] = "--bench-combat") {
         BenchmarkCombatScan()
     } else {
-        for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestCaptureHistory, TestInputGuards, TestPixelRatios
+        for test in [TestBuildAndRestart, TestTickOutcomes, TestSkippedScanStages, TestCaptureHistory, TestScanHistory
+            , TestInputGuards, TestPixelRatios
             , TestHudBelongsToCapture, TestDeferredAndInterruptedEvidence, TestMenuFromCurrentPixels, TestLobbyPlatePass
             , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
@@ -196,6 +197,72 @@ CaptureHistoryFixture(hwnd, ms, result, focused := true, w := 800) {
         , capture:{w:w, h:450, ms:ms, attempts:[]}}
     if (result != "")
         profile.captureResult := result
+    return profile
+}
+
+TestScanHistory() {
+    global ST
+    hwnd := 901234, ST.capHistory := 0
+    try {
+        old := ScanHistoryFixture(hwnd, true, "confirmed", "fast", 999, true)
+        old.gen -= 1
+        RememberTickCapture(old)
+        Check(!CaptureHistoryLines(hwnd).Length, "чужое поколение не добавляет скан")
+        RememberTickCapture(CaptureHistoryFixture(hwnd, 50, "frame")) ; захват до отмены, без следа скана
+        RememberTickCapture(CaptureHistoryFixture(hwnd, 50, "failed", false))
+        for status in ["not-reached", "interact", "interval", "budget", "not-current-before"]
+            RememberTickCapture(ScanHistoryFixture(hwnd, true, status))
+        for args in [[true, "negative", "fast", 2, true], [true, "candidate", "fast", 4, true]
+            , [true, "not-current-after", "fast", 12, true], [true, "confirmed", "wide", 20, true]
+            , [true, "interrupted", "wide", 222], [false, "negative", "wide", 30, true]
+            , [false, "error", "fast", 500]] {
+            profile := ScanHistoryFixture(hwnd, args*)
+            RememberTickCapture(profile)
+            ; Сводка не держит даже результаты старого тика, только скаляры.
+            for name, value in ST.capHistory.samples[ST.capHistory.samples.Length].scan.OwnProps()
+                Check(!IsObject(value), "в сводку не попадают объекты: " name)
+            profile.combatTrace.status := "changed"
+            profile.combatTrace.attempt.scanMs := 999
+        }
+        lines := CaptureHistoryLines(hwnd)
+        Check(lines.Length = 4 && !CaptureHistoryLines(hwnd + 1).Length, "обе сводки относятся к одному окну")
+        Check(InStr(lines[1], "[capture-stats]") && InStr(lines[1], "/ фокус · n=11 frame=11")
+            && InStr(lines[2], "[scan-stats] 800x450") && InStr(lines[2], "/ фокус · n=10 attempted=5")
+            && !InStr(lines[2], "changed"), "кадр без следа не считается пропуском скана; измерения не меняются")
+        for status in ["not-reached", "interact", "interval", "budget", "not-current-before", "negative"
+            , "candidate", "not-current-after", "confirmed", "interrupted"]
+            Check(InStr(lines[2], " " status "=1"), "отдельный исход: " status)
+        Check(InStr(lines[2], "fast n=3 median=4.00 p95=12.00") && InStr(lines[2], "wide n=1 median=20.00 p95=20.00")
+            , "замер включает полностью исполненный просроченный скан, но не оборванный")
+        Check(InStr(lines[3], "/ фон · n=3 frame=2") && InStr(lines[4], "/ фон · n=2 attempted=2")
+            && InStr(lines[4], "error=1") && InStr(lines[4], "fast n=0 · wide n=1 median=30.00 p95=30.00")
+            , "отказ захвата не становится ни ошибкой скана, ни отрицательным результатом; фон отдельно")
+
+        Loop 121
+            RememberTickCapture(ScanHistoryFixture(hwnd, true, "negative", "fast", A_Index, true))
+        lines := CaptureHistoryLines(hwnd)
+        Check(lines.Length = 2 && InStr(lines[2], "n=120 attempted=120 negative=120")
+            && InStr(lines[2], "fast n=120 median=61.50 p95=115.00"), "сводки вытесняются одним кольцом")
+        changed := ScanHistoryFixture(hwnd, true, "not-reached")
+        changed.captureContext.mode := "queue"
+        RememberTickCapture(changed)
+        Check(InStr(CaptureHistoryLines(hwnd)[2], "AFK-очередь / DryRun / фокус · n=1 attempted=0 not-reached=1")
+            , "смена режима не наследует сканы")
+        changed.captureContext.dry := false
+        RememberTickCapture(changed)
+        Check(CaptureHistoryLines(hwnd).Length = 1 && !ST.capHistory.samples[1].HasOwnProp("scan")
+            , "вне DryRun нет сводки скана")
+    } finally ST.capHistory := 0
+}
+
+ScanHistoryFixture(hwnd, focused, status, pass := "", ms := -1, returned := false) {
+    profile := CaptureHistoryFixture(hwnd, 50, "frame", focused)
+    trace := profile.combatTrace := {status:status, pass:pass}
+    if (ms >= 0) {
+        trace.attempt := {scanMs:ms}
+        if returned
+            trace.attempt.raw := (status = "negative" ? 0 : {x:12, y:20, w:10, h:30})
+    }
     return profile
 }
 

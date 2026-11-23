@@ -1947,6 +1947,14 @@ RememberTickCapture(profile) {
     ctx := profile.captureContext
     sample := {timing:timing, focused:ctx.focused
         , result:profile.HasOwnProp("captureResult") ? profile.captureResult : "aborted"}
+    if (ctx.dry && profile.HasOwnProp("combatTrace")) {
+        trace := profile.combatTrace
+        scan := sample.scan := {status:trace.status, started:trace.HasOwnProp("attempt")}
+        ; Достаточно чисел и статуса: не держим кадр, сырую рамку или след тика.
+        ; raw (включая 0) означает, что поиск вернулся, даже если допуск не пройден.
+        if (scan.started && trace.attempt.HasOwnProp("raw"))
+            scan.pass := trace.pass, scan.ms := trace.attempt.scanMs
+    }
     previous := Critical("On")
     try {
         if (profile.gen != ST.tickGen)
@@ -1997,13 +2005,42 @@ CaptureHistoryLines(hwnd) {
         }
         if !n
             continue
-        lines.Push("[capture-stats] " h.w "x" h.h " · " ModeShortRu(h.mode)
+        scope := h.w "x" h.h " · " ModeShortRu(h.mode)
             . (h.dry ? " / DryRun" : " / без DryRun") . (focused ? " / фокус" : " / фон")
+        lines.Push("[capture-stats] " scope
             . " · n=" n " frame=" frames " over250=" late " failed=" failed " aborted=" aborted " fallback=" fallback
             . " · всего " CapturePercentileText(times)
             . " · PrintWindow " CaptureMethodStatsText(pw) " · BitBlt " CaptureMethodStatsText(dc))
+        if (h.dry && (scan := CombatHistoryText(samples, focused)) != "")
+            lines.Push("[scan-stats] " scope " · " scan)
     }
     return lines
+}
+
+CombatHistoryText(samples, focused) {
+    n := 0, attempted := 0, counts := Map()
+    fast := {n:0, times:""}, wide := {n:0, times:""}
+    for sample in samples {
+        if (sample.focused != focused || !sample.HasOwnProp("scan"))
+            continue
+        scan := sample.scan
+        n += 1, attempted += scan.started
+        counts[scan.status] := counts.Get(scan.status, 0) + 1
+        if scan.HasOwnProp("ms") {
+            pass := scan.pass = "wide" ? wide : fast
+            pass.n += 1, pass.times .= scan.ms "`n"
+        }
+    }
+    if !n
+        return ""
+    text := "n=" n " attempted=" attempted
+    for status, count in counts
+        text .= " " status "=" count
+    for name in ["fast", "wide"] {
+        pass := name = "wide" ? wide : fast
+        text .= " · " name " n=" pass.n . (pass.n ? " " CapturePercentileText(pass.times) : "")
+    }
+    return text
 }
 
 CaptureMethodStatsText(m) {

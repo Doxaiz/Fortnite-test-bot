@@ -232,7 +232,9 @@ TestSavedWindowFrame(a, b) {
     SetFixtureFrame(a, 1)
     live := ST.lastShot, epoch := ST.inputEpoch, lastTiming := ST.tickProfile.capture
     history := ST.capHistory, next := history.next, stats := CaptureHistoryLines(a)
-    Check(stats.Length > 0, "есть выборка до диагностических снимков")
+    Check(stats.Length >= 2 && InStr(stats[1], "[capture-stats] 480x288") && InStr(stats[2], "[scan-stats] 480x288")
+        && InStr(stats[2], "DryRun / фокус") && InStr(stats[2], "candidate=1") && InStr(stats[2], "confirmed=1")
+        , "сканы кадров тестового HWND уже учтены до снимков F7 и Ctrl+F5")
     ready := ST.dryPair
     pair := SnapshotDryPair(&why := "")
     Check(pair && pair.current = live && pair.previous.captureId < live.captureId
