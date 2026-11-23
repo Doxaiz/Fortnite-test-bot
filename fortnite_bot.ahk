@@ -60,6 +60,7 @@
 ;    F4 — Пропустить матч       F2 — Сквозной мини-HUD
 ;    F3 — Окно «Зрение»         F5 — Диагностика HUD
 ;    Ctrl+F5 — Сохранить кадр и отчёт (локально)
+;    Ctrl+Shift+F5 — Сохранить два кадра рабочего цикла в DryRun
 ;    F6 — Проверка кадра (мышь) F7 — Диагностика окна
 ;    F1 — Показать / скрыть     Esc — Аварийный стоп · Ctrl+Alt+Q — Выход
 ;
@@ -859,6 +860,7 @@ global ST := {
     capNoPrintT:  0,            ; до какого времени DC пробуется первым
     capSlowN:     0,            ; сколько успешных медленных PrintWindow подряд
     capHistory:   0,            ; последние замеры цикла для F7, без пикселей
+    dryPair:      0,            ; только последняя пара рабочих кадров DryRun
     mouseBlocked: 0,            ; сколько попыток трогать мышь отбито в фоне
     mouseBlockedAt: 0,
     lastClickAt:  0,            ; для clickGapMs (не чаще одного клика)
@@ -5723,6 +5725,7 @@ InputCancelDeferred() {
     global ST
     previous := Critical("On")
     ST.inputEpoch += 1
+    ST.dryPair := 0
     Critical(previous)
 }
 
@@ -10149,6 +10152,7 @@ Tick() {
     ; чужие флаги трогать нельзя (иначе новый тик потеряет свой tickBusy).
     if (ST.tickGen = gen) {
         RememberTickCapture(profile)
+        PublishDryPair(profile)
         ST.tickBusy := false
         ST.tickAbort := false
         ST.tickAborted := false
@@ -10730,6 +10734,8 @@ TickBody(profile) {
     ST.winTxt := ""
     try
         ST.winTxt := WinGetTitle("ahk_id " hwnd)
+    if profile.captureContext.dry
+        CollectDryPair(profile, shot)
     ST.lastShot := shot, ST.lastShotAt := A_TickCount
     ST.frames += 1
     ST.capW := shot.w, ST.capH := shot.h
@@ -13740,6 +13746,7 @@ BuildTrayMenu() {
     tm.Add("Сквозной мини-HUD (F2)", (*) => ToggleMiniHud())
     tm.Add("Окно «Зрение» (F3)", (*) => ToggleVision())
     tm.Add("Сохранить кадр и отчёт (Ctrl+F5)", OnSaveCalibration)
+    tm.Add("Сохранить пару DryRun (Ctrl+Shift+F5)", OnSaveDryPair)
     tm.Add("Настройки AFK и очереди…", (*) => ShowAfkSettings())
     tm.Add("AFK XP, маршрут и Discord…", (*) => ShowExtraSettings())
     tm.Add("Клавиши и сервис…", (*) => ShowKeySettings())
@@ -13905,7 +13912,7 @@ ResetRunDiagnostics() {
     ; Alt+Tab до Stop. Первый новый переход не подавляем старым троттлом.
     ST.focusLostAt := 0, ST.focusBackAt := 0, ST.focusNoteAt := 0, ST.bgWarned := false
     ST.playInputSuspended := false, ST.playFocused := -1
-    ST.tickProfile := 0, ST.tickMs := 0, ST.lastTickMs := 0, ST.capHistory := 0
+    ST.tickProfile := 0, ST.tickMs := 0, ST.lastTickMs := 0, ST.capHistory := 0, ST.dryPair := 0
     ST.slowTicks := 0, ST.fastTicks := 0
     for key in ["[focusgrace]", "[focus]", "[tickperf]", "[tickcancel:бюджет]", "[tickcancel:запрос сторожа]"] {
         if LogThrMap.Has(key)
@@ -15038,11 +15045,156 @@ OnSaveCalibration(*) {
     }
 }
 
-SaveCalibrationPair(shot, folder) {
-    ; Один снимок BGRX, без масштабирования и без отрисовки рамок на пикселях.
+CollectDryPair(profile, shot) {
+    global CFG, ST
+    ctx := profile.captureContext
+    if (!ctx.dry || !CFG.dryRun || ctx.mode != CFG.botMode || profile.gen != ST.tickGen || !WorldViewCurrent(shot))
+        return
+    shot.drySample := {tick:profile.gen, mode:ctx.mode, focus:ctx.focused}
+    prev := ST.prevShot
+    ; ST.prevShot иногда отстаёт при прерывании. Нужны два соседних тика,
+    ; а не обязательно соседние captureId: в промежутке мог быть снимок F5.
+    if (!prev || prev != ST.lastShot || !prev.HasOwnProp("drySample") || prev.drySample.tick + 1 != profile.gen
+        || prev.drySample.mode != ctx.mode || prev.drySample.focus != ctx.focused
+        || prev.captureId >= shot.captureId || !SameFrameView(FrameView(prev), shot)
+        || prev.stride != shot.stride || prev.x != shot.x || prev.y != shot.y)
+        return
+    gap := shot.capturedAt - prev.capturedAt
+    if (gap >= 0 && gap <= CFG.enemyHoldMs)
+        profile.dryPair := {previous:prev, current:shot, gap:gap, mode:ctx.mode, tick:profile.gen}
+}
+
+PublishDryPair(profile) {
+    global CFG, ST
+    pair := 0
+    if profile.HasOwnProp("dryPair") {
+        pair := profile.dryPair
+        profile.DeleteProp("dryPair") ; профиль F7 не удерживает буферы
+    }
+    if (!pair && !ST.dryPair)
+        return
+    previous := Critical("On")
+    try {
+        if (profile.gen != ST.tickGen)
+            return
+        if (pair && CFG.dryRun && pair.mode = CFG.botMode && pair.current = ST.lastShot && pair.current = ST.prevShot
+            && WorldViewCurrent(pair.current)) {
+            pair.tickMs := profile.totalMs, pair.outcome := profile.outcome, pair.scene := profile.scene
+            pair.stepBoost := ST.stepBoost
+            ST.dryPair := pair
+        } else
+            ST.dryPair := 0
+    } finally Critical(previous)
+}
+
+SnapshotDryPair(&reason) {
+    global CFG, ST
+    previous := Critical("On")
+    try {
+        if (!ST.running || ST.paused || !CFG.dryRun || ST.mouseCalActive) {
+            reason := "Для пары нужен работающий цикл DryRun без паузы."
+            return 0
+        }
+        pair := ST.dryPair
+        if (!pair || pair.mode != CFG.botMode || pair.current != ST.lastShot || !WorldViewCurrent(pair.current)) {
+            reason := "Нет двух соседних кадров DryRun одного вида. Подождите и повторите."
+            return 0
+        }
+        age := A_TickCount - pair.current.capturedAt
+        ; Для диагностики можно сохранить запоздавший снимок, но не старую
+        ; сцену спустя секунды. Этот предел НЕ участвует в допуске к вводу.
+        if (age < 0 || age > 2000) {
+            reason := "Последняя пара старше 2 с. Проверьте захват по F7."
+            return 0
+        }
+        snapshot := pair.Clone(), snapshot.age := age, snapshot.stamp := A_Now
+    } finally Critical(previous)
+    shot := snapshot.current
+    if (GetGameWindow() != shot.hwnd || !CaptureAreaCurrent(shot.hwnd, shot) || !WorldViewCurrent(shot)
+        || !CFG.dryRun || snapshot.mode != CFG.botMode) {
+        reason := "Окно или вид изменились. Дождитесь новой пары."
+        return 0
+    }
+    reason := ""
+    return snapshot
+}
+
+OnSaveDryPair(*) {
+    static busy := false
+    if busy
+        return
+    busy := true
+    try {
+        pair := SnapshotDryPair(&reason := "")
+        if !pair {
+            Flash(reason, 3500)
+            return
+        }
+        saved := SaveDryPair(pair, A_Temp "\FORMA-diagnostics")
+        Log("[diag-pair] Сохранены рабочие кадры #" pair.previous.captureId "/#" pair.current.captureId
+            . " · интервал " pair.gap " мс · " saved.name)
+        Flash("Пара сохранена локально:`n" saved.folder "`nФайлы не отправлены.", 6500)
+    } catch as e {
+        Log("[diag-pair] Не удалось сохранить пару: " e.Message)
+        Flash("Ошибка сохранения пары. Подробности в run.log.", 3500)
+    } finally busy := false
+}
+
+SaveDryPair(pair, root) {
+    prev := pair.previous, shot := pair.current
+    CheckCalibrationBmp(prev)
+    CheckCalibrationBmp(shot)
+    stamp := pair.stamp
+    name := "forma-pair-" FormatTime(stamp, "yyyyMMdd-HHmmss") "-" ProcessExist() "-" shot.captureId
+    folder := root "\" name, staging := folder ".partial"
+    text := FormaBuildInfo() " · рабочие кадры DryRun`r`n"
+        . "Режим: " ModeRu(pair.mode) " · " (shot.drySample.focus ? "фокус" : "фон") "`r`n"
+        . "Локальное время запроса: " FormatTime(stamp, "yyyy-MM-dd HH:mm:ss") "`r`n"
+        . "Тик #" pair.tick " · " StateRu(pair.scene) " · " pair.outcome " · " pair.tickMs " мс всего"
+        . " · шаг сканов +" pair.stepBoost "`r`n"
+        . "Клиент: " shot.w "x" shot.h " · интервал между началами захвата: " pair.gap " мс`r`n"
+        . "Возраст current при запросе: " pair.age " мс (не допуск к действию)`r`n"
+    for item in [["previous", prev], ["current", shot]] {
+        label := item[1], frame := item[2]
+        text .= label ".bmp · кадр #" frame.captureId " · источник: " frame.source "`r`n"
+        if frame.HasOwnProp("captureTiming")
+            text .= "  захват: " CaptureTimingText(frame.captureTiming) "`r`n"
+    }
+    reading := shot.HasOwnProp("enemyReading") ? shot.enemyReading : 0
+    text .= "Рамка current в цикле: " (reading ? (reading.src " · " reading.x "," reading.y "," reading.w "," reading.h)
+        : (shot.HasOwnProp("enemyReading") ? "кандидата нет" : "замер не опубликован")) "`r`n"
+    text .= "Ручная разметка: в vision.tsv замените ? на none или x,y,w,h.`r`n"
+    ; Новый каталог без перезаписи. Конечное имя появляется только после
+    ; закрытия всех файлов; при обычной ошибке удаляем только свой staging.
+    DirCreate(root)
+    if !DllCall("kernel32\CreateDirectoryW", "WStr", staging, "Ptr", 0, "Int")
+        throw Error("Не удалось создать временную папку пары")
+    published := false
+    try {
+        WriteCalibrationBmp(prev, staging "\previous.bmp")
+        WriteCalibrationBmp(shot, staging "\current.bmp")
+        FileAppend(text, staging "\report.txt", "UTF-8")
+        FileAppend("id`tcurrent`tprevious`texpected`nframe-" shot.captureId "`tcurrent.bmp`tprevious.bmp`t?`n"
+            , staging "\vision.tsv", "UTF-8")
+        published := DllCall("kernel32\MoveFileW", "WStr", staging, "WStr", folder, "Int")
+        if !published
+            throw Error("Не удалось опубликовать папку пары (возможно, уже существует)")
+    } finally {
+        if !published
+            try DirDelete(staging, true)
+    }
+    return {name:name, folder:folder}
+}
+
+CheckCalibrationBmp(shot) {
     if (shot.w < 1 || shot.h < 1 || shot.w > 8192 || shot.h > 8192 || shot.stride != shot.w * 4
         || shot.buf.Size != shot.stride * shot.h || shot.buf.Size > 128 * 1024 * 1024)
         throw ValueError("Не поддерживается размер буфера кадра для BMP")
+}
+
+SaveCalibrationPair(shot, folder) {
+    ; Один снимок BGRX, без масштабирования и без отрисовки рамок на пикселях.
+    CheckCalibrationBmp(shot)
     stamp := A_Now
     name := "forma-" FormatTime(stamp, "yyyyMMdd-HHmmss") "-" ProcessExist() "-" shot.captureId
     bmp := folder "\" name ".bmp", txt := folder "\" name ".txt"
@@ -15198,7 +15350,7 @@ ApplyHotkeys() {
     okList := ""
     badList := ""
     UI.hkReport := Map()
-    for item in [[CFG.hkStart, OnStart, "старт/стоп"]
+    bindings := [[CFG.hkStart, OnStart, "старт/стоп"]
                , [CFG.hkDry, ToggleDry, "DryRun"]
                , [CFG.hkBypass, RequestBypassMatch, "пропуск матча"]
                , [CFG.hkHud, ToggleMiniHud, "мини-HUD"]
@@ -15207,7 +15359,9 @@ ApplyHotkeys() {
                , [CFG.hkMouseCal, OnMouseCalPrepare, "мышь"]
                , [CFG.hkCheck, OnCheckCapture, "захват"]
                , [CFG.hkMenu, ToggleGui, "меню"]
-               , ["^F5", OnSaveCalibration, "сохранить кадр и отчёт"]] {
+               , ["^F5", OnSaveCalibration, "сохранить кадр и отчёт"]
+               , ["^+F5", OnSaveDryPair, "сохранить пару DryRun"]]
+    for item in bindings {
         key := Trim(item[1])
         if !key {
             Log("[!] клавиша для «" item[3] "» пустая — пропущена")
@@ -15224,7 +15378,7 @@ ApplyHotkeys() {
         try {
             ; F8/переназначенный старт-стоп: остановка раньше журнала.
             callback := (item[3] = "старт/стоп") ? StartStopHotkey
-                : (item[2] = OnSaveCalibration ? OnSaveCalibration : Hk(item[3] "  (" key ")", item[2]))
+                : ((item[2] = OnSaveCalibration || item[2] = OnSaveDryPair) ? item[2] : Hk(item[3] "  (" key ")", item[2]))
             ; Старт/стоп можно нажать повторно во время медленного запуска.
             ; Остальные клавиши остаются однопоточными; буфер отключён,
             ; чтобы запоздалое повторное нажатие не запустило бота вновь.
@@ -15255,6 +15409,7 @@ ApplyHotkeys() {
         Flash("Клавиши активны:`n" okList, 2800)
     else
         Flash("Клавиши:`n" okList "`nНЕ назначены: " badList, 5000)
+    return bindings.Length
 }
 
 
@@ -15488,17 +15643,17 @@ LoadSettings() {
 OnApplyKeys(*) {
     global CFG, UI
     ReadHotkeysFromGui()
-    ApplyHotkeys()
+    expected := ApplyHotkeys()
     n := UI.hkKeys.Length
     saved := SaveSettings()
     if !saved {
         result := "Настройки не удалось полностью сохранить. См. журнал."
-    } else if (n != 9) {
-        result := "Назначено " n " из 9. Ошибки и повторы — в журнале."
+    } else if (n != expected) {
+        result := "Назначено " n " из " expected ". Ошибки и повторы — в журнале."
     } else {
-        result := "Готово: все 9 клавиш назначены и сохранены."
+        result := "Готово: клавиши назначены, настройки сохранены (" n ")."
     }
-    Log("[i] клавиши: " n " из 9 · " (saved ? "настройки сохранены" : "ошибка сохранения"))
+    Log("[i] клавиши: " n " из " expected " · " (saved ? "настройки сохранены" : "ошибка сохранения"))
     try UI.keyResult.Value := result
     Flash(result, 4000)
 }

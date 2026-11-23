@@ -30,7 +30,7 @@ try {
             , TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
             , TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
-            , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
+            , TestRoamPriority, TestHoldOwnership, TestDryPairGuards, TestCalibrationExport] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -2458,6 +2458,59 @@ CheckHoldOwnership() {
     Check(!InputReleaseLater("key", key, 200), "без нажатия нет таймера отпускания")
 }
 
+
+TestDryPairGuards() {
+    WithGroundFixture(CheckDryPairGuards)
+}
+
+CheckDryPairGuards() {
+    global CFG, ST
+    ST.tickGen := 10, ST.dryPair := 0, ST.playInputSuspended := false
+    ctx := {dry:true, focused:true, mode:CFG.botMode}
+    at := A_TickCount - 400
+    prev := SceneFixture(1, at), current := SceneFixture(3, at + 40)
+    CollectDryPair({gen:10, captureContext:{dry:false}}, prev)
+    Check(!prev.HasOwnProp("drySample"), "кадр, начатый без DryRun, не помечается поздним переключением")
+    first := {gen:10, captureContext:ctx}
+    CollectDryPair(first, prev)
+    Check(prev.HasOwnProp("drySample") && !first.HasOwnProp("dryPair"), "одного кадра недостаточно")
+    ST.tickGen := 11, ST.lastShot := prev, ST.prevShot := prev
+    for prop, value in Map("hwnd", 101, "cameraSeqAtCapture", current.cameraSeqAtCapture + 1
+        , "inputEpochAtCapture", current.inputEpochAtCapture + 1, "captureId", prev.captureId
+        , "w", current.w + 1, "stride", current.stride + 4, "x", current.x + 1
+        , "capturedAt", prev.capturedAt + CFG.enemyHoldMs + 1) {
+        bad := current.Clone(), bad.%prop% := value
+        profile := {gen:11, captureContext:ctx}
+        CollectDryPair(profile, bad)
+        Check(!profile.HasOwnProp("dryPair"), "несовместимый кадр отклонён: " prop)
+    }
+    for mismatch in [{dry:true, focused:false, mode:ctx.mode}, {dry:true, focused:true, mode:"queue"}] {
+        previousMode := CFG.botMode, CFG.botMode := mismatch.mode
+        profile := {gen:11, captureContext:mismatch}
+        CollectDryPair(profile, current)
+        CFG.botMode := previousMode
+        Check(!profile.HasOwnProp("dryPair"), "не смешиваем фокус и режим")
+    }
+    skipped := {gen:12, captureContext:ctx}
+    ST.tickGen := 12
+    CollectDryPair(skipped, current)
+    Check(!skipped.HasOwnProp("dryPair"), "после пропуска тика нужна новая пара")
+    ST.tickGen := 11
+    profile := {gen:11, captureContext:ctx, scene:"GAME", outcome:"завершён", totalMs:180}
+    CollectDryPair(profile, current)
+    Check(profile.HasOwnProp("dryPair"), "отдельный диагностический captureId не разрывает соседние тики")
+    ST.lastShot := current, ST.prevShot := current
+    PublishDryPair(profile)
+    ready := ST.dryPair
+    Check(ready && ready.previous = prev && ready.current = current && ready.gap = 40
+        && !profile.HasOwnProp("dryPair") && !WorldFrameCurrent(current), "запоздавший кадр остаётся только диагностическим")
+    PublishDryPair({gen:10})
+    Check(ST.dryPair = ready, "чужой тик не очищает последнюю пару")
+    current.capturedAt := A_TickCount - 2100
+    Check(!SnapshotDryPair(&why := "") && InStr(why, "старше 2 с"), "старый снимок не доходит до чтения окна")
+    InputCancelDeferred()
+    Check(!ST.dryPair && !SnapshotDryPair(&why), "новое поколение теряет пару без записи")
+}
 
 TestCalibrationExport() {
     global ST

@@ -1,6 +1,6 @@
 #Requires AutoHotkey v2.0
 #NoTrayIcon
-#Include ../fortnite_bot.ahk
+#Include ../tools/evaluate_vision.ahk
 #SingleInstance Off
 
 ; Интеграционный тест: отдельный процесс рисует HWND и считает WM_KEYDOWN/UP.
@@ -230,6 +230,14 @@ TestSavedWindowFrame(a, b) {
     live := ST.lastShot, epoch := ST.inputEpoch, lastTiming := ST.tickProfile.capture
     history := ST.capHistory, next := history.next, stats := CaptureHistoryLines(a)
     Check(stats.Length > 0, "есть выборка до диагностических снимков")
+    ready := ST.dryPair
+    pair := SnapshotDryPair(&why := "")
+    Check(pair && pair.current = live && pair.previous.captureId < live.captureId
+        && pair.tick = ST.tickProfile.gen && pair.gap >= 0, "снимок берёт два соседних тика без нового захвата: " why)
+    SelectFixture(b)
+    Check(!SnapshotDryPair(&why) && InStr(why, "изменились"), "снимок прежнего окна не выдаётся")
+    SelectFixture(a)
+    seq := ST.captureSeq
     shot := CaptureCalibrationFrame()
     Check(shot && shot.hwnd = a && shot.captureId > live.captureId && shot.source != ""
         && shot.captureTiming != lastTiming && ST.tickProfile.capture = lastTiming && live.captureTiming = lastTiming
@@ -249,13 +257,45 @@ TestSavedWindowFrame(a, b) {
             Check(InStr(logText, line), "F7 выводит статистику тиков в журнал")
         Check(ST.capHistory = history && history.next = next && InStr(logText, "[capture] " lastTiming.w "×" lastTiming.h)
             , "снимки F7 и Ctrl+F5 не добавляются к статистике цикла")
-        Check(ST.lastShot = live && ST.inputEpoch = epoch && !ST.held.Count
-            , "диагностические кадры не подменяют рабочий и не дают ввода")
+        Check(ST.dryPair = ready && ST.captureSeq = seq + 2, "только одиночные пробные захваты увеличили captureId")
+        TestDryPairBundle(pair, folder)
+        Check(ST.dryPair = ready && ST.lastShot = live && ST.inputEpoch = epoch && !ST.held.Count
+            && ST.captureSeq = seq + 2, "пара и одиночный кадр не подменяют рабочий снимок и не дают ввода")
         ExpectKey(a, SC.e, 3, 3)
         ExpectKey(b, SC.e, 1, 1)
     } finally {
         try DirDelete(folder, true)
     }
+}
+
+TestDryPairBundle(pair, root) {
+    saved := SaveDryPair(pair, root)
+    for item in [["previous", pair.previous], ["current", pair.current]] {
+        frame := ReadF5Bmp(saved.folder "\" item[1] ".bmp"), original := item[2]
+        Check(frame.w = original.w && frame.h = original.h && frame.buf.Size = original.buf.Size
+            && !DllCall("msvcrt\memcmp", "Ptr", frame.buf, "Ptr", original.buf, "UPtr", frame.buf.Size, "CDecl Int")
+            , item[1] " состоит из исходных пикселей рабочего кадра")
+    }
+    report := FileRead(saved.folder "\report.txt", "UTF-8")
+    Check(InStr(report, "Тик #" pair.tick) && InStr(report, "previous.bmp · кадр #" pair.previous.captureId)
+        && InStr(report, "current.bmp · кадр #" pair.current.captureId) && InStr(report, "Возраст current при запросе: " pair.age)
+        && InStr(report, CaptureTimingText(pair.current.captureTiming)) && !InStr(report, root), "отчёт связывает исходные кадры и замеры")
+    manifest := saved.folder "\vision.tsv", raw := FileRead(manifest, "UTF-8")
+    unlabelled := false
+    try ReadVisionSet(manifest)
+    catch ValueError
+        unlabelled := true
+    Check(unlabelled && InStr(raw, "`tcurrent.bmp`tprevious.bmp`t?"), "разметка не подставляется за пользователя")
+    duplicate := false
+    try SaveDryPair(pair, root)
+    catch as e
+        duplicate := InStr(e.Message, "Не удалось опубликовать")
+    Check(duplicate && !DirExist(saved.folder ".partial") && FileRead(manifest, "UTF-8") == raw
+        , "конечный каталог не заменяется; временный убран при отказе")
+    label := saved.folder "\labelled.tsv"
+    FileAppend(StrReplace(raw, "`t?", "`tnone"), label, "UTF-8")
+    batch := ReadVisionSet(label), result := ReadVisionCase(batch.dir, batch.rows[1], false)
+    Check(result.pair && result.w = pair.current.w && result.h = pair.current.h, "после разметки файлы подходят офлайн-оценщику")
 }
 
 TestPatrolLease(a, b) {
