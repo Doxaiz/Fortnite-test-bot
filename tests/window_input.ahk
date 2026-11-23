@@ -44,7 +44,7 @@ RunWindowTests() {
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
-            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt] {
+            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -517,6 +517,42 @@ TestRepeatedPrompt(a, b) {
     ExpectKey(a, SC.w, 1, 1)
 }
 
+TestStaticFallback(a, b) {
+    global CFG, ST, SC
+    CFG.dryRun := true, CFG.featMove := false, CFG.featChest := false
+    FocusFixture(a), SelectFixture(a)
+    CFG.featCombat := true, CFG.featMotionEnemy := false, CFG.enemyFastMs := 0
+    CFG.aimReactMs := 0, CFG.skinWideMs := 60000, CFG.featFirstSlot := false
+    ResetCaches()
+    ST.scanWideAt := A_TickCount, ST.stepBoost := 0, ST.reloadUntil := 0
+    shots := ST.shots
+    for i, scene in [17, 18, 19, 19, 17] {
+        SetFixtureFrame(a, scene)
+        shot := TickFixture(a)
+        Check(shot.HasOwnProp("enemyReading") && !ST.held.Count && !ST.leftDown && !ST.adsOn
+            , "захват настоящего окна, без мыши в DryRun")
+        if (i = 1 || i = 5) {
+            Check(!shot.enemyReading && !ST.enemyCache && ST.shots = shots + (i = 5)
+                , "без фигуры декорация не забирает бой")
+        } else if (i <= 3) {
+            Check(shot.enemyReading && shot.enemyReading.isolated && ST.enemyConfirm.hits = 1
+                && !ST.enemyCache && ST.shots = shots, "другой центр не получает старое подтверждение")
+        } else {
+            Check(ST.enemySeenSeq = shot.captureId && ST.enemyCache.isolated && ST.shots = shots + 1
+                , "пара одинаковых кадров: виртуальная очередь в фигуру рядом с яркой опорой")
+            report := BuildCalibrationReport(shot), indicated := false
+            for line in report.lines
+                if InStr(line, "отдельная тёплая группа")
+                    indicated := true
+            Check(indicated, "F5 объясняет найденную отдельную фигуру на том же захвате")
+        }
+    }
+    ExpectKey(a, SC.e, 3, 3)
+    ExpectKey(a, SC.w, 1, 1)
+    ExpectKey(b, SC.e, 4, 4)
+    ExpectKey(b, SC.w, 4, 4)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -577,7 +613,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 17
+    Loop 20
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -707,6 +743,15 @@ BuildFixtureFrame(scene) {
         if (scene >= 14)
             PaintFixture(buf, w, 233, 124, 16, 32, scene = 14 ? 0xDDDDDD : 0x202020)
         PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727) ; прицел не меняется
+    }
+    if (scene >= 17) {
+        PaintFixture(buf, w, 336, 63, 86, 98, 0xDA8848) ; доминирующая, но невалидная область
+        if (scene >= 18) {
+            cx := scene = 18 ? 208 : 240, k := w / 1280 * 1.9
+            for spec in [[-7, 0, 14, 36], [-20, 35, 40, 21], [-12, 56, 24, 14], [-14, 70, 10, 24], [4, 70, 10, 24]]
+                PaintFixture(buf, w, cx + Round(spec[1] * k), 126 + Round(spec[2] * k)
+                    , Round(spec[3] * k), Round(spec[4] * k), 0xD08048)
+        }
     }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)

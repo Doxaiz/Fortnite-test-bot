@@ -28,7 +28,7 @@ try {
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
             , TestEnemyEvidence, TestCombatPreemption, TestCombatRetreat, TestCombatScanFreshness, TestCombatPixels, TestProjectedScenery
-            , TestLocalMotion, TestFireGate, TestSoundFrames
+            , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestHoldOwnership, TestCalibrationExport] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
@@ -1656,18 +1656,18 @@ CheckEnemyEvidence() {
     move.capturedAt := A_TickCount
     body := FindEnemyMulti(move)
     Check(IsEnemyCandidate(body) && body.src = "движение", "цифра не затеняет детектор движения")
-    tr := NewCandidateTracker()
-    Check(!ConfirmWorldCandidate(tr, move, body, 2) && tr.hits = 1, "первый кандидат только наблюдение")
-    Check(!ConfirmWorldCandidate(tr, move, body, 2) && tr.hits = 1, "тот же кадр не даёт второго наблюдения")
+    tr := NewEnemyTracker()
+    Check(!ConfirmEnemyObservation(tr, move, body) && tr.hits = 1, "первый кандидат только наблюдение")
+    Check(!ConfirmEnemyObservation(tr, move, body) && tr.hits = 1, "тот же кадр не даёт второго наблюдения")
     next := WorldFixture(122)
-    Check(ConfirmWorldCandidate(tr, next, body, 2) = body && tr.hits = 2, "согласованные метаданные разрешают повтор")
+    Check(ConfirmEnemyObservation(tr, next, body) = body && tr.hits = 2, "согласованные метаданные разрешают повтор")
     ST.hwnd := 101
     other := WorldFixture(123, "blank", 101)
-    Check(!ConfirmWorldCandidate(tr, other, body, 2) && tr.hits = 1, "смена HWND начинает счёт заново")
+    Check(!ConfirmEnemyObservation(tr, other, body) && tr.hits = 1, "смена HWND начинает счёт заново")
     ST.cameraSeq += 1
     turned := WorldFixture(124, "blank", 101)
-    Check(!ConfirmWorldCandidate(tr, turned, body, 2) && tr.hits = 1, "новое направление начинает счёт заново")
-    Check(!ConfirmWorldCandidate(tr, other, body, 2) && tr.seq = turned.captureId, "опоздавшее наблюдение не сбрасывает новое")
+    Check(!ConfirmEnemyObservation(tr, turned, body) && tr.hits = 1, "новое направление начинает счёт заново")
+    Check(!ConfirmEnemyObservation(tr, other, body) && tr.seq = turned.captureId, "опоздавшее наблюдение не сбрасывает новое")
 }
 
 TestCombatPreemption() {
@@ -1933,7 +1933,7 @@ CheckCombatPixels() {
                 Check(!item, label ": отрицательная пара " kind)
                 if (kind = "teammate") {
                     diag := {}
-                    Check(FindEnemySkin(pair.shot) && !ReadStaticFigure(pair.shot, 0, 0, diag)
+                    Check(FindEnemySkin(pair.shot, SkinGrid(pair.shot)) && !ReadStaticFigure(pair.shot, 0, 0, diag)
                         && diag.figureReject = "похоже на метку союзника", label ": F5 и бой применяют один фильтр метки")
                 }
                 continue
@@ -1975,6 +1975,79 @@ DrawProjectedScenery(shot) {
     FixtureRect(shot, x, y, Round(64*k), Round(192*k), 0x99DA8848)
     FixtureRect(shot, x + Round(63*k), y + Round(168*k), Round(25*k), Round(24*k), 0xAACF7C39)
     FixtureRect(shot, Round(shot.w * 0.79), y + Round(189*k), Round(40*k), Round(81*k), 0xDDC78343)
+}
+
+DrawCombatDecoy(shot) {
+    FixtureRect(shot, Round(shot.w * 0.70), Round(shot.h * 0.22)
+        , Round(shot.w * 0.18), Round(shot.h * 0.34), 0xDA8848)
+}
+
+TestAlternativeFigure() {
+    WithGroundFixture(CheckAlternativeFigure)
+}
+
+CheckAlternativeFigure() {
+    global CFG, ST
+    CFG.featMotionEnemy := false, CFG.featTeammateGuard := true
+    for spec in [[480, 288, 0, 1.9], [480, 288, 0.92, 1.9], [1280, 720, 0.92, 1]
+        , [1365, 767, 0, 1], [1920, 1080, 0, 1], [1920, 1080, 0.92, 1]] {
+        w := spec[1], h := spec[2], frac := spec[3], step := frac ? CFG.skinStepWide : 0
+        label := w "×" h " / " (frac ? "широкий" : "быстрый")
+        shot := CombatPixelPair(w, h, "static").shot
+        DrawCombatDecoy(shot)
+        Check(!FindEnemyMulti(shot, frac, step), label ": одна декорация не даёт фигуру")
+        DrawCombatFigure(shot, w // 2, Round(h / 2 - 25 * w / 1280 * spec[4]), spec[4])
+        primary := FindEnemySkin(shot, SkinGrid(shot, frac, step)), diag := {}
+        Check(!primary || StaticFigureReject(shot, primary) != "", label ": прежний максимум скрывал фигуру")
+        item := FindEnemyMulti(shot, frac, step, diag)
+        Check(item && item.src = "фигура" && item.HasOwnProp("isolated") && item.isolated
+            && Abs(item.cx - w / 2) <= Max(4, w * 0.01) && diag.skinPct = item.skin && diag.figureReject = ""
+            , label ": неподвижная фигура из отдельной группы на той же сетке")
+        FixtureRect(shot, item.x, item.y - 17, item.w, 10, 0x0FD8FF)
+        Check(HasTeammateMarkerAbove(shot, item.x, item.y, item.w, item.h) && !FindEnemyMulti(shot, frac, step)
+            , label ": альтернативная фигура проходит ту же проверку союзника")
+    }
+}
+
+TestEnemySwitch() {
+    WithGroundFixture(CheckEnemySwitch)
+}
+
+CheckEnemySwitch() {
+    global CFG, ST
+    CFG.featMotionEnemy := false, CFG.enemyFastMs := 0, CFG.skinWideMs := 60000, CFG.aimReactMs := 0
+    CFG.featFirstSlot := false, CFG.featAds := false, CFG.combatStrafe := false
+    ST.scanWideAt := A_TickCount, id := 1700
+    for i, cx in [208, 240, 240, 0] {
+        shot := WorldFixture(++id, "red"), ST.scanWork := 0
+        DrawCombatDecoy(shot)
+        if cx
+            DrawCombatFigure(shot, cx, 126, 1.9)
+        shot.capturedAt := A_TickCount
+        RunFixtureRoam(shot)
+        tr := ST.enemyConfirm
+        Check(shot.HasOwnProp("enemyReading") && ST.scanWork >= 1 && !ST.leftDown && !ST.held.Count
+            , "один реальный замер боя на кадре, без ввода в DryRun")
+        if (i = 1 || i = 2) {
+            Check(shot.enemyReading && shot.enemyReading.isolated && tr.hits = 1 && !ST.enemyCache && !ST.shots
+                , "новая фигура внутри 10% ширины не наследует первый замер: кадр " i)
+            if (i = 1)
+                Check(!CachedEnemy(shot) && tr.hits = 1, "дубликат кадра не считается повтором")
+        } else if (i = 3) {
+            Check(tr.hits = 2 && EnemyOnFrame(shot, shot.enemyReading) && ST.shots = 1
+                , "второе чтение новой фигуры под прицелом разрешает виртуальную очередь")
+        } else
+            Check(!shot.enemyReading && !tr.hits && !ST.enemyCache && ST.shots = 1
+                , "после исчезновения фигуры декорация не поддерживает стрельбу")
+    }
+
+    ; Разные каналы/масштабы в одном центре не подтверждают друг друга.
+    tr := NewEnemyTracker(), box := {src:"фигура", cx:240, cy:144, w:16, h:32}
+    Check(!ConfirmEnemyObservation(tr, WorldFixture(++id), box), "геометрия: первый замер")
+    other := box.Clone(), other.src := "движение"
+    Check(!ConfirmEnemyObservation(tr, WorldFixture(++id), other) && tr.hits = 1, "смена канала не даёт второй замер")
+    big := other.Clone(), big.w *= 2, big.h *= 2
+    Check(!ConfirmEnemyObservation(tr, WorldFixture(++id), big) && tr.hits = 1, "смена масштаба не даёт второй замер")
 }
 
 TestProjectedScenery() {

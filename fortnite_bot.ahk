@@ -572,8 +572,8 @@ global ST := {
     promptSeq: 0,
     promptConfirm: NewPromptTracker(),
     promptMemory: [],          ; недавние повторные плашки (до четырёх в одном виде)
-    enemyConfirm:  NewCandidateTracker(),
-    enemyWideConfirm: NewCandidateTracker(),
+    enemyConfirm:  NewEnemyTracker(),
+    enemyWideConfirm: NewEnemyTracker(),
     captureSeq: 0,
     cameraAt: 0,
     cameraSeq: 0,              ; номер собственной отправленной команды поворота
@@ -3355,9 +3355,15 @@ EnemyCandidates(shot, figure, skinPct) {
 ; Кандидаты: фигура и локальное движение. Цвет прицела не даёт цель.
 ; Цифры урона и звуковые метки не являются координатами боевой цели.
 ; ----------------------------------------------------------------------------
-SkinGrid(shot, x1, y1, x2, y2, stepIn := 0) {
+SkinGrid(shot, frac := 0, stepIn := 0) {
     ; Карта тёплых пикселей. При 1080p/4K сохраняем масштаб сетки и шага.
     global CFG
+    if (frac <= 0)
+        frac := CFG.enemyFastFrac
+    x1 := Max(0, Round(shot.w * (0.5 - frac / 2)))
+    x2 := Min(shot.w - 1, Round(shot.w * (0.5 + frac / 2)))
+    y1 := Max(0, Round(shot.h * 0.12))
+    y2 := Min(shot.h - 1, Round(shot.h * 0.92))
     scale := Max(1.0, shot.w / 1280, shot.h / 720)
     cell := Round(CFG.skinCell * scale)
     step := Max(1, Round(ScanStep(stepIn > 0 ? stepIn : CFG.skinStep) * scale))
@@ -3387,7 +3393,8 @@ SkinGrid(shot, x1, y1, x2, y2, stepIn := 0) {
         }
         y += step
     }
-    return {cnt: cnt, cw: cw, ch: ch, cell: cell, step: step, totalSkin: totalSkin}
+    return {cnt:cnt, cw:cw, ch:ch, cell:cell, step:step, totalSkin:totalSkin
+        , x:x1, y:y1, w:x2 - x1, h:y2 - y1, seedCol:0, seedRow:0}
 }
 
 SamplesInGridCells(first, last, length, cell, step) {
@@ -3454,15 +3461,7 @@ TransientOk(x, y) {
 }
 
 ; --- канал 1: фигура игрока -------------------------------------------------
-FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
-    global CFG, ST
-    if (frac <= 0)
-        frac := CFG.enemyFastFrac
-    x1 := Max(0, Round(shot.w * (0.5 - frac / 2)))
-    x2 := Min(shot.w - 1, Round(shot.w * (0.5 + frac / 2)))
-    y1 := Max(0, Round(shot.h * 0.12))
-    y2 := Min(shot.h - 1, Round(shot.h * 0.92))
-    g := SkinGrid(shot, x1, y1, x2, y2, stepIn)
+FindEnemySkin(shot, g, diagnostic := 0) {
     ; 1) максимум в окне 3×3. На пустой маске даже не строим окна;
     ; на непустой читаем те же девять ячеек без вложенных массивов.
     if (g.totalSkin < 3)
@@ -3484,6 +3483,7 @@ FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
     }
     if (best < 3)
         return 0
+    g.seedCol := bx, g.seedRow := by
     ; 2) растягиваем бокс в стороны, пока в соседних столбцах/строках есть кожа
     thr := Max(2, best // 10)
     c0 := bx, c1 := bx + 1, r0 := by, r1 := by + 1
@@ -3495,27 +3495,33 @@ FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
         r0 -= 1
     while (r1 < g.ch && GridRowSum(g, r1 + 1) >= thr)
         r1 += 1
-    bx1 := x1 + (c0 - 1) * g.cell, bx2 := x1 + c1 * g.cell
-    by1 := y1 + (r0 - 1) * g.cell, by2 := y1 + r1 * g.cell
-    bw := bx2 - bx1, bh := by2 - by1
-    if (bw < 4 || bh < 4)
-        return 0
-    ; 3) проверки размера: масштаб считаем относительно ширины 1280 px
+    return EnemySkinBox(shot, g, c0, c1, r0, r1, diagnostic)
+}
+
+SkinBoxFits(shot, w, h) {
+    global CFG
     k := shot.w / 1280
-    if (bw < CFG.enemyMinBoxW * k || bw > CFG.enemyMaxBoxW * k)
+    return w >= Max(4, CFG.enemyMinBoxW * k) && w <= CFG.enemyMaxBoxW * k
+        && h >= Max(4, CFG.enemyMinBoxH * k) && h <= CFG.enemyMaxBoxH * k
+        && w / h >= CFG.enemyAspectMin && w / h <= CFG.enemyAspectMax
+}
+
+SkinBoxSamples(g, c0, c1, r0, r1) {
+    return SamplesInGridCells(c0, c1, g.w, g.cell, g.step)
+        * SamplesInGridCells(r0, r1, g.h, g.cell, g.step)
+}
+
+EnemySkinBox(shot, g, c0, c1, r0, r1, diagnostic, isolatedSkin := -1) {
+    global CFG, ST
+    bx1 := g.x + (c0 - 1) * g.cell, by1 := g.y + (r0 - 1) * g.cell
+    bw := (c1 - c0 + 1) * g.cell, bh := (r1 - r0 + 1) * g.cell
+    if !SkinBoxFits(shot, bw, bh)
         return 0
-    if (bh < CFG.enemyMinBoxH * k || bh > CFG.enemyMaxBoxH * k)
-        return 0
-    asp := bw / bh
-    if (asp < CFG.enemyAspectMin || asp > CFG.enemyAspectMax)
-        return 0
-    ; 4) плотность в боксе. Число всех проб — произведение двух осей
-    ; той же сетки; не нужно считать пустые пиксели в каждой ячейке.
-    all := SamplesInGridCells(c0, c1, x2 - x1, g.cell, g.step)
-         * SamplesInGridCells(r0, r1, y2 - y1, g.cell, g.step)
+    ; Плотность в той же сетке, с учётом неполных ячеек на краях ROI.
+    all := SkinBoxSamples(g, c0, c1, r0, r1)
     if (all < 40)
         return 0
-    skin := 0, localL := c1 + 1, localR := c0 - 1, localT := 0, localB := 0
+    counts := g.cnt, skin := 0, localL := c1 + 1, localR := c0 - 1, localT := 0, localB := 0
     r := r0
     while (r <= r1) {
         TickCheck("плотность фигуры")
@@ -3538,6 +3544,9 @@ FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
         }
         r += 1
     }
+    ; Для отдельной группы нельзя дополнять силуэт чужими ячейками в её рамке.
+    if (isolatedSkin >= 0 && skin != isolatedSkin)
+        return 0
     pct := skin / all * 100
     if diagnostic
         diagnostic.skinPct := Round(pct)
@@ -3568,10 +3577,9 @@ FindEnemySkin(shot, frac := 0, stepIn := 0, diagnostic := 0) {
     ; Глобальные проекции могут добавить к рамке пустые края за счёт дальнего
     ; фона и скрыть слишком плотную заливку. Применяем тот же верхний порог
     ; в границах локальной маски. Только отсечка: не меняем рамку и не ищем
-    ; другой тёплый объект. При отказе остаётся обычный поиск движения.
+    ; другой объект внутри этой рамки. При отказе проверим отдельные пятна.
     if (localL != c0 || localR != c1 || localT != r0 || localB != r1) {
-        localAll := SamplesInGridCells(localL, localR, x2 - x1, g.cell, g.step)
-            * SamplesInGridCells(localT, localB, y2 - y1, g.cell, g.step)
+        localAll := SkinBoxSamples(g, localL, localR, localT, localB)
         if (skin * 100 > localAll * CFG.enemySkinMaxPct) {
             if diagnostic
                 diagnostic.figureReject := "плотное тёплое пятно, рамка растянута фоном ("
@@ -3786,22 +3794,104 @@ PickLocalMotion(shot, prev, cells, cols, step) {
     return best
 }
 
-ReadStaticFigure(shot, frac := 0, stepIn := 0, diagnostic := 0) {
+StaticFigureReject(shot, fig) {
     global CFG
+    if HasTeammateMarkerAbove(shot, fig.x, fig.y, fig.w, fig.h)
+        return "похоже на метку союзника"
+    if HasTreeCanopyAbove(shot, fig.x, fig.y, fig.w, fig.h)
+        return "похоже на крону над стволом"
+    if (FigureGroundScore(shot, fig.x, fig.y, fig.w, fig.h) < CFG.enemyContrastMin)
+        return "малый контраст с фоном"
+    return ""
+}
+
+AlternativeSkinBoxes(shot, g) {
+    ; Один обход уже собранной сетки: непустые соседние ячейки (включая
+    ; диагонали) образуют группу. Группу исходного максимума не проверяем
+    ; повторно частями. Из независимых островков оставляем до четырёх
+    ; ближайших к центру, пригодных по размеру и плотности.
+    global CFG
+    boxes := []
+    if !g.seedCol
+        return boxes
+    seen := Buffer(g.cnt.Length, 0), cols := g.cw
+    for i, count in g.cnt {
+        if Mod(i - 1, cols) = 0
+            TickCheck("отдельные тёплые области")
+        if (!count || NumGet(seen, i - 1, "UChar"))
+            continue
+        todo := [i], index := 1, skin := 0, main := false
+        c0 := cols, c1 := 1, r0 := g.ch, r1 := 1
+        NumPut("UChar", 1, seen, i - 1)
+        while (index <= todo.Length) {
+            if Mod(index, 64) = 0
+                TickCheck("группа тёплых ячеек")
+            j := todo[index], index += 1
+            c := Mod(j - 1, cols) + 1, r := (j - 1) // cols + 1
+            main := main || (c >= g.seedCol && c <= g.seedCol + 2 && r >= g.seedRow && r <= g.seedRow + 2)
+            c0 := Min(c0, c), c1 := Max(c1, c), r0 := Min(r0, r), r1 := Max(r1, r)
+            skin += g.cnt[j]
+            left := Max(1, c - 1), right := Min(cols, c + 1)
+            y := Max(1, r - 1), bottom := Min(g.ch, r + 1)
+            while (y <= bottom) {
+                n := (y - 1) * cols + left, end := (y - 1) * cols + right
+                while (n <= end) {
+                    if (g.cnt[n] && !NumGet(seen, n - 1, "UChar")) {
+                        NumPut("UChar", 1, seen, n - 1)
+                        todo.Push(n)
+                    }
+                    n += 1
+                }
+                y += 1
+            }
+        }
+        if (main || !SkinBoxFits(shot, (c1 - c0 + 1) * g.cell, (r1 - r0 + 1) * g.cell))
+            continue
+        all := SkinBoxSamples(g, c0, c1, r0, r1)
+        if (all < 40 || skin * 100 < all * CFG.enemySkinMinPct || skin * 100 > all * CFG.enemySkinMaxPct)
+            continue
+        cx := g.x + (c0 + c1 - 1) * g.cell / 2, cy := g.y + (r0 + r1 - 1) * g.cell / 2
+        d := (cx - shot.w / 2) ** 2 + (cy - shot.h / 2) ** 2
+        pos := 1
+        while (pos <= boxes.Length && boxes[pos].d <= d)
+            pos += 1
+        if (pos <= 4) {
+            boxes.InsertAt(pos, {c0:c0, c1:c1, r0:r0, r1:r1, d:d, skin:skin})
+            if (boxes.Length > 4)
+                boxes.Pop()
+        }
+    }
+    return boxes
+}
+
+ReadStaticFigure(shot, frac := 0, stepIn := 0, diagnostic := 0) {
+    global ST
     if diagnostic
         diagnostic.figureReject := "маска тёплых пикселей или форма"
-    fig := FindEnemySkin(shot, frac, stepIn, diagnostic), reject := ""
-    if !fig
-        return 0
-    if HasTeammateMarkerAbove(shot, fig.x, fig.y, fig.w, fig.h)
-        reject := "похоже на метку союзника"
-    else if HasTreeCanopyAbove(shot, fig.x, fig.y, fig.w, fig.h)
-        reject := "похоже на крону над стволом"
-    else if (FigureGroundScore(shot, fig.x, fig.y, fig.w, fig.h) < CFG.enemyContrastMin)
-        reject := "малый контраст с фоном"
-    if diagnostic
-        diagnostic.figureReject := reject
-    return reject = "" ? fig : 0
+    g := SkinGrid(shot, frac, stepIn)
+    fig := FindEnemySkin(shot, g, diagnostic)
+    if fig {
+        reject := StaticFigureReject(shot, fig)
+        if diagnostic
+            diagnostic.figureReject := reject
+        if (reject = "")
+            return fig
+    }
+    ; Отказ основного кандидата не отменяет поиск неподвижной фигуры рядом.
+    ; Пиксельную маску не пересчитываем и не ослабляем фильтры для повтора.
+    alternative := {}
+    for b in AlternativeSkinBoxes(shot, g) {
+        fig := EnemySkinBox(shot, g, b.c0, b.c1, b.r0, b.r1, alternative, b.skin)
+        if (fig && StaticFigureReject(shot, fig) = "") {
+            fig.isolated := true
+            if diagnostic
+                diagnostic.skinPct := fig.skin, diagnostic.figureReject := ""
+            else
+                ST.enemySkinPct := fig.skin
+            return fig
+        }
+    }
+    return 0
 }
 
 FindEnemyMulti(shot, frac := 0, stepIn := 0, diagnostic := 0) {
@@ -7136,6 +7226,34 @@ FrameActionButton(shot, scene) {
     return action && action.scene = scene ? action.box : 0
 }
 
+NewEnemyTracker() {
+    return {seq:0, at:0, view:0, hits:0, box:0}
+}
+
+SameEnemyObservation(a, b, shot) {
+    ; Близость измеряем по масштабу самой рамки, а не по 10% всего окна.
+    ; Разные каналы и резко разные размеры не начинают бой общим счётом.
+    if (!a || !b || a.src != b.src)
+        return false
+    floor := Max(6, shot.w * 0.009)
+    return Max(a.w, b.w) <= Min(a.w, b.w) * 1.85 && Max(a.h, b.h) <= Min(a.h, b.h) * 1.85
+        && Abs(a.cx - b.cx) <= Max(floor, (a.w + b.w) * 0.37)
+        && Abs(a.cy - b.cy) <= Max(floor, (a.h + b.h) * 0.30)
+}
+
+ConfirmEnemyObservation(tr, shot, item) {
+    global CFG
+    if (!WorldFrameCurrent(shot) || shot.captureId < tr.seq || shot.capturedAt < tr.at)
+        return 0
+    recent := SameFrameView(tr.view, shot) && shot.capturedAt - tr.at <= CFG.enemyHoldMs
+    if (shot.captureId = tr.seq)
+        return recent && item && tr.box = item && tr.hits >= CFG.enemyConfirmHits ? item : 0
+    paired := recent && tr.hits && SameEnemyObservation(tr.box, item, shot)
+    tr.hits := item ? (paired ? tr.hits + 1 : 1) : 0
+    tr.seq := shot.captureId, tr.at := shot.capturedAt, tr.view := FrameView(shot), tr.box := item
+    return item && tr.hits >= CFG.enemyConfirmHits ? item : 0
+}
+
 RecentEnemyCandidate(tr, shot) {
     global CFG
     return tr.hits && SameFrameView(tr.view, shot) && A_TickCount - tr.at <= CFG.enemyHoldMs
@@ -7174,10 +7292,10 @@ CachedEnemy(shot) {
             if diagnostic.HasOwnProp("skinPct")
                 ST.enemySkinPct := diagnostic.skinPct
             tr := wide ? ST.enemyWideConfirm : ST.enemyConfirm
-            verified := ConfirmWorldCandidate(tr, shot, IsEnemyCandidate(item) ? item : 0, CFG.enemyConfirmHits)
+            verified := ConfirmEnemyObservation(tr, shot, IsEnemyCandidate(item) ? item : 0)
             shot.enemyReading := item
             if verified {
-                if (!ST.enemyCache || ST.enemyCache.src != verified.src)
+                if !SameEnemyObservation(ST.enemyCache, verified, shot)
                     ST.enemyLastAt := 0, ST.enemyVelX := 0, ST.enemyVelY := 0
                 ST.enemyCache := verified, ST.enemyCacheWide := wide
                 ST.enemySeenAt := shot.capturedAt, ST.enemySeenSeq := shot.captureId
@@ -7364,8 +7482,8 @@ ResetCaches() {
     ST.enemyTrackSeq := 0
     ST.lastFire := 0, ST.dmgAt := 0, ST.dmgBox := 0, ST.lastAdsAt := 0
     ST.enemyLastAt := 0, ST.enemyLastCameraSeq := -1, ST.enemyVelX := 0, ST.enemyVelY := 0
-    ST.enemyConfirm := NewCandidateTracker()
-    ST.enemyWideConfirm := NewCandidateTracker()
+    ST.enemyConfirm := NewEnemyTracker()
+    ST.enemyWideConfirm := NewEnemyTracker()
     ST.promptConfirm := NewPromptTracker(), ST.promptMemory := []
     ST.promptCache := 0, ST.promptAt := 0, ST.promptAvailable := false, ST.promptSeq := 0
     ST.breakTarget := 0, ST.breakNoChange := 0
@@ -13787,8 +13905,8 @@ OnStart(expectedGen := 0, *) {
     ST.matchStarted := false, ST.matchFromQueue := false
     ST.roundActive := false, ST.lobbyRequeue := false
     ST.promptConfirm := NewPromptTracker()
-    ST.enemyConfirm := NewCandidateTracker()
-    ST.enemyWideConfirm := NewCandidateTracker()
+    ST.enemyConfirm := NewEnemyTracker()
+    ST.enemyWideConfirm := NewEnemyTracker()
     ResetMoveWatch(true)
     ST.tickReentry := 0
     ST.lastTickAt := A_TickCount
@@ -13981,8 +14099,8 @@ OnStop(reason := "", *) {
         ST.promptAt := 0
         ST.promptCache := 0
         ST.promptAvailable := false
-        ST.enemyConfirm := NewCandidateTracker()
-        ST.enemyWideConfirm := NewCandidateTracker()
+        ST.enemyConfirm := NewEnemyTracker()
+        ST.enemyWideConfirm := NewEnemyTracker()
         ST.promptConfirm := NewPromptTracker(), ST.promptMemory := []
         ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
         ResetMoveWatch(true)
@@ -14868,7 +14986,8 @@ BuildCalibrationReport(shot) {
         . " · " NavKindRu(nav.kind) " · один кадр; не карта препятствий")
     cand := EnemyCandidates(shot, enemy, diagnostic.skinPct)
     lines.Push("  фигура: " (enemy ? ("кандидат в (" enemy.cx "," enemy.cy "), рамка "
-        . enemy.w "x" enemy.h " @ (" enemy.x "," enemy.y ")") : "нет: " diagnostic.figureReject)
+        . enemy.w "x" enemy.h " @ (" enemy.x "," enemy.y ")"
+        . (enemy.HasOwnProp("isolated") ? " · отдельная тёплая группа" : "")) : "нет: " diagnostic.figureReject)
         . " · цвет прицела не участвует")
     lines.Push("  плашка E: " (prompt ? ("кандидат в (" prompt.cx "," prompt.cy "), рамка "
         . prompt.w "x" prompt.h " @ (" prompt.x "," prompt.y ")") : "нет")
