@@ -2625,6 +2625,7 @@ CheckLootScanBudget() {
     global CFG, ST
     ApplyPerfProfile("low_cpu")
     CFG.featSound := false, CFG.enemyFastMs := 0, CFG.skinWideMs := 60000, CFG.featFirstSlot := false
+    CFG.promptScanMs := 0 ; соседние синтетические кадры без Sleep всё равно измеряют E
     ST.scanWideAt := A_TickCount
     first := WorldFixture(160, "center"), first.combatTrace := NewCombatTrace(first)
     ST.scanWork := 1 ; HP уже измерено; E использует ещё одну единицу.
