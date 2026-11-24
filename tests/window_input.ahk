@@ -626,10 +626,13 @@ TestStaticFallback(a, b) {
 TestSlowChestRoundTrip(a, b) {
     global CFG, ST, SC
     FocusFixture(a), SelectFixture(b)
-    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := false
     CFG.featCombat := false, CFG.featChest := true, CFG.chestHoldMs := 580
     CFG.featSound := false, CFG.featParkour := false, CFG.sprint := false
     ApplyPerfProfile("low_cpu")
+    ; Изолируем срок W от совпадения интервалов меню и масок: полный скан
+    ; меню в отдельном прогревочном тике, затем обычный бюджет low_cpu.
+    CFG.scanMenuMs := 60000
     ResetSceneEvidence()
     ResetNavigation()
     ResetCaches()
@@ -637,6 +640,8 @@ TestSlowChestRoundTrip(a, b) {
     ST.promptAttempts := [], ST.lastPromptE := 0
     attempts := ST.promptN, chests := ST.chests
     SetFixtureFrame(b, 6)
+    TickFixture(b)
+    CFG.featMove := true
     Loop 3 {
         if (A_Index > 1)
             WaitForLootScan()
