@@ -44,7 +44,7 @@ RunWindowTests() {
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
-            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback] {
+            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -621,6 +621,78 @@ TestStaticFallback(a, b) {
     ExpectKey(a, SC.w, 1, 1)
     ExpectKey(b, SC.e, 4, 4)
     ExpectKey(b, SC.w, 4, 4)
+}
+
+TestSlowChestRoundTrip(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featChest := true, CFG.chestHoldMs := 580
+    CFG.featSound := false, CFG.featParkour := false, CFG.sprint := false
+    ApplyPerfProfile("low_cpu")
+    ResetSceneEvidence()
+    ResetNavigation()
+    ResetCaches()
+    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
+    ST.promptAttempts := [], ST.lastPromptE := 0
+    attempts := ST.promptN, chests := ST.chests
+    SetFixtureFrame(b, 6)
+    Loop 3 {
+        if (A_Index > 1)
+            WaitForLootScan()
+        shot := TickFixture(b)
+        Check(ST.chestCacheSeq = shot.captureId && ST.walkTarget && !ST.tgt
+            , "свечение измерено, но не разрешает E")
+        if (A_Index < 3)
+            ExpectKey(b, SC.w, 4, 4)
+    }
+    hold := ST.held.Get(SC.w, 0), firstDeadline := ST.guidedUntil
+    Check(hold && hold.target = b && firstDeadline >= ST.lootMasksAt + CFG.scanLootMs + CFG.loopMs
+        , "удержание W у прицела должно покрыть интервал масок и следующий тик экономного профиля")
+    ExpectKey(b, SC.w, 5, 4)
+    ExpectKey(b, SC.e, 4, 4)
+
+    deferred := TickFixture(b)
+    Check(ST.chestCacheSeq != deferred.captureId && ST.guidedUntil = firstDeadline && ST.held.Get(SC.w, 0) = hold
+        , "отложенная маска не продлевает W и не переключает на патруль")
+    WaitForLootScan()
+    fresh := TickFixture(b)
+    Check(ST.chestCacheSeq = fresh.captureId && ST.guidedUntil > firstDeadline && ST.held.Get(SC.w, 0) = hold
+        , "повторное измерение продлевает то же W без рывка")
+    Sleep(Max(0, firstDeadline + 25 - A_TickCount))
+    ExpectKey(b, SC.w, 5, 4)
+    ExpectKey(b, SC.w, 5, 5, 1300)
+    Check(!ST.held.Has(SC.w), "без свежих кадров даже продлённый шаг отпускается сам")
+
+    TickFixture(b)
+    ExpectKey(b, SC.w, 6, 5)
+    SetFixtureFrame(b, 1)
+    TickFirstPrompt(b)
+    ExpectKey(b, SC.w, 6, 6)
+    ExpectKey(b, SC.e, 4, 4)
+    TickFixture(b)
+    p := ST.tgt
+    Check(p && p.keyHold = ST.held.Get(SC.e, 0) && p.keyHold.target = b && ST.promptN = attempts + 1
+        , "только вторая плашка запускает удержание E, в том же окне")
+    ExpectKey(b, SC.e, 5, 4)
+    ExpectKey(b, SC.e, 5, 5, 1500)
+    Sleep(20)
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    Check(!ST.tgt && ST.chests = chests && InStr(ST.lastAction, "результат E неизвестен")
+        , "после отпускания плашки нет; открытие не засчитано")
+    TickFixture(b)
+    Check(ST.segUntil && !ST.guidedUntil, "после попытки самостоятельно возобновляется патруль")
+    ExpectKey(b, SC.w, 7, 6)
+    HaltMatchMovement()
+    ExpectKey(b, SC.w, 7, 7)
+    ExpectKey(a, SC.w, 1, 1)
+    ExpectKey(a, SC.e, 3, 3)
+}
+
+WaitForLootScan() {
+    global CFG, ST
+    Sleep(Max(0, ST.lootMasksAt + CFG.scanLootMs + 16 - A_TickCount))
 }
 
 SelectFixture(h) {
