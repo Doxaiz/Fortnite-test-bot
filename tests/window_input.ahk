@@ -44,7 +44,8 @@ RunWindowTests() {
         CFG.dryRun := false
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
-            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip] {
+            , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
+            , TestGuidedLaneBypass] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -700,6 +701,49 @@ WaitForLootScan() {
     Sleep(Max(0, ST.lootMasksAt + CFG.scanLootMs + 16 - A_TickCount))
 }
 
+TestGuidedLaneBypass(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featChest := true, CFG.featSound := false
+    ApplyPerfProfile("fast")
+    CFG.scanLootMs := 0, CFG.navScanMs := 0
+    CFG.stuckSampleMs := 150, CFG.stuckMs := 8000, CFG.stuckRecoveryMs := 480
+    ResetNavigation()
+    ResetCaches()
+    ST.navTurnSign := -1, ST.cameraAt := 0  ; исходное предпочтение противоположно свободной полосе
+    SetFixtureFrame(b, 20)
+    Loop 4
+        TickFixture(b)
+    hold := ST.held.Get(SC.w, 0)
+    Check(hold && ST.stuckShot && ST.navInfo.kind = "busy" && ST.navInfo.turnStable && ST.navInfo.turn = 1
+        , "у свечения плотный центр, два скана показывают менее плотную правую полосу")
+    ExpectKey(b, SC.w, 8, 7)
+    Loop 7 {
+        SetFixtureFrame(b, Mod(A_Index, 2) ? 21 : 20)
+        Sleep(175)
+        TickFixture(b)
+        Check(ST.held.Get(SC.w, 0) = hold && !ST.stuckStillSamples && !ST.stuckRecoverUntil
+            , "плотные края сами по себе не прерывают направленное движение")
+    }
+    Check(ST.stuckMotionN >= 3, "разные кадры мира были измерены")
+    Loop 12 {
+        Sleep(175)
+        TickFixture(b)
+        if ST.stuckRecoverUntil
+            break
+    }
+    Check(ST.stuckRecoverN = 1 && ST.stuckRecoverKey = SC.d && ST.held.Has(SC.d) && !ST.guidedUntil
+        , "не дожидаясь обычного срока, пробуем ограниченный шаг в согласованную сторону")
+    ExpectKey(b, SC.w, 8, 8)
+    ExpectKey(b, SC.d, 2, 1)
+    ExpectKey(b, SC.d, 2, 2, 1200)
+    Check(!ST.held.Count && !ST.tgt, "без нового тика обход сам заканчивается, E не нажималась")
+    ExpectKey(b, SC.a, 1, 1)
+    ExpectKey(b, SC.e, 5, 5)
+    ExpectKey(a, SC.d, 0, 0)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -760,7 +804,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 20
+    Loop 22
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -829,10 +873,11 @@ ReceiverCounts(vk, l, msg, h) {
 BuildFixtureFrame(scene) {
     w := 480, h := 288, buf := Buffer(w * h * 4)
     ; Текстура, а не заливка: защита захвата от однотонного кадра остаётся включена.
+    light := scene = 21 ? 28 : 0
     Loop 24 {
         row := A_Index - 1
         Loop 24 {
-            col := A_Index - 1, shade := 63 + Mod(col + row * 3, 42)
+            col := A_Index - 1, shade := 63 + Mod(col + row * 3, 42) + light
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
@@ -859,7 +904,23 @@ BuildFixtureFrame(scene) {
     }
     if (scene = 5)
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
-    if (scene = 6)
+    if (scene >= 20) {
+        ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
+        ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
+        for bounds in [[0.15, 0.34], [0.39, 0.61]] {
+            Loop 17 {
+                col := A_Index - 1, x := Round(w * (bounds[1] + (bounds[2] - bounds[1]) * col / 16))
+                shade := (Mod(col, 2) ? 52 : 156) + light
+                PaintFixture(buf, w, x, 117, 2, 88, shade * 0x010101)
+            }
+        }
+        Loop 17 {
+            col := A_Index - 1, x := Round(w * (0.66 + 0.19 * col / 16))
+            shade := 66 + col * 3 + light
+            PaintFixture(buf, w, x, 117, 2, 88, shade * 0x010101)
+        }
+    }
+    if (scene = 6 || scene >= 20)
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
     if (scene = 9) {
         PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)
@@ -891,7 +952,7 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, 233, 124, 16, 32, scene = 14 ? 0xDDDDDD : 0x202020)
         PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727) ; прицел не меняется
     }
-    if (scene >= 17) {
+    if (scene >= 17 && scene <= 19) {
         PaintFixture(buf, w, 336, 63, 86, 98, 0xDA8848) ; доминирующая, но невалидная область
         if (scene >= 18) {
             cx := scene = 18 ? 208 : 240, k := w / 1280 * 1.9

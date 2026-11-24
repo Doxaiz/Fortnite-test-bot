@@ -583,6 +583,7 @@ global ST := {
     stuckShot: 0,
     stuckSampleAt: 0,
     stuckStillMs: 0,
+    stuckStillSamples: 0,
     stuckRecoverN: 0,
     stuckRecoverUntil: 0,
     stuckRecoverKey: "",
@@ -5025,7 +5026,7 @@ MouseCalCompareFrames(a, b, budgetMs := 2500, guard := 0) {
 
 ResetMoveWatch(resetAttempts := false) {
     global ST
-    ST.stuckShot := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0
+    ST.stuckShot := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
     ST.stuckMotionN := 0
     if resetAttempts
         ST.stuckRecoverN := 0
@@ -5239,6 +5240,21 @@ CheckStormAndZone(shot, now) {
     return false
 }
 
+GuidedRecoverySide(shot, now) {
+    global CFG, ST
+    ; Короткий путь к первому обходу только при неподвижном направленном W.
+    ; Плотные края сами по себе не стена: нужны сравнения мира и два
+    ; согласованных скана коридоров, последний — на кадре действия.
+    if (!ST.guidedUntil || now >= ST.guidedUntil || ST.segUntil || ST.stuckRecoverN
+        || ST.stuckStillSamples < 2 || ST.stuckStillMs < Max(1100, 2 * CFG.stuckSampleMs)
+        || !FrameHasMatchHud(shot))
+        return 0
+    RefreshNavigation(shot)
+    n := ST.navInfo
+    return n && n.kind = "busy" && n.turnStable && n.seq = shot.captureId
+        && SameFrameView(n.view, shot) && WorldFrameCurrent(shot) ? n.turn : 0
+}
+
 MoveWatch(shot, now) {
     global CFG, SC, ST
     ; Любой бой/смена режима отменяет боковую попытку.
@@ -5259,7 +5275,8 @@ MoveWatch(shot, now) {
         ResetMoveWatch()
         return false
     }
-    if (!ST.held.Has(SC.w) || now - ST.cameraAt < CFG.stuckCameraQuietMs) {
+    forward := ST.held.Get(SC.w, 0)
+    if (!forward || now - ST.cameraAt < CFG.stuckCameraQuietMs) {
         ResetMoveWatch()
         return false
     }
@@ -5286,16 +5303,19 @@ MoveWatch(shot, now) {
         return false
     }
     if (diff >= CFG.stuckDiffThreshold) {
-        ST.stuckStillMs := 0, ST.stuckMotionN += 1
+        ST.stuckStillMs := 0, ST.stuckStillSamples := 0, ST.stuckMotionN += 1
         if (ST.stuckMotionN >= 3)
             ST.stuckRecoverN := 0
         return false
     }
-    ST.stuckMotionN := 0, ST.stuckStillMs += dt
-    if (ST.stuckStillMs < CFG.stuckMs)
+    ST.stuckMotionN := 0, ST.stuckStillMs += dt, ST.stuckStillSamples += 1
+    side := GuidedRecoverySide(shot, now)
+    if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
-    if !WorldFrameCurrent(shot)
+    if (!WorldFrameCurrent(shot) || ST.held.Get(SC.w, 0) != forward)
         return false
+    if side
+        ST.navTurnSign := side
     ST.stuckRecoverN += 1
     ST.stuckTotal += 1
     attempt := ST.stuckRecoverN
@@ -5310,6 +5330,9 @@ MoveWatch(shot, now) {
         if KeyDown(k, shot.inputEpochAtCapture, 0, shot) {
             InputReleaseLater("key", k, CFG.stuckRecoveryMs)
             ST.stuckRecoverKey := k, ST.stuckRecoverUntil := A_TickCount + CFG.stuckRecoveryMs
+            if side
+                LogThrottledKey("[guided-bypass]", "[nav] Подход без видимого продвижения; пробую короткий шаг "
+                    . (side < 0 ? "влево" : "вправо") " по двум измерениям. Кадр #" shot.captureId)
         }
     }
     ST.lastAction := "обхожу препятствие (" attempt "/" CFG.stuckRecoveryMax ")"
@@ -6296,9 +6319,19 @@ HaltMatchMovement() {
     ResetMoveWatch()
 }
 
-ForwardStep(shot, ms := 430) {
+ForwardStep(shot, ms := 430, scanMs := -1) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
+        return false
+    if (scanMs >= 0) {
+        ; У прицела 270 мс меньше 360 мс между масками low_cpu. Даём
+        ; место одному тику после интервала и небольшому запасу захвата,
+        ; но без нового измерения не держим W дольше 600 мс.
+        ms := Min(600, Max(ms, scanMs + CFG.loopMs + 60))
+        if (CFG.botMode = "auto")
+            RefreshNavigation(shot)
+    }
+    if !WorldFrameCurrent(shot)
         return false
     continuing := ST.guidedUntil && ST.held.Has(SC.w)
     ClearMatchStrafe()
@@ -6320,7 +6353,7 @@ ForwardStep(shot, ms := 430) {
     return true
 }
 
-WalkTo(targetX, targetY, shot) {
+WalkTo(targetX, targetY, shot, scanMs := -1) {
     global CFG, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
@@ -6343,7 +6376,7 @@ WalkTo(targetX, targetY, shot) {
         }
         return false
     }
-    return ForwardStep(shot, NearCrosshair(shot, targetX, targetY) ? 270 : 430)
+    return ForwardStep(shot, NearCrosshair(shot, targetX, targetY) ? 270 : 430, scanMs)
 }
 
 ; ============================================================================
@@ -6576,7 +6609,7 @@ SeekChestBySound(shot, now) {
         ST.guidedUntil := A_TickCount + Max(260, CFG.scanSoundMs)
         ST.lastAction := "метка сундука: поворачиваюсь, жду новый кадр"
     } else {
-        if !ForwardStep(shot, 430)
+        if !ForwardStep(shot, 430, CFG.scanSoundMs)
             return false
         ST.lastAction := "короткий шаг по метке сундука"
     }
@@ -6859,7 +6892,7 @@ TryApproach(shot, now) {
         ST.lastAction := "объект у прицела: жду подсказку"
         return true
     }
-    if !WalkTo(target.x, target.y, shot)
+    if !WalkTo(target.x, target.y, shot, CFG.scanLootMs)
         return false
     ST.moveMode := chest ? "к свечению сундука" : "к кандидату на предмет"
     ST.lastAction := ST.moveMode
@@ -7116,7 +7149,7 @@ ReleaseCombatStrafe() {
     ST.strafeKey := "", ST.strafeFlipAt := 0
 }
 
-Combat(shot, now) {
+Combat(shot, now, reserve := 0) {
     global CFG, SC, ST
     ST.enemy := 0
     if (!CFG.featCombat || CFG.teamSafe) {
@@ -7128,7 +7161,7 @@ Combat(shot, now) {
         return false
     }
     TraceStep("бой: скан цели")
-    enemy := CachedEnemy(shot)
+    enemy := CachedEnemy(shot, reserve)
     ; Запоздавший скан не отдаёт ноги бою и не отменяет проверку после E.
     if !WorldFrameCurrent(shot)
         return false
@@ -7499,7 +7532,7 @@ CombatTraceText(t) {
     return text
 }
 
-CachedEnemy(shot) {
+CachedEnemy(shot, reserve := 0) {
     global CFG, ST
     if !WorldFrameCurrent(shot) {
         TraceCombatSkip(shot, "not-current-before")
@@ -7525,7 +7558,7 @@ CachedEnemy(shot) {
         TraceCombatSkip(shot, "interval")
         return ST.enemyCache
     }
-    if !ScanAllow(1) {
+    if !ScanAllow(1, (fastRecent || wideRecent || ST.enemyCache) ? 0 : reserve) {
         TraceCombatSkip(shot, "budget")
         return ST.enemyCache
     }
@@ -7660,10 +7693,15 @@ ScanLootMasks(shot) {
         , ["chestGold", "chestRare", "green", "blue", "purple"], 18, ScanStep(6), 2)
 }
 
-CachedLootMasks(shot) {
+LootMasksDue(shot) {
     global CFG, ST
-    if (ST.lootMasksSeq != shot.captureId && !shot.HasOwnProp("lootMasksDeferred")
-        && WorldFrameCurrent(shot) && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs) {
+    return ST.lootMasksSeq != shot.captureId && !shot.HasOwnProp("lootMasksDeferred")
+        && A_TickCount - ST.lootMasksAt >= CFG.scanLootMs && WorldFrameCurrent(shot)
+}
+
+CachedLootMasks(shot) {
+    global ST
+    if LootMasksDue(shot) {
         if !ScanAllow(2) {
             shot.lootMasksDeferred := true
             return IsObject(ST.lootMasks) ? ST.lootMasks : EmptyLootMasks()
@@ -9972,8 +10010,16 @@ Roam(shot, now) {
         TraceCombatSkip(shot, handled ? "interact" : "not-current-before")
         return
     }
-    if (!combatFirst && Combat(shot, now))
-        return
+    if !combatFirst {
+        ; В low_cpu после HP и плашки E остаются две единицы. Фоновый
+        ; поиск новой фигуры не должен каждый раз забирать одну из них,
+        ; иначе общий проход цветов никогда не влезет. Уже замеченная
+        ; фигура (даже первый кандидат) сохраняет приоритет в CachedEnemy.
+        reserve := CFG.featMove && (CFG.featChest || CFG.featLoot) && !ST.breakTarget
+            && ST.scanWork + 2 <= CFG.scanPerTickMax && LootMasksDue(shot) ? 2 : 0
+        if Combat(shot, now, reserve)
+            return
+    }
     if !WorldFrameCurrent(shot)
         return
     if (CFG.featCombat && !CFG.teamSafe && (CFG.dryRun || MouseAllowed(shot.hwnd))

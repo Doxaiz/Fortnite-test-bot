@@ -33,7 +33,7 @@ try {
             , TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
             , TestCombatScanFreshness, TestCombatTrace, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
-            , TestRoamPriority, TestHoldOwnership, TestDryPairGuards, TestCalibrationExport] {
+            , TestRoamPriority, TestLootScanBudget, TestHoldOwnership, TestDryPairGuards, TestCalibrationExport] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -2615,6 +2615,37 @@ CheckRoamPriority() {
     Roam(noHud, noHud.capturedAt)
     Check(!ST.guidedUntil && !ST.segUntil && InStr(ST.lastAction, "жду подтверждение HUD")
         , "память сцены не даёт двигаться на земле без недавнего HUD")
+}
+
+TestLootScanBudget() {
+    WithGroundFixture(CheckLootScanBudget)
+}
+
+CheckLootScanBudget() {
+    global CFG, ST
+    ApplyPerfProfile("low_cpu")
+    CFG.featSound := false, CFG.enemyFastMs := 0, CFG.skinWideMs := 60000, CFG.featFirstSlot := false
+    ST.scanWideAt := A_TickCount
+    first := WorldFixture(160, "center"), first.combatTrace := NewCombatTrace(first)
+    ST.scanWork := 1 ; HP уже измерено; E использует ещё одну единицу.
+    RunFixtureRoam(first)
+    Check(first.combatTrace.status = "budget" && !first.HasOwnProp("enemyReading")
+        && ST.promptSeq = first.captureId && ST.chestCacheSeq = first.captureId && ST.scanWork = 4
+        && ST.walkTarget.samples.hits = 1 && !ST.tgt, "после E две оставшиеся единицы получает назначенный поиск сундука")
+
+    wait := WorldFixture(161, "center"), ST.scanWork := 1
+    RunFixtureRoam(wait)
+    Check(wait.HasOwnProp("enemyReading") && ST.chestCacheSeq = first.captureId && ST.scanWork = 3
+        && ST.walkTarget.samples.hits = 1, "вне интервала масок фоновой проверке фигуры есть место")
+
+    prior := WorldFixture(162)
+    ConfirmEnemyObservation(ST.enemyConfirm, prior, {src:"статика", w:12, h:32, cx:240, cy:144})
+    ST.lootMasksAt := A_TickCount - CFG.scanLootMs - 1
+    follow := WorldFixture(163, "center"), ST.scanWork := 1
+    RunFixtureRoam(follow)
+    Check(follow.HasOwnProp("enemyReading") && follow.HasOwnProp("lootMasksDeferred") && ST.scanWork = 3
+        && ST.chestCacheSeq = first.captureId && ST.walkTarget.samples.hits = 1
+        , "недавний одиночный кандидат получает повторный замер; отсрочка масок не считается потерей сундука")
 }
 
 TestHoldOwnership() {
