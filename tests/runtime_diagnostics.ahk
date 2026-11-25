@@ -30,7 +30,7 @@ try {
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
             , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
-            , TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
+            , TestPromptAbsenceDeadline, TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
             , TestCombatScanFreshness, TestCombatTrace, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
             , TestRoamPriority, TestLootScanBudget, TestHoldOwnership, TestDryPairGuards, TestCalibrationExport] {
@@ -1621,29 +1621,44 @@ CheckPromptAttempts() {
     Check(CFG.totalChests = archivedChests && !ST.chests, "отправка E не увеличивает счётчик открытий")
     third := WorldFixture(113, "prompt")
     Check(TryInteract(third, third.capturedAt, false, sender) && probe.calls.Length = 1, "пока идёт удержание, второго E нет")
-    ST.tgt.until := A_TickCount - 15
+    pending := ST.tgt, pending.until := A_TickCount - 15
     ST.promptAt := A_TickCount - CFG.promptScanMs - 1
     ST.scanWork := CFG.scanPerTickMax
     unknown := WorldFixture(114)
-    Check(TryInteract(unknown, unknown.capturedAt, false, sender) && ST.tgt, "отложенный скан не объявляет исчезновение")
+    Check(TryInteract(unknown, unknown.capturedAt, false, sender) && ST.tgt = pending && !pending.absentHits
+        , "отложенный скан не объявляет исчезновение")
     ST.scanWork := 0
-    gone := WorldFixture(115)
-    Check(TryInteract(gone, gone.capturedAt, false, sender) && !ST.tgt
+    ST.promptMemory := [{box:pending.box, view:pending.view, repeats:1, until:A_TickCount + CFG.promptRepeatMs}]
+    missing := WorldFixture(115)
+    Check(TryInteract(missing, missing.capturedAt, false, sender) && ST.tgt = pending && pending.absentHits = 1
+        && ST.promptMemory.Length = 1, "один пустой замер не завершает проверку и не сбрасывает память")
+    Check(TryInteract(missing, A_TickCount, false, sender) && ST.tgt = pending && pending.absentHits = 1
+        , "повтор того же снимка не превращает одиночный промах в пару")
+    late := WorldFixture(116), late.capturedAt -= 251
+    Check(TryInteract(late, A_TickCount, false, sender) && ST.tgt = pending && pending.postSeq = missing.captureId
+        , "поздний пустой кадр не обновляет проверку")
+    ST.promptAt := A_TickCount - CFG.promptScanMs - 1, ST.scanWork := CFG.scanPerTickMax
+    deferred := WorldFixture(117)
+    Check(TryInteract(deferred, deferred.capturedAt, false, sender) && deferred.promptDeferred && ST.tgt = pending
+        && pending.absentHits = 1 && pending.postSeq = missing.captureId, "отсрочка между замерами не считается промахом")
+    ST.scanWork := 0
+    gone := WorldFixture(118)
+    Check(TryInteract(gone, gone.capturedAt, false, sender) && !ST.tgt && pending.absentHits = 2 && !ST.promptMemory.Length
         && InStr(ST.lastAction, "результат E неизвестен") && probe.calls.Length = 1
-        && CFG.totalChests = archivedChests, "свежий кадр без плашки не объявляет открытие и не жмёт вслепую")
+        && CFG.totalChests = archivedChests, "два свежих кадра без плашки не объявляют открытие и не жмут вслепую")
 
     ; Режим только лута — короткое нажатие, неуспешная отправка не даёт счёт.
     ResetCaches()
     ST.lastPromptE := 0, ST.scanWork := 0, CFG.featChest := false, probe.ok := false
-    shot := WorldFixture(116, "prompt")
+    shot := WorldFixture(119, "prompt")
     TryInteract(shot, shot.capturedAt, false, sender)
     ST.promptAt := 0
-    shot := WorldFixture(117, "prompt")
+    shot := WorldFixture(120, "prompt")
     TryInteract(shot, shot.capturedAt, false, sender)
     Check(probe.calls.Length = 2 && probe.calls[2].ms = 80 && ST.promptN = 1 && !ST.tgt
         , "попытка подбора короче, сбой не даёт фиктивное E")
     CFG.dryRun := true, ST.lastPromptE := 0, ST.scanWork := 0, ST.promptAt := 0
-    shot := WorldFixture(118, "prompt")
+    shot := WorldFixture(121, "prompt")
     Check(TryInteract(shot, shot.capturedAt, false, sender) && InStr(ST.lastAction, "DryRun: E на 80 мс")
         && probe.calls.Length = 2 && !ST.held.Count && !ST.tgt, "DryRun не вызывает отправитель и не заводит удержание")
 
@@ -1652,8 +1667,8 @@ CheckPromptAttempts() {
     Loop (CFG.promptWindowMax - ST.promptAttempts.Length)
         ST.promptAttempts.Push(A_TickCount)
     InvalidatePlayInput()
-    ObservePromptFixture(119, "widePrompt", sender)
-    limited := ObservePromptFixture(120, "widePrompt", sender)
+    ObservePromptFixture(122, "widePrompt", sender)
+    limited := ObservePromptFixture(123, "widePrompt", sender)
     Check(!limited.used && limited.shot.promptReading && ST.promptConfirm.hits = 2
         && probe.calls.Length = 2 && ST.promptAttempts.Length = CFG.promptWindowMax && !ST.tgt
         , "подтверждённая новая плашка не обходит общий лимит E")
@@ -1723,16 +1738,17 @@ CheckUnchangedPrompt() {
         Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits
             , "кадр до планового отпускания не проверяет E")
         p.keyHold := {target:ST.hwnd, releasedAt:p.until + 15}
-        before := WorldFixture(++seq, "prompt"), before.capturedAt := p.keyHold.releasedAt, ST.scanWork := 0
-        Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits && p.postSeq = sent.shot.captureId
-            , "при задержке таймера кадр должен быть строго новее фактического отпускания")
+        before := WorldFixture(++seq, "blank"), before.capturedAt := p.keyHold.releasedAt, ST.scanWork := 0
+        Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits && !p.absentHits
+            && p.postSeq = sent.shot.captureId, "пустой кадр должен быть строго новее фактического отпускания")
         blink := ObservePromptFixture(++seq, "blank", sender)
         Check(blink.used && blink.shot.HasOwnProp("promptReading") && !blink.shot.promptReading
-            && ST.tgt = p && p.postSeq = blink.shot.captureId && probe.calls.Length = attempt
+            && ST.tgt = p && p.postSeq = blink.shot.captureId && p.absentHits = 1
+            && ST.promptMemory.Length = attempt - 1 && probe.calls.Length = attempt
             , "один пустой замер после отпускания E не должен завершать проверку раньше срока")
         first := ObservePromptFixture(++seq, "prompt", sender).shot
-        Check(p.postSeq = first.captureId && p.sameHits = 1 && ST.promptMemory.Length = attempt - 1
-            , "один после отпускания ещё не пара")
+        Check(p.postSeq = first.captureId && p.sameHits = 1 && !p.absentHits && ST.promptMemory.Length = attempt - 1
+            , "плашка вернулась: первый замер отменяет промах, но ещё не подтверждает повтор")
         Check(TryInteract(first, A_TickCount, false, sender) && p.sameHits = 1, "тот же кадр не учитывается второй раз")
         late := WorldFixture(++seq, "prompt"), late.capturedAt -= 251
         Check(TryInteract(late, A_TickCount, false, sender) && p.sameHits = 1, "просроченный кадр не проверяет E")
@@ -1789,6 +1805,47 @@ CheckUnchangedPrompt() {
         , "неизменившаяся плашка не засчитывается ни как третье E, ни как открытие")
 }
 
+TestPromptAbsenceDeadline() {
+    WithGroundFixture(CheckPromptAbsenceDeadline)
+}
+
+CheckPromptAbsenceDeadline() {
+    global CFG, ST
+    CFG.dryRun := false, CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
+    probe := {calls:[], ok:true}, sender := PromptProbe.Bind(probe), seq := 880
+    for i, kind in ["blank", "widePrompt"] {
+        ResetCaches()
+        CFG.interactVerifyMs := 1100, CFG.confirmGapMs := 1400
+        ObservePromptFixture(++seq, "prompt", sender)
+        ObservePromptFixture(++seq, "prompt", sender)
+        p := ST.tgt
+        Check(p && probe.calls.Length = i, "начата попытка для проверки тайм-аута")
+        p.until := A_TickCount - 25, ST.firstSlotDone := true, ST.weaponTries := 2
+        ST.promptMemory := [{box:p.box, view:p.view, repeats:1, until:A_TickCount + CFG.promptRepeatMs}]
+        missing := ObservePromptFixture(++seq, "blank", sender).shot
+        Check(ST.tgt = p && p.absentHits = 1, "после одного отрицательного замера ещё ждём")
+        if (i = 1) {
+            CFG.confirmGapMs := 20
+            Sleep(60)
+            missing := ObservePromptFixture(++seq, "blank", sender).shot
+            Check(ST.tgt = p && p.absentHits = 1 && p.postSeq = missing.captureId
+                , "слишком далеко разнесённые пустые кадры не образуют пару")
+            CFG.confirmGapMs := 1400
+        }
+        timeout := WorldFixture(++seq), ST.scanWork := CFG.scanPerTickMax
+        CFG.interactVerifyMs := 0 ; сдвигаем дедлайн, а не время измерения
+        Check(TryInteract(timeout, timeout.capturedAt, false, sender) && timeout.promptDeferred && !ST.tgt
+            && ST.promptConfirm.seq = timeout.captureId && ST.promptConfirm.at = missing.capturedAt
+            && ST.promptConfirm.absent && ST.promptMemory.Length = 1 && ST.firstSlotDone && ST.weaponTries = 2
+            && ST.lastAction = "после E результат неизвестен", "дедлайн завершает ожидание, но не выдумывает второй промах")
+        after := ObservePromptFixture(++seq, kind, sender)
+        Check(kind = "blank" ? (!after.used && !ST.promptMemory.Length)
+            : (after.used && ST.promptMemory.Length = 1 && ST.promptConfirm.hits = 1)
+            , "после тайм-аута история меняется только от нового измерения: " kind)
+        Check(!ST.tgt && probe.calls.Length = i && !ST.chests, "ни пустой кадр, ни новая рамка не дают слепое E или открытие")
+    }
+}
+
 TestEnemyEvidence() {
     WithGroundFixture(CheckEnemyEvidence)
 }
@@ -1838,7 +1895,7 @@ CheckCombatPreemption() {
         frame.capturedAt := A_TickCount, ST.scanWork := 0
         if (i = 1) {
             pending := {view:FrameView(frame), until:A_TickCount + 5000, keyHold:0
-                , box:0, postSeq:300, postAt:0, sameHits:0}
+                , box:0, postSeq:300, postAt:0, sameHits:0, absentHits:0}
             ST.tgt := pending
         }
         RunFixtureRoam(frame)
@@ -1849,7 +1906,7 @@ CheckCombatPreemption() {
     }
     cache := ST.enemyCache, shots := ST.shots
     pending := {view:FrameView(frame), until:A_TickCount + 5000, keyHold:0
-        , box:0, postSeq:302, postAt:0, sameHits:0}, ST.tgt := pending
+        , box:0, postSeq:302, postAt:0, sameHits:0, absentHits:0}, ST.tgt := pending
     defer := WorldFixture(303), ST.scanWork := CFG.scanPerTickMax
     RunFixtureRoam(defer)
     Check(ST.tgt = pending && ST.enemyCache = cache && ST.shots = shots && !defer.HasOwnProp("enemyReading")
@@ -2008,7 +2065,7 @@ CheckCombatScanFreshness() {
         late.combatTrace := NewCombatTrace(late)
         segment := A_TickCount + 2000
         pending := {view:FrameView(late), until:A_TickCount + 400, keyHold:0
-            , box:0, postSeq:base + 2, postAt:0, sameHits:0}
+            , box:0, postSeq:base + 2, postAt:0, sameHits:0, absentHits:0}
         ST.segUntil := segment, ST.tgt := pending, ST.lastAction := "прямой ход"
         combatAt := ST.combatAt
         buf := late.buf, changes := {count:0}

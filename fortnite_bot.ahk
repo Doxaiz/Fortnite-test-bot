@@ -6790,17 +6790,29 @@ VerifyPromptAttempt(p, shot, scanned, item) {
         fresh := scanned && shot.captureId > p.postSeq && shot.capturedAt >= p.until
             && (!p.keyHold || (releasedAt && shot.capturedAt > releasedAt))
         if fresh {
-            paired := p.sameHits > 0 && shot.capturedAt - p.postAt <= CFG.confirmGapMs
+            recent := shot.capturedAt - p.postAt <= CFG.confirmGapMs
+            p.sameHits := SamePromptShape(p.box, item, shot) ? (recent && p.sameHits ? 2 : 1) : 0
+            p.absentHits := item ? 0 : (recent && p.absentHits ? 2 : 1)
             p.postSeq := shot.captureId, p.postAt := shot.capturedAt
-            p.sameHits := SamePromptShape(p.box, item, shot) ? (paired ? 2 : 1) : 0
         }
-        gone := fresh && !item
-        if (!gone && now - doneAt < CFG.interactVerifyMs)
+        ; Один пустой замер может быть миганием. Второй нужен, чтобы
+        ; закончить ожидание раньше срока, но сам срок не сдвигаем.
+        gone := fresh && p.absentHits >= 2
+        if (!gone && now - doneAt < CFG.interactVerifyMs) {
+            if (fresh && !item)
+                ST.lastAction := "после E: жду повторный замер плашки"
             return true
-        ST.tgt := 0, ST.promptConfirm := NewPromptTracker(shot, gone)
+        }
+        ST.tgt := 0, ST.promptConfirm := NewPromptTracker(shot, p.absentHits > 0)
+        ; Нельзя переиспользовать закрывающий кадр для E. Если скан был
+        ; отложен на дедлайне, время пустого замера остаётся исходным.
+        if ST.promptConfirm.absent
+            ST.promptConfirm.at := p.postAt
         skipped := false, repeated := false
         if gone {
-            ; Освобождаем проверку и слот, но не объявляем сундук открытым.
+            ; Два пустых измерения сбрасывают память рамок, но не
+            ; подтверждают открытие. Одиночный промах её не очищает.
+            ST.promptMemory := []
             ST.firstSlotDone := false, ST.weaponTries := 0
             ST.lastAction := "плашка исчезла; результат E неизвестен"
         } else {
@@ -6816,7 +6828,7 @@ VerifyPromptAttempt(p, shot, scanned, item) {
         Critical(previous)
     }
     if gone
-        LogThrottledKey("[prompt-result]", "[i] На новом кадре плашка не найдена; открытие сундука не подтверждено.")
+        LogThrottledKey("[prompt-result]", "[i] На двух новых кадрах плашка не найдена; открытие сундука не подтверждено.")
     else if skipped
         LogThrottledKey("[prompt-skip]", "[prompt-skip] После двух попыток E та же плашка в (" p.box.cx "," p.box.cy
             . "); пропускаю её на " Round(CFG.promptRepeatMs / 1000) " с в этом виде.")
@@ -6864,7 +6876,7 @@ StartPromptAttempt(shot, sender := 0) {
         accepted := sent && !CFG.dryRun && WorldViewCurrent(shot)
         if accepted {
             ST.tgt := {until:A_TickCount + holdMs, view:FrameView(shot), keyHold:keyHold
-                , box:tr.box, postSeq:shot.captureId, postAt:0, sameHits:0}
+                , box:tr.box, postSeq:shot.captureId, postAt:0, sameHits:0, absentHits:0}
             ST.promptConfirm := NewPromptTracker(shot)
             ST.promptN += 1
             ST.lastAction := "попытка E (" holdMs " мс); результат неизвестен"
