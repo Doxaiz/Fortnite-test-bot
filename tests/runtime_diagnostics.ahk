@@ -1481,12 +1481,14 @@ CheckChestReacquireDeadline() {
         }
         Check(ST.walkTarget = original && original.at = began
             , "возврат свечения в окне обхода не должен обнулять восьмисекундный срок")
-        Sleep(Max(0, ST.lootMasksAt + CFG.scanLootMs - A_TickCount))
+        ; Точность Sleep/A_TickCount не обязана попадать ровно на границу 360 мс.
+        Sleep(Max(0, ST.lootMasksAt + CFG.scanLootMs + 16 - A_TickCount))
         repeat := TwoChestFrame(372, w, h, true, true, -12), ST.scanWork := 0
-        Check(repeat.capturedAt - began > 8000 && TryApproach(repeat, repeat.capturedAt)
+        Check(repeat.capturedAt - began > 8000 && LootMasksDue(repeat), "второй кадр после срока и интервала масок")
+        Check(TryApproach(repeat, repeat.capturedAt) && ST.chestCacheSeq = repeat.captureId
             && !ST.walkTarget && !ST.guidedUntil && ST.chestSkips.Length = 1 && ST.chestSkips[1].x < w * 0.6
             && !ChestSpotSkipped(ST.chestSkips, strongest.kind, strongest.x, strongest.y) && !ST.held.Count && !ST.tgt
-            , "второй замер у исходного дедлайна завершает подход: пропуск только подтверждённого пятна, не соседа")
+            , "второй замер завершает подход: пропуск только подтверждённого пятна, не соседа; действие: " ST.lastAction)
     }
 }
 
