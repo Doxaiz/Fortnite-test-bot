@@ -6958,8 +6958,9 @@ TryApproach(shot, now, visualStill := 0) {
     if (approach && (shot.captureId <= Max(tr.seq, approach.missSeq) || shot.capturedAt < tr.at))
         return !!target || ST.lootMasksSeq = shot.captureId
     hint := (CFG.featChest && ST.chestCacheSeq = shot.captureId) ? ChestFollowHint(shot) : 0
-    if (hint && !hint.missSeq && (!chest || chest.kind != hint.kind
-        || !CandidateNear(hint.samples, chest.x, chest.y, shot.w, shot.h))) {
+    sameGlow := hint && chest && chest.kind = hint.kind
+        && CandidateNear(hint.samples, chest.x, chest.y, shot.w, shot.h)
+    if (hint && !hint.missSeq && !sameGlow) {
         ; Краткое мерцание: остановиться на один замер, даже если виден сосед.
         ; Прежний центр остаётся подсказкой, а подтверждение набираем заново.
         HaltMatchMovement()
@@ -6977,9 +6978,13 @@ TryApproach(shot, now, visualStill := 0) {
     }
     kind := chest ? chest.kind : "loot"
     otherSpot := tr && tr.seq && SameFrameView(tr.view, shot) && !CandidateNear(tr, target.x, target.y, shot.w, shot.h)
+    ; Окно поиска после обхода может быть длиннее обычного порога простоя.
+    ; Свежий совпавший центр внутри окна сохраняет старый срок подхода,
+    ; но не восстанавливает сброшенные подтверждения.
+    reacquiring := sameGlow && !tr.hits && now < ST.guidedUntil
     if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd || otherSpot
         || approach.epoch != shot.inputEpochAtCapture || approach.w != shot.w || approach.h != shot.h
-        || now - approach.last > Max(900, CFG.scanLootMs * 3)) {
+        || (!reacquiring && now - approach.last > Max(900, CFG.scanLootMs * 3))) {
         approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture
             , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false, missSeq:0}
         ST.walkTarget := approach, tr := approach.samples

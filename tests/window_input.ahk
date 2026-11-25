@@ -883,8 +883,10 @@ TestGuidedRecoveryRecheck(a, b) {
     Check(ST.chestCacheSeq = next.captureId && ST.stuckRecoverUntil && ST.held.Has(SC.d)
         && !ST.held.Has(SC.w) && !approach.samples.hits && approach.at = at
         , "новый замер той же цели разрешает один обход и снимает старое подтверждение, не обнуляя срок")
+    anchor := {x:approach.samples.x, y:approach.samples.y}
     ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
     ExpectKey(b, SC.d, d[1] + 1, d[2])
+    SetFixtureFrame(b, 29) ; к отпусканию D осталось только соседнее пятно
     ExpectKey(b, SC.d, d[1] + 1, d[2] + 1, 1200)
     CFG.scanLootMs := 60000
     Loop 2
@@ -892,12 +894,26 @@ TestGuidedRecoveryRecheck(a, b) {
     Check(ST.lootMasksSeq != deferred.captureId && !ST.stuckRecoverUntil && ST.walkTarget = approach
         && !approach.samples.hits && !ST.held.Count && !ST.segUntil, "после отпускания D и отложенного скана патруль не перехватывает W")
     ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
-    CFG.scanLootMs := 0
+    CFG.scanLootMs := 360, ST.lootMasksAt := 0
+    neighbor := TickFixture(b)
+    Check(ST.chestCacheSeq = neighbor.captureId && ST.chest && ST.chest.x > neighbor.w * 0.6
+        && !CandidateNear(anchor, ST.chest.x, ST.chest.y, neighbor.w, neighbor.h) && ST.walkTarget = approach
+        && approach.missSeq = neighbor.captureId && !approach.samples.hits && !ST.held.Count && !ST.segUntil
+        , "первый скан после D видит только соседа: это потеря прежней цели, а не продолжение W")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+
+    SetFixtureFrame(b, 28) ; прежнее пятно вернулось со сдвигом, сосед всё ещё ярче
+    ST.lootMasksAt := 0
+    shifted := TickFixture(b), strongest := FindChest(shifted, ST.lootMasks)
+    Check(ST.chestCacheSeq = shifted.captureId && ST.chest && strongest && strongest.x > shifted.w * 0.6
+        && strongest.score > ST.chest.score && ST.chest.x < anchor.x
+        && CandidateNear(anchor, ST.chest.x, ST.chest.y, shifted.w, shifted.h)
+        && ST.walkTarget = approach && approach.at = at && approach.samples.hits = 1 && !ST.held.Count
+        , "смещённый близкий центр, а не более яркий сосед, получает первое подтверждение в том же подходе")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+    ST.lootMasksAt := 0
     TickFixture(b)
-    Check(ST.walkTarget = approach && approach.at = at && approach.samples.hits = 1 && !ST.held.Count
-        , "даже то же пятно после обхода нуждается в новой паре кадров")
-    TickFixture(b)
-    Check(ST.held.Has(SC.w) && !ST.segUntil && approach.samples.hits = 2
+    Check(ST.held.Has(SC.w) && !ST.segUntil && ST.walkTarget = approach && approach.at = at && approach.samples.hits = 2
         && ST.promptN = attempts && ST.chests = chests && !ST.tgt, "только повтор после обхода восстанавливает визуальный шаг, но не разрешает E")
     ExpectKey(b, SC.w, w[1] + 3, w[2] + 2)
     HaltMatchMovement()
@@ -1049,7 +1065,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 28
+    Loop 30
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1127,7 +1143,7 @@ BuildFixtureFrame(scene) {
         }
     }
     ; Сцена 27 — тот же открытый проход, что 0, но без признаков HUD.
-    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene <= 26)) {
+    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene != 27)) {
         PaintFixture(buf, w, 24, 256, (scene = 14 || scene = 15) ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -1152,7 +1168,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
         PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
-    if (scene = 20 || scene = 21 || (scene >= 24 && scene <= 26)) {
+    if (scene = 20 || scene = 21 || (scene >= 24 && scene != 27)) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
@@ -1172,6 +1188,10 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
     if (scene = 24 || scene = 26)
         PaintFixture(buf, w, 222, 162, 36, 34, 0xFFAA20) ; ниже сетки сравнения мира, в сцене 25 его нет
+    if (scene = 28)
+        PaintFixture(buf, w, 210, 162, 36, 34, 0xC28E24) ; смещение влево на 12 px после D
+    if (scene = 28 || scene = 29)
+        PaintFixture(buf, w, 324, 162, 36, 34, 0xFFCB18) ; яркий, но геометрически отдельный сосед
     if (scene = 9) {
         PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)
         PaintFixture(buf, w, 324, 144, 36, 36, 0xB58030)
