@@ -29,7 +29,7 @@ try {
             , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
-            , TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
+            , TestChestReacquireDeadline, TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
             , TestPromptAbsenceDeadline, TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
             , TestCombatScanFreshness, TestCombatTrace, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
@@ -1378,7 +1378,7 @@ CheckChestApproach() {
         , "маски, скан которых закончился после срока кадра, не запускают подход")
 }
 
-TwoChestFrame(id, w, h, brighterRight := false, showLeft := true) {
+TwoChestFrame(id, w, h, brighterRight := false, showLeft := true, shiftLeft := 0) {
     shot := WorldFixture(id), shot.w := w, shot.h := h, shot.stride := (w + 3) * 4
     shot.buf := Buffer(shot.stride * h, 0x60)
     ; Оба пятна проходят одни и те же фильтры, меняется только яркость.
@@ -1387,7 +1387,7 @@ TwoChestFrame(id, w, h, brighterRight := false, showLeft := true) {
     bw := Clamp(Round(w * 0.075 / 18), 2, 4) * 18, bh := Clamp(Round(h * 0.125 / 18), 2, 3) * 18
     y := Round(h * 0.49 / 18) * 18, bright := 0xFFCB18, dim := 0xB58030
     if showLeft
-        FixtureRect(shot, Round(w * 0.45 / 18) * 18, y, bw, bh, brighterRight ? dim : bright)
+        FixtureRect(shot, Round(w * 0.45 / 18) * 18 + shiftLeft, y, bw, bh, brighterRight ? dim : bright)
     FixtureRect(shot, Round(w * 0.675 / 18) * 18, y, bw, bh, brighterRight ? bright : dim)
     shot.capturedAt := A_TickCount
     return shot
@@ -1437,6 +1437,56 @@ CheckChestSelection() {
         }
         ST.chestSkips[1].until := A_TickCount
         Check(!ActiveChestSkips(again).Length, label ": фильтр пятна не бессрочный")
+    }
+}
+
+TestChestReacquireDeadline() {
+    WithGroundFixture(CheckChestReacquireDeadline)
+}
+
+CheckChestReacquireDeadline() {
+    global CFG, ST
+    ApplyPerfProfile("low_cpu")
+    idleMs := Max(900, CFG.scanLootMs * 3)
+    retryMs := CFG.stuckRecoveryMs + Max(300, CFG.scanLootMs * 2)
+    waitedMs := (idleMs + retryMs) // 2
+    Check(idleMs < waitedMs && waitedMs < retryMs && retryMs < CFG.confirmGapMs
+        , "можно получить свежую маску внутри окна возврата, но после обычного порога паузы")
+    for expiredGrace in [false, true] {
+        ResetCaches()
+        w := 480, h := 288
+        baseline := TwoChestFrame(370, w, h)
+        initial := FindChest(baseline, ScanLootMasks(baseline))
+        next := TwoChestFrame(371, w, h, true, true, -12)
+        strongest := FindChest(next, ScanLootMasks(next))
+        Check(initial && initial.x < w * 0.6 && strongest && strongest.x > w * 0.6
+            , "пятно сместилось, а одиночный кадр предпочитает более яркого соседа")
+        next.capturedAt := A_TickCount
+        ; Состояние после таймера A/D/S и тика отпускания: старые замеры
+        ; дают координаты, но hits уже сброшены. Пиксели и новый замер реальные.
+        seenAt := next.capturedAt - (expiredGrace ? retryMs + 1 : waitedMs)
+        began := next.capturedAt - 7700
+        tr := {seq:baseline.captureId, at:seenAt, hits:0, x:initial.x, y:initial.y, view:FrameView(baseline)}
+        original := {kind:initial.kind, at:began, last:seenAt, hwnd:baseline.hwnd, epoch:baseline.inputEpochAtCapture
+            , w:w, h:h, samples:tr, waited:true, missSeq:0}
+        ST.walkTarget := original, ST.guidedUntil := seenAt + retryMs, ST.scanWork := 0
+        Check(TryApproach(next, next.capturedAt) && ST.chestCacheSeq = next.captureId && ST.chest
+            && ST.chest.x < initial.x && CandidateNear({x:initial.x, y:initial.y}, ST.chest.x, ST.chest.y, w, h)
+            && ST.walkTarget.samples.hits = 1 && !ST.held.Count && !ST.tgt
+            , "смещённое пятно проходит фильтр близости, но один свежий замер не разрешает действие")
+        if expiredGrace {
+            Check(ST.walkTarget != original && ST.walkTarget.at = next.capturedAt
+                , "после окончания окна нужна новая попытка и собственная пара")
+            continue
+        }
+        Check(ST.walkTarget = original && original.at = began
+            , "возврат свечения в окне обхода не должен обнулять восьмисекундный срок")
+        Sleep(Max(0, ST.lootMasksAt + CFG.scanLootMs - A_TickCount))
+        repeat := TwoChestFrame(372, w, h, true, true, -12), ST.scanWork := 0
+        Check(repeat.capturedAt - began > 8000 && TryApproach(repeat, repeat.capturedAt)
+            && !ST.walkTarget && !ST.guidedUntil && ST.chestSkips.Length = 1 && ST.chestSkips[1].x < w * 0.6
+            && !ChestSpotSkipped(ST.chestSkips, strongest.kind, strongest.x, strongest.y) && !ST.held.Count && !ST.tgt
+            , "второй замер у исходного дедлайна завершает подход: пропуск только подтверждённого пятна, не соседа")
     }
 }
 
