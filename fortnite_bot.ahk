@@ -5392,11 +5392,21 @@ MoveWatch(shot, now, &visualStill := 0) {
 
 TryStuckRecovery(shot, now, forward, approach := 0) {
     global CFG, SC, ST
-    if (approach && (ST.walkTarget != approach || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
+    motionShot := ST.stuckShot
+    if (approach && (!motionShot || ST.walkTarget != approach || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
         return false
     side := GuidedRecoverySide(shot, now)
     if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
+    if (approach && motionShot.captureId != shot.captureId) {
+        ; Маска могла прийти между замерами движения. Перед вводом всё
+        ; равно проверяем текущий кадр: за это время мир мог измениться.
+        diff := WorldMotionDiff(motionShot, shot)
+        if (diff < 0 || diff >= CFG.stuckDiffThreshold) {
+            ResetMoveWatch()
+            return false
+        }
+    }
     if (!WorldFrameCurrent(shot) || ST.held.Get(SC.w, 0) != forward)
         return false
     if side

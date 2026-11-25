@@ -808,7 +808,7 @@ TestGuidedRecoveryRecheck(a, b) {
     CFG.featCombat := false, CFG.featChest := true, CFG.featSound := false, CFG.featParkour := false
     ApplyPerfProfile("fast")
     CFG.scanLootMs := 0, CFG.navScanMs := 0
-    CFG.stuckSampleMs := 150, CFG.stuckMs := 8000, CFG.stuckRecoveryMs := 480
+    CFG.stuckSampleMs := 550, CFG.stuckMs := 8000, CFG.stuckRecoveryMs := 480
     HaltMatchMovement()
     ResetNavigation()
     ResetCaches()
@@ -842,15 +842,29 @@ TestGuidedRecoveryRecheck(a, b) {
     forward := ST.held.Get(SC.w, 0), lease := ST.guidedUntil
     Check(forward && approach.samples.hits = 2, "второй замер возвращает W")
     ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
-    PrimeGuidedStill(goal)
-    CFG.scanLootMs := 60000
-    deferred := TickFixture(b)
-    Check(ST.lootMasksSeq != deferred.captureId && ST.held.Get(SC.w, 0) = forward && ST.guidedUntil = lease
-        && approach.samples.hits = 2 && !ST.stuckRecoverUntil, "отложенный цветовой скан не начинает обход, не возобновляет W и не считается потерей")
-    ExpectKey(b, SC.d, d*)
-
-    CFG.scanLootMs := 360, ST.lootMasksAt := 0
-    next := TickFixture(b)
+    for changed in [true, false] {
+        hits := approach.samples.hits
+        PrimeGuidedStill(goal)
+        CFG.scanLootMs := 60000
+        deferred := TickFixture(b)
+        Check(ST.lootMasksSeq != deferred.captureId && ST.held.Get(SC.w, 0) = forward && ST.guidedUntil = lease
+            && ST.stuckShot = deferred && approach.samples.hits = hits && !ST.stuckRecoverUntil
+            , "отложенный скан не начинает обход, не продлевает W и не считается потерей")
+        ExpectKey(b, SC.d, d*)
+        CFG.scanLootMs := 360, ST.lootMasksAt := 0
+        SetFixtureFrame(b, changed ? 26 : 24)
+        next := TickFixture(b)
+        if !changed
+            break
+        Check(next.capturedAt - deferred.capturedAt < CFG.stuckSampleMs
+            && WorldMotionDiff(deferred, next) >= CFG.stuckDiffThreshold && ST.chestCacheSeq = next.captureId
+            && ST.held.Get(SC.w, 0) = forward && !ST.stuckStillSamples && !ST.stuckRecoverUntil
+            , "перед вводом свежий изменившийся кадр отменяет вывод о неподвижности, даже вне интервала замера")
+        ExpectKey(b, SC.d, d*)
+        CFG.scanLootMs := 0
+        SetFixtureFrame(b, 24)
+        goal := TickFixture(b), lease := ST.guidedUntil
+    }
     Check(ST.chestCacheSeq = next.captureId && ST.stuckRecoverUntil && ST.held.Has(SC.d)
         && !ST.held.Has(SC.w) && !approach.samples.hits && approach.at = at
         , "новый замер той же цели разрешает один обход и снимает старое подтверждение, не обнуляя срок")
@@ -951,7 +965,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 26
+    Loop 27
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1020,7 +1034,7 @@ ReceiverCounts(vk, l, msg, h) {
 BuildFixtureFrame(scene) {
     w := 480, h := 288, buf := Buffer(w * h * 4)
     ; Текстура, а не заливка: защита захвата от однотонного кадра остаётся включена.
-    light := (scene = 21 || scene = 23) ? 28 : 0
+    light := (scene = 21 || scene = 23 || scene = 26) ? 28 : 0
     Loop 24 {
         row := A_Index - 1
         Loop 24 {
@@ -1053,7 +1067,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
         PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
-    if (scene = 20 || scene = 21 || scene = 24 || scene = 25) {
+    if (scene = 20 || scene = 21 || scene >= 24) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
@@ -1071,7 +1085,7 @@ BuildFixtureFrame(scene) {
     }
     if (scene = 6 || scene = 20 || scene = 21)
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
-    if (scene = 24)
+    if (scene = 24 || scene = 26)
         PaintFixture(buf, w, 222, 162, 36, 34, 0xFFAA20) ; ниже сетки сравнения мира, в сцене 25 его нет
     if (scene = 9) {
         PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)
