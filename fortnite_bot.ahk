@@ -10113,9 +10113,10 @@ Roam(shot, now) {
         ResetMoveWatch()
         return
     }
-    ; Память HUD удерживает сцену/таймер, но не разрешает надолго ехать
-    ; вперёд через загрузку или поверх неизвестного экрана.
-    if (!FrameHasMatchHud(shot) && !MatchHudRecentlySeen(now, 850)) {
+    hasHud := FrameHasMatchHud(shot)
+    ; Краткая потеря HUD не отменяет сцену и ожидание результата E.
+    ; Долгая потеря останавливает действия независимо от сцены GAME.
+    if (!hasHud && !MatchHudRecentlySeen(now, 850)) {
         TraceCombatSkip(shot, "hud")
         HaltMatchMovement()
         CancelInteraction()
@@ -10191,6 +10192,12 @@ Roam(shot, now) {
         if HeldCount()
             StopMove()
         ST.lastAction := "движение выключено (галочка «Ходить»)"
+        return
+    }
+    ; Для патруля память GAME не заменяет замер на кадре действия.
+    ; Не начинаем новый отрезок и не сдвигаем таймеры уже выданных W/Shift.
+    if !hasHud {
+        ST.lastAction := shot.HasOwnProp("healthDeferred") ? "патруль: замер HP отложен" : "патруль: жду подтверждение HUD"
         return
     }
     if (!WorldFrameCurrent(shot) || (!watchGuided && MoveWatch(shot, now)) || CheckStormAndZone(shot, now)

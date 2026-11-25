@@ -935,13 +935,21 @@ TestPatrolHudLease(a, b) {
     SetFixtureFrame(b, 27)
     lost := TickFixture(b, false)
     Check(!FrameHasMatchHud(lost) && lost.HasOwnProp("hudEvidence") && !lost.hudEvidence.bar
-        && MatchHudRecentlySeen(A_TickCount, 850) && ST.state = "GAME" && ST.hudLastT = hudAt
-        , "кадр без HUD пригоден для захвата, а GAME удерживается памятью")
+        && ST.state = "GAME" && ST.hudLastT = hudAt, "кадр без HUD, а GAME удерживается памятью")
     Check(ST.held.Get(SC.w, 0) = forward && ST.held.Get(SC.shift, 0) = shift && ST.segUntil = segment
         && ST.patrolLeaseAt = leaseAt && forward.releaseId = wId && shift.releaseId = shiftId
+        && ST.lastAction = "патруль: жду подтверждение HUD"
         , "память GAME не должна продлевать W/Shift на свежем кадре без HUD")
 
     SetFixtureFrame(b, 0)
+    budget := CFG.scanPerTickMax, CFG.scanPerTickMax := 0
+    try deferred := TickFixture(b, false)
+    finally CFG.scanPerTickMax := budget
+    Check(deferred.HasOwnProp("healthDeferred") && deferred.hudEvidence.bar && !FrameHasMatchHud(deferred)
+        && ST.state = "GAME" && ST.hudLastT = hudAt, "HUD виден, но замер HP отложен бюджетом")
+    Check(ST.patrolLeaseAt = leaseAt && forward.releaseId = wId && shift.releaseId = shiftId
+        && ST.lastAction = "патруль: замер HP отложен", "отложенный замер тоже не продлевает W/Shift")
+
     good := TickFixture(b)
     Check(ST.hudLastT = good.capturedAt && ST.held.Get(SC.w, 0) = forward && ST.held.Get(SC.shift, 0) = shift
         && forward.releaseId > wId && shift.releaseId > shiftId, "быстрый возврат HUD продлевает те же клавиши без нового down")
@@ -949,11 +957,11 @@ TestPatrolHudLease(a, b) {
     ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2])
 
     SetFixtureFrame(b, 27)
-    TickFixture(b, false)
+    ; Нет нового тика до отпускания: его должны сделать старые таймеры.
     ExpectKey(b, SC.w, w[1] + 1, w[2] + 1, 1300)
     ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2] + 1, 1300)
     stillMissing := TickFixture(b, false)
-    Check(!FrameHasMatchHud(stillMissing) && MatchHudRecentlySeen(A_TickCount, 850)
+    Check(!FrameHasMatchHud(stillMissing) && ST.lastAction = "патруль: жду подтверждение HUD"
         && ST.state = "GAME" && ST.hudLastT = good.capturedAt && !ST.held.Count
         , "клавиши отпустились таймером и не стартуют заново на ещё одном кадре без HUD")
     ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
