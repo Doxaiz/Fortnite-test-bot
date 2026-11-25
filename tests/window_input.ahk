@@ -45,7 +45,7 @@ RunWindowTests() {
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
-            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck] {
+            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -907,6 +907,67 @@ TestGuidedRecoveryRecheck(a, b) {
     ExpectKey(a, SC.d, otherD*)
 }
 
+TestPatrolHudLease(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := true
+    CFG.featCombat := false, CFG.featChest := false, CFG.featSound := false, CFG.featParkour := false
+    ApplyPerfProfile("fast")
+    CFG.navScanMs := 0, CFG.patrolHoldMs := 600, CFG.pauseChance := 0
+    HaltMatchMovement()
+    ResetNavigation()
+    ResetSceneEvidence()
+    ResetCaches()
+    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
+    ST.pauseUntil := 0, ST.cameraAt := 0
+    w := FixtureKeyCounts(b, SC.w), sprint := FixtureKeyCounts(b, SC.shift)
+    otherW := FixtureKeyCounts(a, SC.w), otherSprint := FixtureKeyCounts(a, SC.shift)
+    SetFixtureFrame(b, 0)
+    Loop 2
+        TickFixture(b)
+    forward := ST.held.Get(SC.w, 0), shift := ST.held.Get(SC.shift, 0)
+    Check(forward && shift && ST.segUntil && ST.hudLastT, "с HUD два кадра дали удержание W/Shift")
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2])
+    leaseAt := ST.patrolLeaseAt, hudAt := ST.hudLastT, segment := ST.segUntil
+    wId := forward.releaseId, shiftId := shift.releaseId
+    Sleep(Max(0, leaseAt + CFG.patrolHoldMs // 3 + 20 - A_TickCount))
+    SetFixtureFrame(b, 27)
+    lost := TickFixture(b, false)
+    Check(!FrameHasMatchHud(lost) && lost.HasOwnProp("hudEvidence") && !lost.hudEvidence.bar
+        && MatchHudRecentlySeen(A_TickCount, 850) && ST.state = "GAME" && ST.hudLastT = hudAt
+        , "кадр без HUD пригоден для захвата, а GAME удерживается памятью")
+    Check(ST.held.Get(SC.w, 0) = forward && ST.held.Get(SC.shift, 0) = shift && ST.segUntil = segment
+        && ST.patrolLeaseAt = leaseAt && forward.releaseId = wId && shift.releaseId = shiftId
+        , "память GAME не должна продлевать W/Shift на свежем кадре без HUD")
+
+    SetFixtureFrame(b, 0)
+    good := TickFixture(b)
+    Check(ST.hudLastT = good.capturedAt && ST.held.Get(SC.w, 0) = forward && ST.held.Get(SC.shift, 0) = shift
+        && forward.releaseId > wId && shift.releaseId > shiftId, "быстрый возврат HUD продлевает те же клавиши без нового down")
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2])
+
+    SetFixtureFrame(b, 27)
+    TickFixture(b, false)
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1, 1300)
+    ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2] + 1, 1300)
+    stillMissing := TickFixture(b, false)
+    Check(!FrameHasMatchHud(stillMissing) && MatchHudRecentlySeen(A_TickCount, 850)
+        && ST.state = "GAME" && ST.hudLastT = good.capturedAt && !ST.held.Count
+        , "клавиши отпустились таймером и не стартуют заново на ещё одном кадре без HUD")
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+    ExpectKey(b, SC.shift, sprint[1] + 1, sprint[2] + 1)
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    Check(ST.held.Has(SC.w) && ST.held[SC.w] != forward, "после истечения старого удержания новый HUD возвращает ходьбу")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+    HaltMatchMovement()
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+    ExpectKey(a, SC.w, otherW*)
+    ExpectKey(a, SC.shift, otherSprint*)
+}
+
 PrimeGuidedStill(shot) {
     global CFG, ST
     ; Подводим счётчики к границе, чтобы потеря/пропуск пришлись на нужный тик.
@@ -980,7 +1041,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 27
+    Loop 28
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1057,7 +1118,8 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    if (scene < 7 || scene = 9 || scene = 10 || scene >= 13) {
+    ; Сцена 27 — тот же открытый проход, что 0, но без признаков HUD.
+    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene <= 26)) {
         PaintFixture(buf, w, 24, 256, (scene = 14 || scene = 15) ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -1082,7 +1144,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
         PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
-    if (scene = 20 || scene = 21 || scene >= 24) {
+    if (scene = 20 || scene = 21 || (scene >= 24 && scene <= 26)) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
