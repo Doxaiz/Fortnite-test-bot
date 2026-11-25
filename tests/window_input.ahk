@@ -45,7 +45,7 @@ RunWindowTests() {
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
-            , TestGuidedLaneBypass, TestGuidedLipHop] {
+            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -800,6 +800,91 @@ TestGuidedLipHop(a, b) {
     ExpectKey(a, SC.e, 3, 3)
 }
 
+TestGuidedRecoveryRecheck(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featChest := true, CFG.featSound := false, CFG.featParkour := false
+    ApplyPerfProfile("fast")
+    CFG.scanLootMs := 0, CFG.navScanMs := 0
+    CFG.stuckSampleMs := 150, CFG.stuckMs := 8000, CFG.stuckRecoveryMs := 480
+    HaltMatchMovement()
+    ResetNavigation()
+    ResetCaches()
+    ST.cameraAt := 0
+    w := FixtureKeyCounts(b, SC.w), d := FixtureKeyCounts(b, SC.d), e := FixtureKeyCounts(b, SC.e)
+    otherD := FixtureKeyCounts(a, SC.d)
+    attempts := ST.promptN, chests := ST.chests
+    SetFixtureFrame(b, 24)
+    Loop 4
+        goal := TickFixture(b)
+    approach := ST.walkTarget, forward := ST.held.Get(SC.w, 0)
+    Check(approach && forward && ST.navInfo.kind = "busy" && ST.navInfo.turn = 1 && ST.navInfo.hits = 2
+        , "свечение на фоне плотного прохода подтверждено, W доставлена")
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    at := approach.at
+    PrimeGuidedStill(goal)
+    SetFixtureFrame(b, 25)
+    lost := TickFixture(b)
+    diff := WorldMotionDiff(goal, lost)
+    Check(diff >= 0 && diff < CFG.stuckDiffThreshold, "в сцене исчезло свечение, а замер мира по-прежнему считает проход неподвижным")
+    Check(!ST.stuckRecoverUntil && !ST.held.Count && ST.walkTarget = approach && approach.missSeq = lost.captureId
+        && ST.chestCacheSeq = lost.captureId && !ST.chest, "потеря цели на пороге обхода должна остановить W, а не начать шаг D")
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+    ExpectKey(b, SC.d, d*)
+
+    SetFixtureFrame(b, 24)
+    TickFixture(b)
+    Check(ST.walkTarget = approach && approach.at = at && approach.samples.hits = 1 && !ST.held.Count
+        , "первый замер после мерцания только возвращает кандидата, не продлевает весь подход")
+    goal := TickFixture(b)
+    forward := ST.held.Get(SC.w, 0), lease := ST.guidedUntil
+    Check(forward && approach.samples.hits = 2, "второй замер возвращает W")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+    PrimeGuidedStill(goal)
+    CFG.scanLootMs := 60000
+    deferred := TickFixture(b)
+    Check(ST.lootMasksSeq != deferred.captureId && ST.held.Get(SC.w, 0) = forward && ST.guidedUntil = lease
+        && approach.samples.hits = 2 && !ST.stuckRecoverUntil, "отложенный цветовой скан не начинает обход, не возобновляет W и не считается потерей")
+    ExpectKey(b, SC.d, d*)
+
+    CFG.scanLootMs := 360, ST.lootMasksAt := 0
+    next := TickFixture(b)
+    Check(ST.chestCacheSeq = next.captureId && ST.stuckRecoverUntil && ST.held.Has(SC.d)
+        && !ST.held.Has(SC.w) && !approach.samples.hits && approach.at = at
+        , "новый замер той же цели разрешает один обход и снимает старое подтверждение, не обнуляя срок")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+    ExpectKey(b, SC.d, d[1] + 1, d[2])
+    ExpectKey(b, SC.d, d[1] + 1, d[2] + 1, 1200)
+    CFG.scanLootMs := 60000
+    Loop 2
+        deferred := TickFixture(b)
+    Check(ST.lootMasksSeq != deferred.captureId && !ST.stuckRecoverUntil && ST.walkTarget = approach
+        && !approach.samples.hits && !ST.held.Count && !ST.segUntil, "после отпускания D и отложенного скана патруль не перехватывает W")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+    CFG.scanLootMs := 0
+    TickFixture(b)
+    Check(ST.walkTarget = approach && approach.at = at && approach.samples.hits = 1 && !ST.held.Count
+        , "даже то же пятно после обхода нуждается в новой паре кадров")
+    TickFixture(b)
+    Check(ST.held.Has(SC.w) && !ST.segUntil && approach.samples.hits = 2
+        && ST.promptN = attempts && ST.chests = chests && !ST.tgt, "только повтор после обхода восстанавливает визуальный шаг, но не разрешает E")
+    ExpectKey(b, SC.w, w[1] + 3, w[2] + 2)
+    HaltMatchMovement()
+    ExpectKey(b, SC.w, w[1] + 3, w[2] + 3)
+    ExpectKey(b, SC.d, d[1] + 1, d[2] + 1)
+    ExpectKey(b, SC.e, e*)
+    ExpectKey(a, SC.d, otherD*)
+}
+
+PrimeGuidedStill(shot) {
+    global CFG, ST
+    ; Подводим счётчики к границе, чтобы потеря/пропуск пришлись на нужный тик.
+    ; Сравнение пикселей на этом тике и все события клавиш остаются настоящими.
+    ST.stuckShot := shot, ST.stuckSampleAt := A_TickCount - CFG.stuckSampleMs
+    ST.stuckStillSamples := 2, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -842,12 +927,17 @@ SetFixtureFrame(h, scene) {
     Check(SendMessage(0x8020, scene, 0, , "ahk_id " h, , , , 1000) = 1, "приёмник не сменил сцену")
 }
 
-ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
-    vk := VkFromScan(scanCode), deadline := A_TickCount + waitMs
+FixtureKeyCounts(h, scanCode) {
+    vk := VkFromScan(scanCode)
     Check(vk, "неизвестная клавиша " scanCode)
+    count := SendMessage(0x8021, vk, 0, , "ahk_id " h, , , , 1000)
+    return [count & 0xFFFF, count >> 16]
+}
+
+ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
+    deadline := A_TickCount + waitMs
     loop {
-        count := SendMessage(0x8021, vk, 0, , "ahk_id " h, , , , 1000)
-        d := count & 0xFFFF, u := count >> 16
+        counts := FixtureKeyCounts(h, scanCode), d := counts[1], u := counts[2]
         if (d = downs && u = ups)
             return
         if (d > downs || u > ups || A_TickCount >= deadline)
@@ -860,7 +950,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 24
+    Loop 26
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -962,7 +1052,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
         PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
-    if (scene = 20 || scene = 21) {
+    if (scene = 20 || scene = 21 || scene = 24 || scene = 25) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
@@ -980,6 +1070,8 @@ BuildFixtureFrame(scene) {
     }
     if (scene = 6 || scene = 20 || scene = 21)
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
+    if (scene = 24)
+        PaintFixture(buf, w, 222, 162, 36, 34, 0xFFAA20) ; ниже сетки сравнения мира, в сцене 25 его нет
     if (scene = 9) {
         PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)
         PaintFixture(buf, w, 324, 144, 36, 36, 0xB58030)
