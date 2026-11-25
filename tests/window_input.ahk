@@ -382,8 +382,9 @@ TestGuidedRecovery(a, b) {
             break
         Sleep(70)
     }
-    Check(ST.stuckRecoverKey = SC.d && !ST.guidedUntil && ST.held.Has(SC.d)
-        , "подтверждённая цель не заставляет всё время идти в стену: переключаемся на обход")
+    Check(ST.stuckRecoverKey = SC.d && ST.held.Has(SC.d) && !ST.held.Has(SC.w)
+        && ST.guidedUntil > ST.stuckRecoverUntil
+        , "на обходе W отпущена; после шага оставляем время на новый замер цели")
     ExpectKey(b, SC.w, 3, 3)
     ExpectKey(b, SC.d, 1, 0)
     TickFixture(b)
@@ -733,8 +734,8 @@ TestGuidedLaneBypass(a, b) {
         if ST.stuckRecoverUntil
             break
     }
-    Check(ST.stuckRecoverN = 1 && ST.stuckRecoverKey = SC.d && ST.held.Has(SC.d) && !ST.guidedUntil
-        , "не дожидаясь обычного срока, пробуем ограниченный шаг в согласованную сторону")
+    Check(ST.stuckRecoverN = 1 && ST.stuckRecoverKey = SC.d && ST.held.Has(SC.d) && !ST.held.Has(SC.w)
+        && ST.guidedUntil > ST.stuckRecoverUntil, "не дожидаясь обычного срока, пробуем ограниченный шаг в согласованную сторону")
     ExpectKey(b, SC.w, 8, 8)
     ExpectKey(b, SC.d, 2, 1)
     ExpectKey(b, SC.d, 2, 2, 1200)

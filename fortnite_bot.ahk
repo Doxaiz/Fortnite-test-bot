@@ -5314,8 +5314,9 @@ GuidedRecoverySide(shot, now) {
         && SameFrameView(n.view, shot) && WorldFrameCurrent(shot) ? n.turn : 0
 }
 
-MoveWatch(shot, now) {
+MoveWatch(shot, now, &visualStill := 0) {
     global CFG, SC, ST
+    visualStill := 0
     ; Любой бой/смена режима отменяет боковую попытку.
     allowed := WorldFrameCurrent(shot) && !CFG.dryRun && CFG.featMove
         && (ST.phase = "loot" || ST.phase = "roam") && !ST.enemy && !ST.breakTarget && !ST.tgt
@@ -5332,8 +5333,15 @@ MoveWatch(shot, now) {
         KeyUp(ST.stuckRecoverKey)
         ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0, ST.segUntil := 0
         ResetMoveWatch()
+        ; Кадр этого тика мог начаться до отпускания A/D/S. Если ждём
+        ; визуальную цель, начнём новый замер на следующем тике.
+        if (ST.walkTarget && ST.guidedUntil) {
+            ST.lastAction := "после обхода: жду новый замер цели"
+            return true
+        }
         return false
     }
+    visual := ST.walkTarget && ST.guidedUntil && !ST.segUntil
     forward := ST.held.Get(SC.w, 0)
     if (!forward || now - ST.cameraAt < CFG.stuckCameraQuietMs) {
         ResetMoveWatch()
@@ -5348,8 +5356,13 @@ MoveWatch(shot, now) {
         return false
     }
     dt := now - ST.stuckSampleAt
-    if (dt < CFG.stuckSampleMs || shot.captureId = ST.stuckShot.captureId)
+    if (dt < CFG.stuckSampleMs || shot.captureId = ST.stuckShot.captureId) {
+        ; Замеры движения и цвета идут с разной частотой. Недавняя оценка
+        ; годится для следующего свежего замера цели, пока W та же.
+        if (visual && ST.stuckStillSamples)
+            visualStill := forward
         return false
+    }
     if (dt > CFG.stuckSampleMs * 3) {
         ResetMoveWatch()
         return false
@@ -5368,6 +5381,19 @@ MoveWatch(shot, now) {
         return false
     }
     ST.stuckMotionN := 0, ST.stuckStillMs += dt, ST.stuckStillSamples += 1
+    if visual {
+        ; Неподвижность — не разрешение на движение к прошлой цели.
+        ; Визуальный подход решит, годится ли замер маски этого кадра.
+        visualStill := forward
+        return false
+    }
+    return TryStuckRecovery(shot, now, forward)
+}
+
+TryStuckRecovery(shot, now, forward, approach := 0) {
+    global CFG, SC, ST
+    if (approach && (ST.walkTarget != approach || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
+        return false
     side := GuidedRecoverySide(shot, now)
     if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
@@ -5386,9 +5412,14 @@ MoveWatch(shot, now) {
         TurnBy(ST.navTurnSign * (attempt = 4 ? -70 : 110), 0, CFG.turnMaxPx)
     } else {
         k := attempt = 2 ? SC.s : ((attempt = 1) = (ST.navTurnSign > 0) ? SC.d : SC.a)
-        if KeyDown(k, shot.inputEpochAtCapture, 0, shot) {
-            InputReleaseLater("key", k, CFG.stuckRecoveryMs)
+        if (KeyDown(k, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", k, CFG.stuckRecoveryMs)) {
             ST.stuckRecoverKey := k, ST.stuckRecoverUntil := A_TickCount + CFG.stuckRecoveryMs
+            if (approach && ST.walkTarget = approach) {
+                ; Смещение меняет вид даже без поворота камеры. Центр
+                ; остаётся подсказкой, но в подтверждение больше не входит.
+                approach.samples.hits := 0
+                ST.guidedUntil := ST.stuckRecoverUntil + Max(300, 2 * CFG.scanLootMs)
+            }
             if side
                 LogThrottledKey("[guided-bypass]", "[nav] Подход без видимого продвижения; пробую короткий шаг "
                     . (side < 0 ? "влево" : "вправо") " по двум измерениям. Кадр #" shot.captureId)
@@ -6887,7 +6918,7 @@ SkipChestSpot(shot, target) {
     return true
 }
 
-TryApproach(shot, now) {
+TryApproach(shot, now, visualStill := 0) {
     global CFG, ST
     if (!CFG.featMove || ST.enemy || ST.breakTarget || !WorldFrameCurrent(shot))
         return false
@@ -6960,6 +6991,10 @@ TryApproach(shot, now) {
         ST.lastAction := "объект у прицела: жду подсказку"
         return true
     }
+    ; Потеря, отложенный скан и неподтверждённый сосед не разрешают
+    ; новую попытку обхода, даже если проход перестал меняться.
+    if (visualStill && TryStuckRecovery(shot, now, visualStill, approach))
+        return true
     if !WalkTo(target.x, target.y, shot, CFG.scanLootMs)
         return false
     ST.moveMode := chest ? "к свечению сундука" : "к кандидату на предмет"
@@ -10109,8 +10144,9 @@ Roam(shot, now) {
         KeepPatrolMoving(shot)
         return
     }
-    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil
-    if ((watchGuided && !hopping && MoveWatch(shot, now)) || TryApproach(shot, now) || BreakObstacle(shot, now))
+    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil, visualStill := 0
+    if ((watchGuided && !hopping && MoveWatch(shot, now, &visualStill))
+        || TryApproach(shot, now, visualStill) || BreakObstacle(shot, now))
         return
     if (hopping && ST.navHop)
         return
