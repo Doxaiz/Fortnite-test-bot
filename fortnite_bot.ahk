@@ -374,6 +374,7 @@ global CFG := {
     ; ---- бег / паркур / карабканье (Mantle) ----
     jumpMinGapMs:     850,    ; не прыгать чаще, чем раз в N мс
     obstacleGapMs:    1150,   ; пауза между прыжками/карабканьем через препятствие
+    navHopMs:         420,    ; короткая защита попытки от смены направления; не оценка времени полёта
     crouchHoldMs:     750,    ; присед в перестрелке (сбивает прицел и сужает разброс)
     crouchGapMs:      1350,
     adsRangePx:       80,     ; порог включения прицела (ПКМ)
@@ -875,6 +876,7 @@ global ST := {
     ; v11.0: умная 3-коридорная навигация, стабилизация горизонта и выход из Бури
     camPitch:     0,            ; накопленный вертикальный наклон камеры (0 = горизонт)
     navInfo:      0,            ; последние коридоры, вид и число повторных измерений
+    navHop:       0,            ; попытка прыжка, связанная с видом и удержанием W
     patrolLeaseAt: 0,           ; последнее продление W/Shift по кадру
     navTurnSign:  1,            ; предпочтительная сторона при равных оценках
     navSteerAt:   0,            ; время последнего подруливания по коридору
@@ -5034,6 +5036,7 @@ ResetMoveWatch(resetAttempts := false) {
 
 ResetNavigation() {
     global ST
+    CancelNavHop()
     ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0
     ST.lastScanT := 0, ST.navTurnSign := 1
 }
@@ -5138,28 +5141,80 @@ RefreshNavigation(shot) {
     }
 }
 
+TryNavHop(shot, now) {
+    global CFG, SC, ST
+    n := ST.navInfo, dry := CFG.dryRun, forward := ST.held.Get(SC.w, 0)
+    ; Только на ходе вперёд и по новому, уже подтверждённому локальному краю.
+    if (!CFG.featMove || !CFG.featParkour || ST.navHop || ST.enemy || ST.tgt || ST.stuckRecoverUntil
+        || !(ST.segUntil || now < ST.guidedUntil) || (!dry && !forward)
+        || !n || n.kind != "lip" || n.hits < 2 || n.jumped || n.seq != shot.captureId
+        || !SameFrameView(n.view, shot) || !WorldFrameCurrent(shot) || !FrameHasMatchHud(shot)
+        || (ST.lastObsJump && now - ST.lastObsJump < CFG.obstacleGapMs)
+        || (ST.lastJumpT && now - ST.lastJumpT < CFG.jumpMinGapMs))
+        return false
+    if (!dry && !KeyDown(SC.space, shot.inputEpochAtCapture, 0, shot))
+        return false
+    hold := dry ? 0 : ST.held.Get(SC.space, 0)
+    previous := Critical("On"), accepted := false
+    try {
+        if (!WorldFrameCurrent(shot) || CFG.dryRun != dry || !CFG.featParkour || ST.navInfo != n
+            || (!dry && (!hold || ST.held.Get(SC.w, 0) != forward || !InputReleaseLater("key", SC.space, 165))))
+            return false
+        ST.navHop := {view:FrameView(shot), until:A_TickCount + CFG.navHopMs, forward:forward, hold:hold}
+        n.jumped := true, ST.lastObsJump := now, ST.lastJumpT := now
+        ST.jumps += !dry
+        ResetMoveWatch()
+        accepted := true
+    } finally {
+        Critical(previous)
+        if (!accepted && hold)
+            KeyUp(SC.space, hold)
+    }
+    ST.lastAction := (dry ? "DryRun: " : "") "пробую прыгнуть через уступ"
+    LogThrottledKey("[nav-lip]", "[nav] " ST.lastAction " · повторный край на кадре #" shot.captureId)
+    return true
+}
+
+CancelNavHop() {
+    global SC, ST
+    hop := ST.navHop, ST.navHop := 0
+    if (hop && hop.hold)
+        KeyUp(SC.space, hop.hold)
+}
+
+ContinueNavHop(shot) {
+    global CFG, SC, ST
+    hop := ST.navHop
+    if !hop
+        return false
+    ; Продлевается только обычная аренда W по кадру, не окно прыжка и не Space.
+    ownsForward := CFG.dryRun ? !hop.forward : hop.forward && ST.held.Get(SC.w, 0) = hop.forward
+    if (!ownsForward || A_TickCount >= hop.until || !CFG.featMove || !CFG.featParkour
+        || !WorldFrameCurrent(shot) || !SameFrameView(hop.view, shot) || !FrameHasMatchHud(shot)) {
+        CancelNavHop()
+        return false
+    }
+    return true
+}
+
 SteerOpenSpace(shot, now) {
-    global CFG, ST, SC
-    if (!CFG.featMove || !RefreshNavigation(shot))
+    global CFG, ST
+    if !CFG.featMove
+        return false
+    if ContinueNavHop(shot) {
+        KeepPatrolMoving(shot)
+        return true
+    }
+    if !RefreshNavigation(shot)
         return false
     n := ST.navInfo
     if (n.kind != "clear")
         SprintSet(false)
     if (n.hits < 2 || !WorldFrameCurrent(shot))
         return false
-    ; Только на ходе вперёд, один Пробел на серию похожих уступов.
-    if (CFG.featParkour && n.kind = "lip" && !n.jumped && ST.segUntil
-        && (CFG.dryRun || ST.held.Has(SC.w))
-        && (!ST.lastObsJump || now - ST.lastObsJump >= CFG.obstacleGapMs)
-        && (!ST.lastJumpT || now - ST.lastJumpT >= CFG.jumpMinGapMs)) {
-        if (CFG.dryRun || (KeyDown(SC.space, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", SC.space, 165))) {
-            n.jumped := true, ST.lastObsJump := now, ST.lastJumpT := now
-            ST.jumps += !CFG.dryRun
-            KeepPatrolMoving(shot)
-            ST.lastAction := (CFG.dryRun ? "DryRun: " : "") "пробую прыгнуть через уступ"
-            LogThrottledKey("[nav-lip]", "[nav] " ST.lastAction " · повторный край на кадре #" shot.captureId)
-            return true
-        }
+    if (ST.segUntil && TryNavHop(shot, now)) {
+        KeepPatrolMoving(shot)
+        return true
     }
     ; При скачущей оценке бокового пространства не менять сторону каждый кадр.
     if (!n.turn || !n.turnStable || (ST.navSteerAt && now - ST.navSteerAt < 650)
@@ -5240,14 +5295,18 @@ CheckStormAndZone(shot, now) {
     return false
 }
 
-GuidedRecoverySide(shot, now) {
+GuidedStill(shot, now) {
     global CFG, ST
-    ; Короткий путь к первому обходу только при неподвижном направленном W.
+    return now < ST.guidedUntil && !ST.segUntil && !ST.navHop && !ST.stuckRecoverN
+        && ST.stuckStillSamples >= 2 && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs)
+        && FrameHasMatchHud(shot)
+}
+
+GuidedRecoverySide(shot, now) {
+    global ST
     ; Плотные края сами по себе не стена: нужны сравнения мира и два
     ; согласованных скана коридоров, последний — на кадре действия.
-    if (!ST.guidedUntil || now >= ST.guidedUntil || ST.segUntil || ST.stuckRecoverN
-        || ST.stuckStillSamples < 2 || ST.stuckStillMs < Max(1100, 2 * CFG.stuckSampleMs)
-        || !FrameHasMatchHud(shot))
+    if !GuidedStill(shot, now)
         return 0
     RefreshNavigation(shot)
     n := ST.navInfo
@@ -5883,7 +5942,7 @@ ReleaseKeys() {
     global ST
     for code, _ in ST.held.Clone()
         KeyUp(code)
-    ST.held := Map(), ST.retreat := 0
+    ST.held := Map(), ST.retreat := 0, ST.navHop := 0
     ReleaseMouseButtons()
     ST.sprintOn := false, ST.crouchOn := false
 }
@@ -5928,7 +5987,7 @@ ReleaseKeysSafe() {
                 ForceKeyUp(code)
         }
     }
-    ST.held := Map(), ST.retreat := 0
+    ST.held := Map(), ST.retreat := 0, ST.navHop := 0
     ST.sprintOn := false, ST.crouchOn := false
     ReleaseMouseButtons()
 }
@@ -6271,7 +6330,7 @@ KeepPatrolMoving(shot, renew := false) {
     if (!ST.segUntil || !WorldFrameCurrent(shot))
         return false
     now := A_TickCount, nav := ST.navInfo
-    sprint := CFG.sprint && nav && nav.kind = "clear" && nav.hits >= 2
+    sprint := CFG.sprint && !ST.navHop && nav && nav.kind = "clear" && nav.hits >= 2
         && now - nav.at <= Max(500, CFG.navScanMs * 2) && SameFrameView(nav.view, shot)
     if !CFG.dryRun {
         ; Продлеваем не чаще трети срока. При потерянном кадре/долгом скане
@@ -6315,11 +6374,11 @@ HaltMatchMovement() {
     ClearMatchStrafe()
     KeyUp(SC.w), KeyUp(SC.space)
     SprintSet(false), CrouchSet(false)
-    ST.segUntil := 0, ST.guidedUntil := 0, ST.moveMode := "стою"
+    ST.segUntil := 0, ST.guidedUntil := 0, ST.navHop := 0, ST.moveMode := "стою"
     ResetMoveWatch()
 }
 
-ForwardStep(shot, ms := 430, scanMs := -1) {
+ForwardStep(shot, ms := 430, scanMs := -1, tryLip := false) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
@@ -6350,6 +6409,11 @@ ForwardStep(shot, ms := 430, scanMs := -1) {
     ; Продление той же ходьбы не стирает наблюдения о застревании.
     if !continuing
         ResetMoveWatch()
+    ; На визуальном подходе не прыгаем по одному краю или на ходу без
+    ; признаков застревания. Прыжок возможен только с новым замером цели/W.
+    now := A_TickCount
+    if (tryLip && CFG.botMode = "auto" && GuidedStill(shot, now))
+        TryNavHop(shot, now)
     return true
 }
 
@@ -6362,6 +6426,10 @@ WalkTo(targetX, targetY, shot, scanMs := -1) {
     ; После поворота следующий шаг планируется по новому кадру.
     turn := Round(Clamp(dx * 0.12, -26, 26) * CFG.mouseGain * (CFG.invertTurn ? -1 : 1))
     if (Abs(dx) > Max(12, shot.w * 0.032)) {
+        ; Доворот на короткой попытке не нужен; W не продлеваем, пока
+        ; повторно измеренный центр не подходит для шага вперёд.
+        if ContinueNavHop(shot)
+            return true
         if (!turn || (!CFG.dryRun && !MouseAllowed(shot.hwnd))) {
             if ST.guidedUntil
                 HaltMatchMovement()
@@ -6376,7 +6444,7 @@ WalkTo(targetX, targetY, shot, scanMs := -1) {
         }
         return false
     }
-    return ForwardStep(shot, NearCrosshair(shot, targetX, targetY) ? 270 : 430, scanMs)
+    return ForwardStep(shot, NearCrosshair(shot, targetX, targetY) ? 270 : 430, scanMs, scanMs >= 0)
 }
 
 ; ============================================================================
@@ -6895,7 +6963,8 @@ TryApproach(shot, now) {
     if !WalkTo(target.x, target.y, shot, CFG.scanLootMs)
         return false
     ST.moveMode := chest ? "к свечению сундука" : "к кандидату на предмет"
-    ST.lastAction := ST.moveMode
+    if !ST.navHop
+        ST.lastAction := ST.moveMode
     return true
 }
 
@@ -7226,7 +7295,7 @@ Combat(shot, now, reserve := 0) {
     }
 
     ; Ноги принадлежат бою до конца кадра, даже если очередь ещё не нужна.
-    if ST.stuckRecoverUntil
+    if (ST.stuckRecoverUntil || ST.navHop)
         HaltMatchMovement()
     KeyUp(SC.w), KeyUp(SC.s)
     SprintSet(false)
@@ -7798,6 +7867,7 @@ ResetCaches() {
     ST.walkTarget := 0, ST.chestSkips := [], ST.guidedUntil := 0
     CancelInteraction()
     CancelRetreatStep()
+    CancelNavHop()
     ST.lootMasksAt := 0, ST.chestCacheAt := 0, ST.lootMasksSeq := 0, ST.lootCacheSeq := 0, ST.chestCacheSeq := 0
     ST.enemyCache := 0, ST.chestCache := 0, ST.lootCache := 0, ST.lootMasks := 0
     ST.scanEnemyFastAt := 0, ST.scanWideAt := 0, ST.scanDmgAt := 0
@@ -9974,6 +10044,7 @@ Roam(shot, now) {
     if !WorldFrameCurrent(shot) {
         TraceCombatSkip(shot, "not-current-before")
         CancelRetreatStep()
+        CancelNavHop()
         LogThrottledKey("[world-late]", "[i] После захвата/сцены нет актуального кадра для матча ("
             . (A_TickCount - shot.capturedAt) " мс); жду следующий.", 5000)
         return
@@ -9981,6 +10052,7 @@ Roam(shot, now) {
     if MatchPhase(shot, now) {
         TraceCombatSkip(shot, "phase")
         ClearMatchStrafe()
+        CancelNavHop()
         ResetMoveWatch()
         return
     }
@@ -10030,10 +10102,17 @@ Roam(shot, now) {
         return
     }
 
-    ; Следим за направленным W до его продления. Подтверждённые E и бой
-    ; уже обработаны выше; они по-прежнему могут прервать обход.
+    ; E и бой уже имели приоритет. На коротком прыжке патруль сохраняет
+    ; направление, а визуальный подход всё равно проверяет потерю цели.
+    hopping := ContinueNavHop(shot)
+    if (hopping && ST.segUntil) {
+        KeepPatrolMoving(shot)
+        return
+    }
     watchGuided := ST.guidedUntil || ST.stuckRecoverUntil
-    if ((watchGuided && MoveWatch(shot, now)) || TryApproach(shot, now) || BreakObstacle(shot, now))
+    if ((watchGuided && !hopping && MoveWatch(shot, now)) || TryApproach(shot, now) || BreakObstacle(shot, now))
+        return
+    if (hopping && ST.navHop)
         return
     if (!WorldFrameCurrent(shot) || FightBack(shot, now))
         return
@@ -10657,9 +10736,10 @@ AbortCleanup() {
         try KeyUp(ST.tapKey)
         ST.tapKey := ""
     }
-    ; Ни E, ни боковой шаг отхода, ни очередь не оставляем при прерывании тика.
+    ; Ни E, ни короткие манёвры, ни очередь не оставляем при прерывании тика.
     try CancelInteraction()
     try CancelRetreatStep()
+    try CancelNavHop()
     ReleaseMouseButtons()
 }
 

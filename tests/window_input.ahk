@@ -45,7 +45,7 @@ RunWindowTests() {
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
-            , TestGuidedLaneBypass] {
+            , TestGuidedLaneBypass, TestGuidedLipHop] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -744,6 +744,60 @@ TestGuidedLaneBypass(a, b) {
     ExpectKey(a, SC.d, 0, 0)
 }
 
+TestGuidedLipHop(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
+    CFG.featCombat := false, CFG.featSound := false, CFG.featChest := true, CFG.featParkour := true
+    CFG.scanLootMs := 0, CFG.navScanMs := 0
+    CFG.stuckSampleMs := 150, CFG.stuckMs := 8000
+    ResetNavigation()
+    ResetCaches()
+    ST.lastJumpT := 0, ST.cameraAt := 0
+    SetFixtureFrame(b, 22)
+    Loop 4
+        TickFixture(b)
+    forward := ST.held.Get(SC.w, 0)
+    Check(forward && ST.navInfo.kind = "lip" && ST.navInfo.hits = 2 && !ST.navHop
+        , "локальный край на маршруте к свечению не вызывает прыжок без признаков застревания")
+    ExpectKey(b, SC.w, 9, 8)
+    Loop 7 {
+        SetFixtureFrame(b, Mod(A_Index, 2) ? 23 : 22)
+        Sleep(175)
+        TickFixture(b)
+        Check(ST.held.Get(SC.w, 0) = forward && !ST.stuckStillSamples && !ST.navHop
+            , "через визуально меняющийся участок продолжаем идти без прыжка")
+    }
+    Check(ST.stuckMotionN >= 3, "разница мира измерялась на подходе к уступу")
+    ExpectKey(b, SC.space, 1, 1)
+    Loop 12 {
+        Sleep(175)
+        TickFixture(b)
+        if ST.navHop
+            break
+    }
+    hop := ST.navHop
+    Check(hop && hop.forward = forward && hop.hold.target = b && ST.navInfo.jumped && !ST.stuckRecoverUntil
+        , "без видимого продвижения локальный край даёт одну попытку прыжка, W не нажимается заново")
+    deadline := hop.until
+    TickFixture(b)
+    Check(ST.navHop = hop && hop.until = deadline && ST.held.Get(SC.w, 0) = forward
+        , "следующий кадр сохраняет ход и не продлевает защиту прыжка")
+    ExpectKey(b, SC.space, 2, 2, 650)
+    ExpectKey(b, SC.w, 9, 8)
+    SetFixtureFrame(b, 1)
+    TickFirstPrompt(b)
+    Check(!ST.navHop && !ST.held.Count, "первая плашка останавливает прыжок/шаг, но ещё не нажимает E")
+    ExpectKey(b, SC.w, 9, 9)
+    ExpectKey(b, SC.space, 2, 2)
+    ExpectKey(b, SC.e, 5, 5)
+    TickFixture(b)
+    ExpectKey(b, SC.e, 6, 5)
+    ExpectKey(b, SC.e, 6, 6, 1500)
+    ExpectKey(a, SC.space, 0, 0)
+    ExpectKey(a, SC.e, 3, 3)
+}
+
 SelectFixture(h) {
     global CFG
     CFG.winTitle := "ahk_id " h
@@ -804,7 +858,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 22
+    Loop 24
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -873,7 +927,7 @@ ReceiverCounts(vk, l, msg, h) {
 BuildFixtureFrame(scene) {
     w := 480, h := 288, buf := Buffer(w * h * 4)
     ; Текстура, а не заливка: защита захвата от однотонного кадра остаётся включена.
-    light := scene = 21 ? 28 : 0
+    light := (scene = 21 || scene = 23) ? 28 : 0
     Loop 24 {
         row := A_Index - 1
         Loop 24 {
@@ -902,9 +956,11 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, 233, 124, 16, 32, scene = 3 ? 0xDDDDDD : 0x202020)
         PaintFixture(buf, w, 236, 140, 9, 9, 0xEE2727)     ; один и тот же цвет на трёх сценах
     }
-    if (scene = 5)
+    if (scene = 5 || scene = 22 || scene = 23)
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
-    if (scene >= 20) {
+    if (scene = 22 || scene = 23)
+        PaintFixture(buf, w, 227, 120, 30, 21, 0xFFAA20) ; свечение выше края, не рисуем поверх прицела
+    if (scene = 20 || scene = 21) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
@@ -920,7 +976,7 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, x, 117, 2, 88, shade * 0x010101)
         }
     }
-    if (scene = 6 || scene >= 20)
+    if (scene = 6 || scene = 20 || scene = 21)
         PaintFixture(buf, w, 227, 148, 30, 24, 0xFFAA20)
     if (scene = 9) {
         PaintFixture(buf, w, 216, 144, 36, 36, 0xFFCB18)

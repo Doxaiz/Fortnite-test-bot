@@ -988,7 +988,7 @@ TestCalibrationIsolation() {
 
 NavFixture(id, kind, w := 480, h := 288) {
     shot := WorldFixture(id), shot.w := w, shot.h := h, shot.stride := (w + 3) * 4
-    shot.buf := Buffer(shot.stride * h, 0x60)
+    shot.buf := Buffer(shot.stride * h, 0x60), shot.hudEvidence := {confirmed:true}
     for lane, bounds in [[0.15, 0.34], [0.39, 0.61], [0.66, 0.85]] {
         Loop 17 {
             col := A_Index - 1, x := Round(w * (bounds[1] + (bounds[2] - bounds[1]) * col / 16))
@@ -1043,11 +1043,22 @@ CheckNavigation() {
     repeat := NavFixture(57, "lip")
     Check(SteerOpenSpace(repeat, repeat.capturedAt) && ST.navInfo.jumped && ST.lastObsJump = repeat.capturedAt
         && !ST.navSteerAt && !ST.held.Count, "два кадра локального уступа: ровно одна попытка прыжка без поворота")
-    segment := ST.segUntil
-    later := NavFixture(58, "lip")
-    SteerOpenSpace(later, later.capturedAt)
-    Check(ST.lastObsJump = repeat.capturedAt, "не прыгать повторно на той же серии краёв")
-    Check(ST.segUntil = segment && !ST.navSteerAt, "сразу после прыжка тот же край не перебивает W разворотом")
+    segment := ST.segUntil, hop := ST.navHop, deadline := hop.until
+    for i, kind in ["lip", "busy", "busy"] {
+        later := NavFixture(57 + i, kind)
+        Check(SteerOpenSpace(later, later.capturedAt) && ST.navHop = hop && hop.until = deadline
+            && ST.lastObsJump = repeat.capturedAt && ST.segUntil = segment && !ST.navSteerAt && !ST.held.Count
+            , "сразу после прыжка вид не перебивает W и не продлевает отдых: " kind)
+    }
+    ; Защита не переносится на другое окно, перспективу или ввод.
+    for i, field in ["hwnd", "cameraSeqAtCapture", "inputEpochAtCapture", "w", "capturedAt"] {
+        ST.navHop := hop, other := NavFixture(70 + i, "lip")
+        other.%field% += field = "capturedAt" ? -251 : 1
+        Check(!ContinueNavHop(other) && !ST.navHop, "прыжок не удерживает управление при смене: " field)
+    }
+    ST.navHop := hop, hop.until := A_TickCount
+    after := NavFixture(76, "lip")
+    Check(!ContinueNavHop(after) && !ST.navHop, "после срока навигация больше не занята прыжком")
 
     ResetNavigation()
     first := NavFixture(60, "busy")
