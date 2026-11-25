@@ -758,8 +758,10 @@ TestGuidedLipHop(a, b) {
     Loop 4
         TickFixture(b)
     forward := ST.held.Get(SC.w, 0)
-    Check(forward && ST.navInfo.kind = "lip" && ST.navInfo.hits = 2 && !ST.navHop
-        , "локальный край на маршруте к свечению не вызывает прыжок без признаков застревания")
+    Check(forward && ST.guidedUntil && ST.chest && !ST.segUntil
+        && ST.navInfo.kind = "lip" && ST.navInfo.hits = 2 && !ST.navHop
+        , "локальный край не вызывает прыжок без признаков застревания: " ST.lastAction
+            . " / цель " (ST.chest ? "да" : "нет") " / " (ST.navInfo ? ST.navInfo.kind " " ST.navInfo.hits : "без оценки"))
     ExpectKey(b, SC.w, 9, 8)
     Loop 7 {
         SetFixtureFrame(b, Mod(A_Index, 2) ? 23 : 22)
@@ -959,7 +961,7 @@ BuildFixtureFrame(scene) {
     if (scene = 5 || scene = 22 || scene = 23)
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
-        PaintFixture(buf, w, 227, 120, 30, 21, 0xFFAA20) ; свечение выше края, не рисуем поверх прицела
+        PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
     if (scene = 20 || scene = 21) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
