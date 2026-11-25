@@ -1043,9 +1043,11 @@ CheckNavigation() {
     repeat := NavFixture(57, "lip")
     Check(SteerOpenSpace(repeat, repeat.capturedAt) && ST.navInfo.jumped && ST.lastObsJump = repeat.capturedAt
         && !ST.navSteerAt && !ST.held.Count, "два кадра локального уступа: ровно одна попытка прыжка без поворота")
+    segment := ST.segUntil
     later := NavFixture(58, "lip")
     SteerOpenSpace(later, later.capturedAt)
     Check(ST.lastObsJump = repeat.capturedAt, "не прыгать повторно на той же серии краёв")
+    Check(ST.segUntil = segment && !ST.navSteerAt, "сразу после прыжка тот же край не перебивает W разворотом")
 
     ResetNavigation()
     first := NavFixture(60, "busy")
