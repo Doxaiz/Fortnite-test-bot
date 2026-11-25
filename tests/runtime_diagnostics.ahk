@@ -1726,6 +1726,10 @@ CheckUnchangedPrompt() {
         before := WorldFixture(++seq, "prompt"), before.capturedAt := p.keyHold.releasedAt, ST.scanWork := 0
         Check(TryInteract(before, A_TickCount, false, sender) && !p.sameHits && p.postSeq = sent.shot.captureId
             , "при задержке таймера кадр должен быть строго новее фактического отпускания")
+        blink := ObservePromptFixture(++seq, "blank", sender)
+        Check(blink.used && blink.shot.HasOwnProp("promptReading") && !blink.shot.promptReading
+            && ST.tgt = p && p.postSeq = blink.shot.captureId && probe.calls.Length = attempt
+            , "один пустой замер после отпускания E не должен завершать проверку раньше срока")
         first := ObservePromptFixture(++seq, "prompt", sender).shot
         Check(p.postSeq = first.captureId && p.sameHits = 1 && ST.promptMemory.Length = attempt - 1
             , "один после отпускания ещё не пара")
