@@ -70,7 +70,8 @@ TestPortableExe(source, scenario, dll) {
         win := "ahk_id " hwnd
         if legacy
             CheckLoadedLegacyProfile(win, text)
-        ; Только кнопки тестового процесса. Игровые и глобальные клавиши не отправляются.
+        ; Тема спрятана на отдельной странице. Кликаем только в окне тестового процесса.
+        ClickPortableButton(win, "Настройки")
         ClickPortableButton(win, "Светлая")
         deadline := A_TickCount + 4000
         while (A_TickCount < deadline && IniRead(ini, "ui", "theme", "") != "light")

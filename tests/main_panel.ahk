@@ -3,7 +3,13 @@
 #Include ../fortnite_bot.ahk
 #SingleInstance Off
 
-; GUI integration only. No Init(), hotkeys, game ticks, or game window.
+; GUI integration only. No Init(), hotkeys or game ticks. These windows are local fixtures.
+if (A_Args.Length = 2 && A_Args[1] = "--window-fixture") {
+    fixture := Gui("-DPIScale", A_Args[2])
+    fixture.Show("NA w480 h320")
+    SetTimer(ExitApp, -20000)
+    return
+}
 ExitApp(RunPanelTests())
 
 RunPanelTests() {
@@ -37,6 +43,8 @@ RunPanelTests() {
         BuildGui()
         ShowGui()
         FileAppend("DPI: " A_ScreenDPI " · scale: " UI.panel.scale "`n", "*", "UTF-8-RAW")
+        TestPanelWindows(folder)
+        FileAppend("OK: TestPanelWindows`n", "*", "UTF-8-RAW")
         for test in [TestPanelNavigation, TestPanelJournal, TestPanelTheme, TestPanelSettings, TestPanelCoordinates
             , TestPanelClock, TestPanelAutoStop, TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
             test()
@@ -104,40 +112,126 @@ PanelChooseCombo(control, value) {
     Sleep(40)
 }
 
+PanelSelectAdvanced() {
+    global UI
+    PanelSelectView("settings")
+    PanelClick(UI.panel.advancedLink)
+    PanelCheck(UI.panel.view = "advanced" && PanelIsVisible(UI.panel.backSettings), "открыт дополнительный раздел")
+}
+
+TestPanelWindows(folder) {
+    global CFG, ST, UI
+    ; Проверяем настоящее имя процесса, не завися от языка заголовка лаунчера.
+    launcherExe := folder "\EpicGamesLauncher.exe"
+    FileCopy(A_AhkPath, launcherExe)
+    launcherPid := 0, gamePid := 0, title := "Панель — тест окна " ProcessExist()
+    prevTitle := CFG.winTitle, prevExe := CFG.winExe, dry := CFG.dryRun, bg := CFG.bgMode, smart := CFG.smartRestore
+    cloud := ST.cloudTarget, epoch := ST.inputEpoch
+    try {
+        Run('"' launcherExe '" /ErrorStdOut=UTF-8 "' A_ScriptFullPath '" --window-fixture "' title ' L"', , , &launcherPid)
+        launcher := WinWait("ahk_class AutoHotkeyGUI ahk_pid " launcherPid, , 5)
+        PanelCheck(launcher, "запущено отдельное окно-имитация Epic Games Launcher")
+        CFG.winTitle := "ahk_id " launcher
+        UI.panel.windowAt := 0
+        UpdateUiStatus()
+        PanelCheck(GameWindowCount() = 0 && !FindGameWindowCandidate().hwnd && !GetGameWindow()
+            && InStr(UI.panel.windowTitle.Value, "не найдено"), "лаунчер не считается Fortnite ни для запуска, ни для обзора")
+
+        Run('"' A_AhkPath '" /ErrorStdOut=UTF-8 "' A_ScriptFullPath '" --window-fixture "' title ' F"', , , &gamePid)
+        game := WinWait("ahk_class AutoHotkeyGUI ahk_pid " gamePid, , 5)
+        PanelCheck(game, "запущено запасное окно-имитация игры")
+        CFG.winExe := "ahk_id " game
+        PanelCheck(GameWindowCount() = 1 && GetGameWindow() = game, "если первый поиск видит только лаунчер, берётся запасное окно")
+        ST.cloudTarget := "предыдущая цель цикла"
+        WinActivate("ahk_id " UI.gui.Hwnd)
+        PanelCheck(WinWaitActive("ahk_id " UI.gui.Hwnd, , 2), "фокус у панели")
+        UI.panel.windowAt := 0
+        UpdateUiStatus()
+        WinGetClientPos(, , &width, &height, "ahk_id " game)
+        PanelCheck(InStr(UI.panel.windowTitle.Value, "вне фокуса") && InStr(UI.panel.windowHint.Value, "Для DryRun")
+            && InStr(BuildStartupReport(), "найдено, " width " × " height " · вне фокуса"), "DryRun не путает чужой фокус с отсутствием окна")
+        CFG.dryRun := false, CFG.bgMode := false, CFG.smartRestore := false
+        UpdateUiStatus()
+        PanelCheck(InStr(UI.panel.windowHint.Value, "Переключитесь в игру"), "с обычным вводом подсказывает сменить окно")
+        CFG.bgMode := true
+        UpdateUiStatus()
+        PanelCheck(InStr(UI.panel.windowHint.Value, "Фоновые клавиши") && InStr(UI.panel.windowHint.Value, "мыши"), "фон не обещает управление мышью")
+        CFG.bgMode := false, CFG.smartRestore := true
+        UpdateUiStatus()
+        PanelCheck(InStr(UI.panel.windowHint.Value, "кликами меню"), "умный фон не обещает управление в матче")
+        WinActivate("ahk_id " game)
+        PanelCheck(WinWaitActive("ahk_id " game, , 2), "фокус у тестового окна")
+        UpdateUiStatus()
+        PanelCheck(InStr(UI.panel.windowTitle.Value, "в фокусе"), "возврат фокуса отображается без пересъёмки")
+        WinMinimize("ahk_id " game)
+        minimizeDeadline := A_TickCount + 1000
+        while (WinGetMinMax("ahk_id " game) != -1 && A_TickCount < minimizeDeadline)
+            Sleep(20)
+        UpdateUiStatus()
+        PanelCheck(InStr(UI.panel.windowTitle.Value, "свёрнуто") && InStr(BuildStartupReport(), "Окно Fortnite: свёрнуто")
+            && !PanelClientPreview(), "свёрнутое окно отличаем от закрытого")
+        PanelCheck(ST.cloudTarget = "предыдущая цель цикла" && ST.inputEpoch = epoch && !ST.hwnd && !ST.captureSeq && !ST.held.Count
+            , "отображение состояния и сводка не меняют цель, захват или ввод")
+    } finally {
+        for pid in [gamePid, launcherPid] {
+            if pid
+                try ProcessClose(pid)
+        }
+        CFG.winTitle := prevTitle, CFG.winExe := prevExe, CFG.dryRun := dry, CFG.bgMode := bg, CFG.smartRestore := smart
+        ST.cloudTarget := cloud
+        UI.panel.windowAt := 0
+        UpdateUiStatus()
+    }
+}
+
+CheckPanelPageBounds() {
+    global UI
+    p := UI.panel
+    WinGetClientPos(, , &w, &h, "ahk_id " UI.gui.Hwnd)
+    for control in p.views[p.view] {
+        if !PanelIsVisible(control)
+            continue
+        control.GetPos(&x, &y, &cw, &ch)
+        PanelCheck(x >= Round(180 * p.scale) && y >= 0 && x + cw <= w && y + ch <= h
+            , "элемент помещается в рабочей области раздела " p.view ": " control.Type)
+    }
+}
+
 TestPanelNavigation() {
     global CFG, ST, UI
     p := UI.panel
-    PanelCheck(UI.visible && p.view = "home" && PanelIsVisible(UI.ddMode), "главный обзор")
-    PanelCheck(UI.ddMode.Value = 2 && UI.cbDry.Value && UI.cbTeam.Value && p.keys[1].Value = "F10"
-        , "режим, тест, защита команды и переназначенная клавиша из старого INI")
-    PanelCheck(!PanelIsVisible(UI.logEdit) && !PanelIsVisible(UI.findingsEdit) && !PanelIsVisible(UI.btnCheck)
-        && UI.btnStart.Text = "Старт · F10", "на обзоре только основные действия и актуальная клавиша")
+    PanelCheck(UI.visible && p.view = "home" && p.heading.Value = "Сеанс" && PanelIsVisible(UI.ddMode), "главный экран сеанса")
+    PanelCheck(UI.ddMode.Value = 2 && UI.cbDry.Value && UI.cbTeam.Value && InStr(p.startKey.Value, "F10")
+        , "режим, проверка, защита команды и переназначенная клавиша из старого INI")
+    for control in [UI.logEdit, UI.findingsEdit, UI.btnCheck, p.coordPick, p.themes["dark"], p.resetFinds, UI.btnBypass]
+        PanelCheck(!PanelIsVisible(control), "на первом экране нет вторичных действий и настроек")
+    PanelCheck(PanelIsVisible(UI.btnStart) && PanelIsVisible(UI.btnEmergency) && UI.btnStart.Text = "Начать проверку"
+        && InStr(p.inputLabel.Value, "не отправляются"), "одна кнопка запуска и явный режим проверки")
     WinGetClientPos(, , &w, &h, "ahk_id " UI.gui.Hwnd)
     PanelCheck(Abs(w - Round(p.w * p.scale)) <= 1 && Abs(h - Round(p.h * p.scale)) <= 1, "размер клиента соответствует DPI")
     WinGetPos(, , &outerW, &outerH, "ahk_id " UI.gui.Hwnd)
     MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
     PanelCheck(outerW <= r-l && outerH <= b-t, "панель помещается на рабочем столе")
-    CheckPanelSessionRow([UI.btnStart, UI.btnPause, UI.btnStop, UI.btnCont, p.detail, UI.btnBypass], w, h)
-    CheckPanelSessionRow([UI.ddMode, UI.cbDry, p.homeCheck], w, h)
+    CheckPanelPageBounds()
     ini := FileRead(CFG.iniFile), logBefore := FileExist(CFG.logFile) ? FileRead(CFG.logFile) : ""
-    PanelCheck(PanelIsVisible(p.homeCheck) && InStr(p.inputLabel.Value, "БЕЗ ВВОДА"), "проверка запуска и состояние DryRun на обзоре")
     PanelClick(p.homeCheck)
     PanelCheck(p.view = "startup" && PanelIsVisible(p.startupReport) && !PanelIsVisible(p.homeCheck)
         && !ST.running && !ST.hwnd && !ST.captureSeq && !ST.held.Count && FileRead(CFG.iniFile) == ini
         && (FileExist(CFG.logFile) ? FileRead(CFG.logFile) : "") == logBefore, "переход к сводке не запускает сеанс, ввод или захват")
+    CheckPanelPageBounds()
     PanelSelectView("home")
-
-    Log("запись вне превью")
     Log("пробная запись панели")
-    Log("средняя строка & детали`nпродолжение многострочного события")
-    Log("последняя строка обзора")
     UpdateUiStatus()
-    PanelCheck(UI.logEdit.Value = "" && InStr(p.homeLogRows[1].Value, "последняя строка")
-        && InStr(p.homeLogRows[2].Value, "строка & детали …") && !InStr(p.homeLogRows[2].Value, "продолжение")
-        && InStr(p.homeLogRows[3].Value, "пробная запись"), "три последних события в обзоре, скрытый журнал не рисуется")
-    PanelPress(p.nav["settings"], 0x20) ; Space: владелец рисует кнопку, но Win32 обрабатывает клавиши
+    PanelCheck(UI.logEdit.Value = "" && !PanelIsVisible(UI.logEdit), "скрытый журнал не рисуется")
+    PanelPress(p.nav["settings"], 0x20)
     PanelCheck(p.view = "settings" && !PanelIsVisible(UI.ddMode) && PanelIsVisible(p.themes["dark"])
-        && PanelIsVisible(UI.btnEmergency) && Number(p.timers[1].edit.Value) = CFG.matchMaxMin, "клавиатурный переход в настройки")
+        && PanelIsVisible(UI.btnEmergency) && !PanelIsVisible(p.coordPick) && Number(p.timers[1].edit.Value) = CFG.matchMaxMin
+        , "клавиатурный переход в настройки: основные поля видны, координаты скрыты")
+    CheckPanelPageBounds()
+    PanelClick(p.advancedLink)
+    PanelCheck(p.view = "advanced" && p.backSettings.Focused && PanelIsVisible(p.coordPick)
+        && !PanelIsVisible(p.timers[1].edit) && !PanelIsVisible(p.themes["dark"]), "дополнительный раздел с явным возвратом")
+    CheckPanelPageBounds()
     for item in [[UI.btnAfk, "afkGui"], [UI.btnExt, "extGui"], [UI.btnKeys, "keyGui"]] {
         PanelClick(item[1])
         dialog := UI.%item[2]%
@@ -145,13 +239,16 @@ TestPanelNavigation() {
         dialog.Hide()
     }
     PanelCheck(Number(UI.edMatchMin.Value) = CFG.matchMaxMin && UI.edStart.Value = CFG.hkStart, "диалоги читают текущую конфигурацию")
-    PanelSelectView("home")
-    PanelClick(p.detail)
-    PanelCheck(UI.detailOpen && PanelIsVisible(UI.detailGui) && InStr(UI.status.Value, "СЕССИЯ"), "старая подробная сводка доступна")
+    PanelClick(p.backSettings)
+    PanelCheck(p.view = "settings", "возврат к основным настройкам")
+    PanelSelectView("startup")
+    ShowPanelStatus()
+    PanelCheck(UI.detailOpen && PanelIsVisible(UI.detailGui) && InStr(UI.status.Value, "СЕССИЯ"), "подробная сводка доступна")
     HidePanelStatus()
-    PanelClick(p.openLog)
-    PanelCheck(p.view = "log" && PanelIsVisible(UI.logEdit) && PanelIsVisible(UI.btnEmergency)
-        && InStr(UI.logEdit.Value, "пробная запись панели"), "открытие журнала из обзора")
+    PanelSelectView("log")
+    PanelCheck(PanelIsVisible(UI.logEdit) && PanelIsVisible(UI.btnEmergency) && InStr(UI.logEdit.Value, "пробная запись панели")
+        , "отдельный журнал показывает события и оставляет доступ к стопу")
+    CheckPanelPageBounds()
     Log("новое событие в открытом журнале")
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "новое событие"), "видимый журнал обновляется")
@@ -160,25 +257,10 @@ TestPanelNavigation() {
     PanelClick(UI.gui["ClearView"])
     PanelCheck(InStr(UI.logEdit.Value, "Новых событий пока нет") && FileRead(CFG.logFile, "UTF-8") == disk
         , "очищается только экран, не run.log")
-    PanelSelectView("home")
-    PanelCheck(p.homeLogRows[1].Value = "Новых событий пока нет." && p.homeLogRows[2].Value = "" && p.homeLogRows[3].Value = ""
-        , "очистка журнала также освобождает предпросмотр обзора")
-    PanelSelectView("log")
     Log("событие после очистки")
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "событие после очистки") && !InStr(UI.logEdit.Value, "пробная запись")
         , "после очистки новые события продолжают поступать")
-}
-
-CheckPanelSessionRow(row, clientW, clientH) {
-    ; Фактические координаты Win32 после масштабирования, а не копия сетки.
-    right := 0
-    for ctrl in row {
-        ctrl.GetPos(&x, &y, &w, &h)
-        PanelCheck(PanelIsVisible(ctrl) && x >= right && y >= 0 && x + w <= clientW && y + h <= clientH
-            , "кнопки и режим помещаются на обзоре без перекрытия по X")
-        right := x + w
-    }
 }
 
 TestPanelJournal() {
@@ -222,7 +304,8 @@ TestPanelJournal() {
         && InStr(p.logScope.Value, "Просмотр зафиксирован") && InStr(disk, "После фиксации")
         , "пауза с клавиатуры удерживает список и не останавливает журнал на диске")
     PanelSelectView("home")
-    PanelCheck(InStr(p.homeLogRows[1].Value, "После фиксации"), "обзор по-прежнему показывает новое событие")
+    PanelCheck(!PanelIsVisible(UI.logEdit) && InStr(FileRead(CFG.logFile, "UTF-8"), "После фиксации")
+        , "журнал скрыт на первом экране, но события продолжают записываться")
     PanelSelectView("log")
     HideGui()
     ShowGui()
@@ -293,6 +376,7 @@ TestPanelTheme() {
     IniWrite("invalid-theme", ini, "ui", "theme")
     LoadSettings()
     PanelCheck(CFG.panelTheme = "dark" && CFG.dryRun && CFG.botMode = "queue", "неизвестная тема не ломает старый INI")
+    PanelSelectView("settings")
     PanelClick(UI.panel.themes["gray"])
 }
 
@@ -301,13 +385,11 @@ TestPanelSettings() {
     PanelSelectView("settings")
     p := UI.panel, ini := CFG.iniFile
     for i, value in [17, 25, 75.5, 7]
-        PanelCheck(Number(p.timers[i].edit.Value) = value && p.timers[i].slider.Value = Round(value), "начальные значения таймера " i)
+        PanelCheck(Number(p.timers[i].edit.Value) = value, "начальное значение таймера " i)
     configText := FileRead(ini)
-    PanelType(p.timers[2].edit, "45")
-    PanelCheck(p.timers[2].slider.Value = 45, "поле перемещает ползунок")
-    PanelPress(p.timers[2].slider, 0x27) ; Right: изменение от самого trackbar
+    PanelType(p.timers[2].edit, "46")
     PanelCheck(p.timers[2].edit.Value = 46 && CFG.lobbyDelaySec = 25 && FileRead(ini) == configText
-        , "ползунок обновляет поле, но не применяет настройку без сохранения")
+        , "изменение поля не применяется без сохранения")
     PanelType(p.timers[1].edit, "?")
     PanelClick(p.saveTimers)
     PanelCheck(CFG.matchMaxMin = 17 && CFG.lobbyDelaySec = 25 && FileRead(ini) == configText
@@ -317,7 +399,7 @@ TestPanelSettings() {
     PanelType(p.timers[4].edit, "999")
     ST.running := true
     UpdateUiStatus()
-    PanelCheck(!p.saveTimers.Enabled && !p.timers[1].slider.Enabled && !p.timers[3].edit.Enabled, "таймеры защищены во время сеанса")
+    PanelCheck(!p.saveTimers.Enabled && !p.timers[1].edit.Enabled && !p.timers[3].edit.Enabled, "таймеры защищены во время сеанса")
     OnPanelSaveTimers()
     PanelCheck(FileRead(ini) == configText, "запрет записи работает и в обработчике")
     ST.running := false
@@ -337,6 +419,7 @@ TestPanelSettings() {
         && IniRead(ini, "ui") = theme && IniRead(ini, "afk", "squadGraceSec") = 43 && UI.edSquadGrace.Value = 52
         , "сохраняются только таймеры, черновик других настроек не перезаписывается")
     configText := FileRead(ini)
+    PanelSelectAdvanced()
     PanelChooseCombo(p.coordPick, 3)
     PanelCheck(InStr(p.coordHint.Value, "2560 × 1440")
         && p.coordValues[1].Value = Round(CFG.playNormX*2560) "  /  " Round(CFG.playNormY*1440), "масштаб координат для пресета")
@@ -351,7 +434,7 @@ TestPanelSettings() {
 
 TestPanelCoordinates() {
     global CFG, ST, UI
-    PanelSelectView("settings")
+    PanelSelectAdvanced()
     p := UI.panel, ini := FileRead(CFG.iniFile), log := FileRead(CFG.logFile, "UTF-8"), before := CFG.Clone()
     PanelChooseCombo(p.coordPick, 7)
     PanelCheck(InStr(p.coordHint.Value, "показана база"), "пустой свой размер не считается рассчитанным")
@@ -390,25 +473,23 @@ TestPanelClock() {
         CFG.botMode := "queue", CFG.matchMaxMin := 2.5
         ST.running := false, ST.state := "MENU"
         UpdateUiStatus()
-        PanelCheck(UI.panel.clockValue.Value = "02:30" && UI.panel.clockLabel.Value = "ЗАДАНО", "круг показывает заданный лимит, когда сеанс не начат")
+        PanelCheck(InStr(UI.panel.timeLimits.Value, "Лимит матча 02:30"), "строка показывает заданный лимит до старта")
         ST.running := true, ST.state := "GAME", ST.matchStartT := 500000
-        clock := PanelMatchClock(575000)
-        PanelCheck(clock.text = "01:15" && clock.percent = 50, "расчёт от ST.matchStartT по времени движка")
-        clock := PanelMatchClock(650100)
-        PanelCheck(clock.percent = 0 && clock.text = "00:00" && clock.label = "ЛИМИТ ИСТЁК", "нет отрицательного времени")
+        PanelCheck(PanelMatchClock(575000) = "До выхода 01:15", "расчёт от ST.matchStartT по времени движка")
+        PanelCheck(PanelMatchClock(650100) = "До выхода 00:00", "нет отрицательного времени")
         ST.paused := true
-        PanelCheck(PanelMatchClock(575000).text = "—", "не обещаем выход на паузе")
+        PanelCheck(PanelMatchClock(575000) = "Автовыход на паузе", "не обещаем выход на паузе")
         ST.paused := false, ST.cancelHold := true
-        PanelCheck(PanelMatchClock(575000).percent = 0, "задержка очереди")
+        PanelCheck(PanelMatchClock(575000) = "Автовыход на паузе", "задержка очереди")
         ST.cancelHold := false, ST.leaveActive := true
-        PanelCheck(PanelMatchClock(575000).label = "ВЫХОД", "выход уже начался")
+        PanelCheck(PanelMatchClock(575000) = "Выход в лобби", "выход уже начался")
         ST.leaveActive := false
         CFG.matchMaxMin := 0
-        PanelCheck(PanelMatchClock(575000).label = "БЕЗ ЛИМИТА", "0 не превращается в 12 минут")
+        PanelCheck(PanelMatchClock(575000) = "До конца матча", "0 не превращается в 12 минут")
         CFG.matchMaxMin := 2.5
         for mode in ["xp", "antiafk"] {
             CFG.botMode := mode
-            PanelCheck(PanelMatchClock(575000).label = "НЕАКТИВЕН", "таймер матча не используется в " mode)
+            PanelCheck(PanelMatchClock(575000) = "", "таймер матча не используется в " mode)
         }
     } finally {
         CFG.botMode := oldMode, CFG.matchMaxMin := oldLimit
@@ -425,22 +506,22 @@ TestPanelAutoStop() {
     try {
         CFG.stopAfterMin := 0
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "Без лимита", "отключённый автостоп")
+        PanelCheck(InStr(p.timeLimits.Value, "Автостоп выключен"), "отключённый автостоп")
         CFG.stopAfterMin := 2.5
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "02:30" && InStr(p.stopNote.Value, "после старта"), "лимит до запуска")
+        PanelCheck(InStr(p.timeLimits.Value, "Лимит сеанса 02:30"), "лимит до запуска")
         ST.running := true, ST.sessionActiveSec := 60
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "01:30" && p.elapsed.Value = "00:01:00", "отсчёт от активного времени движка")
+        PanelCheck(InStr(p.timeLimits.Value, "До стопа 01:30") && InStr(p.stats.Value, "Время 00:01:00"), "отсчёт от активного времени движка")
         ST.paused := true
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "01:30" && InStr(p.stopNote.Value, "на паузе"), "на паузе отсчёт отмечен как замороженный")
+        PanelCheck(InStr(p.timeLimits.Value, "До стопа 01:30 (пауза)"), "замороженный остаток отмечен как пауза")
         ST.paused := false, ST.sessionActiveSec := 151
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "00:00" && InStr(p.stopNote.Value, "достигнут"), "отсчёт не уходит в минус")
+        PanelCheck(InStr(p.timeLimits.Value, "До стопа 00:00"), "отсчёт не уходит в минус")
         ST.finishMatchArmed := true
         UpdateUiStatus()
-        PanelCheck(p.stopTime.Value = "Доигрываю" && InStr(p.stopNote.Value, "после матча"), "видна отложенная остановка")
+        PanelCheck(InStr(p.timeLimits.Value, "Стоп после матча"), "видна отложенная остановка")
     } finally {
         CFG.stopAfterMin := saved, ST.sessionActiveSec := elapsed
         ST.running := false, ST.paused := false, ST.finishMatchArmed := false
@@ -450,11 +531,9 @@ TestPanelAutoStop() {
 
 TestPanelFinds() {
     global CFG, ST, UI
-    PanelSelectView("home")
-    p := UI.panel, filters := p.findingsButtons, shortcuts := p.homeFindingsButtons
-    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 0" && InStr(p.homeFindingsHint.Value, "80 СТРОК")
-        && !FileExist(CFG.tokenFile), "на обзоре пустая история не создаёт файл")
     PanelSelectView("finds")
+    p := UI.panel, filters := p.findingsButtons
+    CheckPanelPageBounds()
     PanelCheck(p.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет") && filters["all"].control.Text = "Все · 0"
         && !FileExist(CFG.tokenFile), "пустая история не создаёт файл")
     a := "2026-11-18 12:30:15  Жетон пиратского магазина (0.5, 0.4) (сессия: 1, всего: 8)"
@@ -492,27 +571,15 @@ TestPanelFinds() {
         , "фильтры не меняют историю, профиль или общие счётчики")
 
     PanelSelectView("home")
-    for kind, item in shortcuts
-        PanelCheck(item.control.Text == filters[kind].control.Text, "на обзоре то же количество недавних записей: " kind)
-    PanelPress(shortcuts["banner"].control, 0x20)
-    PanelCheck(p.view = "finds" && p.findingsFilter = "banner" && UI.findingsEdit.Value == b && PanelIsVisible(UI.btnEmergency)
-        , "быстрая кнопка открывает историю на нужной категории, в том числе с клавиатуры")
-    PanelSelectView("home")
-    at := p.findingsOverviewAt
     e := "2026-11-18 13:30:50  Жетон пиратского магазина (0, 1) (сессия: 3, всего: 10)"
     FileAppend(e "`n", CFG.tokenFile, "UTF-8-RAW")
-    PanelRefreshHomeFindings(at + 1199)
-    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 1", "обзор не читает хвост при каждом обновлении панели")
-    PanelRefreshHomeFindings(at + 1200)
-    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 2" && p.homeTotal.Value = "9", "новая запись видна отдельно от общих счётчиков")
-    PanelClick(shortcuts["token"].control)
-    PanelCheck(p.view = "finds" && p.findingsFilter = "token" && UI.findingsEdit.Value == e "`n" a
-        , "открытая категория показывает тот же хвост в порядке от новых к старым")
-    PanelSelectView("home")
-    PanelClick(p.homeFindingsHistory)
-    PanelCheck(p.view = "finds" && p.findingsFilter = "all" && UI.findingsEdit.Value == e "`n" d "`n" c "`n" b "`n" a
+    UpdateUiStatus()
+    PanelCheck(filters["token"].control.Text = "Жетоны · 1" && !PanelIsVisible(p.resetFinds) && !PanelIsVisible(UI.findingsEdit)
+        , "экран сеанса не читает историю и не предлагает сброс счётчиков")
+    PanelSelectView("finds")
+    PanelCheck(filters["token"].control.Text = "Жетоны · 2" && UI.findingsEdit.Value == e "`n" d "`n" c "`n" b "`n" a
         && FileRead(CFG.tokenFile, "UTF-8") == history e "`n" && FileRead(CFG.iniFile) == ini
-        , "«История» открывает все записи, быстрые переходы ничего не записывают")
+        , "обновлённая история доступна в отдельном разделе без записи настроек")
     FileDelete(CFG.tokenFile)
     payload := "", want := "", row := "  Жетон " Rep("я", 240)
     Loop 160 {
@@ -530,21 +597,17 @@ TestPanelFinds() {
     PanelClick(UI.gui["FindRefresh"])
     PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать") && filters["all"].control.Text = "Все · —"
         && UI.findingsTotal.Value = "Всего: 9", "ошибка файла не выдаёт устаревшие числа и не меняет счётчик")
-    PanelSelectView("home")
-    PanelCheck(shortcuts["other"].control.Text = "Прочие записи · —" && p.homeFindingsHint.Value = "ИСТОРИЯ НЕДОСТУПНА"
-        , "обзор тоже отличает ошибку чтения от нуля записей")
     CFG.tokenFile := original
-    PanelSelectView("finds")
-    PanelSelectView("home")
-    PanelCheck(p.homeFound.Value = "2" && p.homeTotal.Value = "9" && p.resetFinds.Enabled
-        , "лента обзора показывает те же реальные счётчики")
+    PanelClick(UI.gui["FindRefresh"])
+    PanelCheck(UI.findingsSession.Value = "За сеанс: 2" && UI.findingsTotal.Value = "Всего: 9" && p.resetFinds.Enabled
+        , "сброс находится рядом с реальными счётчиками")
     CFG.totalRounds := 13, ST.rounds := 3
     PanelClickReset(p.resetFinds, 7) ; IDNO
     PanelCheck(CFG.totalTokens = 9 && ST.tokensFound = 2, "сброс можно отменить")
     PanelClickReset(p.resetFinds, 6) ; IDYES
     PanelCheck(!CFG.totalTokens && !ST.tokensFound && CFG.totalRounds = 13 && ST.rounds = 3
         && IniRead(CFG.iniFile, "stats", "totalTokens") = "0" && FileRead(CFG.tokenFile, "UTF-8") == payload
-        && p.homeTotal.Value = "0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
+        && UI.findingsTotal.Value = "Всего: 0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
 }
 
 PanelClickReset(control, answer) {
@@ -574,21 +637,30 @@ TestPanelActions() {
     PanelCheck(CFG.botMode = "xp" && IniRead(CFG.iniFile, "mode", "botMode") = "xp", "выбор режима дошёл до старого обработчика")
     PanelClick(UI.btnStart)
     PanelCheck(!ST.running && InStr(FileRead(CFG.logFile, "UTF-8"), "старт отменён: окно не найдено"), "Старт отказывает без игры")
-    ST.running := true, ST.cancelHold := true
+    ST.running := true, ST.state := "GAME"
     UpdateUiStatus()
-    PanelCheck(!UI.btnStart.Enabled && UI.btnStop.Enabled && UI.btnCont.Enabled, "состояние кнопок при ожидании очереди")
-    PanelClick(UI.btnPause)
-    PanelCheck(ST.paused && UI.btnPause.Text = "Снять паузу", "пауза общего сеанса")
-    PanelClick(UI.btnPause)
-    PanelCheck(!ST.paused && UI.btnPause.Text = "Пауза", "снятие паузы")
+    PanelCheck(UI.btnStart.Text = "Пауза" && PanelIsVisible(UI.btnBypass), "редкое действие видно только во время матча")
+    ST.cancelHold := true
+    PanelClick(UI.btnStart)
+    PanelCheck(ST.cancelHold && !ST.paused && UI.btnStart.Text = "Возобновить очередь" && !PanelIsVisible(UI.btnBypass)
+        , "команда с устаревшей надписью не исполняется и заменяется актуальной")
+    ST.cancelHold := false
+    UpdateUiStatus()
+    PanelClick(UI.btnStart)
+    PanelCheck(ST.paused && UI.btnStart.Text = "Продолжить сеанс" && !PanelIsVisible(UI.btnBypass), "пауза общего сеанса")
+    PanelClick(UI.btnStart)
+    PanelCheck(!ST.paused && UI.btnStart.Text = "Пауза", "снятие паузы")
     PanelClick(UI.cbDry)
-    PanelCheck(!CFG.dryRun && ST.paused && UI.panel.inputLabel.Value = "РЕАЛЬНЫЙ ВВОД"
-        , "смена DryRun видна на обзоре и требует ручного продолжения, как прежде")
+    PanelCheck(!CFG.dryRun && ST.paused && InStr(UI.panel.inputLabel.Value, "может отправлять ввод")
+        , "смена DryRun видна на первом экране и требует ручного продолжения")
     PanelClick(UI.cbDry)
-    PanelCheck(CFG.dryRun && ST.paused && InStr(UI.panel.inputLabel.Value, "БЕЗ ВВОДА"), "DryRun восстановлен; пауза не снялась")
-    PanelClick(UI.btnCont)
-    PanelCheck(!ST.cancelHold && ST.paused, "возобновление очереди не снимает общую паузу")
-    PanelClick(UI.btnPause)
+    PanelCheck(CFG.dryRun && ST.paused && InStr(UI.panel.inputLabel.Value, "не отправляются"), "DryRun восстановлен; пауза не снялась")
+    ST.cancelHold := true
+    UpdateUiStatus()
+    PanelClick(UI.btnStart)
+    PanelCheck(!ST.paused && ST.cancelHold && UI.btnStart.Text = "Возобновить очередь", "продолжение сеанса не запускает очередь автоматически")
+    PanelClick(UI.btnStart)
+    PanelCheck(!ST.cancelHold && !ST.paused, "очередь возобновляется отдельной командой")
     PanelSelectView("settings")
     PanelClick(UI.cbBg)
     PanelCheck(CFG.bgMode && ST.paused && CFG.dryRun, "смена фонового ввода по-прежнему ставит на паузу")
@@ -620,7 +692,7 @@ TestPanelStartupReport() {
             PanelCheck(InStr(report, expected), "поле сводки: " expected)
         PanelCheck(PanelIsVisible(p.startupReport) && (WinGetStyle("ahk_id " p.startupReport.Hwnd) & 0x800)
             && !PanelIsVisible(UI.logEdit) && p.startupLog.Enabled, "сводка только для чтения, журнал доступен")
-        for control in [UI.btnCheck, UI.btnCal, UI.btnVision, UI.btnHud, UI.btnHelp, UI.btnEmergency]
+        for control in [UI.btnCheck, p.savePair, UI.btnVision, UI.btnHud, p.moreTools, UI.btnEmergency]
             PanelCheck(PanelIsVisible(control), "диагностика и аварийный стоп доступны в проверке запуска")
         for private in [logPath, CFG.iniFile, CFG.webhookUrl, "ПРИВАТНЫЙ_МАРКЕР_В_ЖУРНАЛЕ"]
             PanelCheck(!InStr(report, private), "сводка не захватывает пути, webhook или содержание журнала")
