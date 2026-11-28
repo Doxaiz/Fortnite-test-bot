@@ -46,7 +46,7 @@ RunWindowTests() {
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
             , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
-            , TestChestSoundRecovery, TestChestSoundFlicker, TestSoundReactionHud] {
+            , TestChestSoundRecovery, TestChestSoundFlicker, TestSoundReactionHud, TestSoundJumpCooldown] {
             scenario := test.Name
             test(a, b)
             FileAppend("OK: " scenario "`n", "*", "UTF-8")
@@ -1257,6 +1257,55 @@ TestSoundReactionHud(a, b) {
         ExpectKey(a, k, counts*)
 }
 
+TestSoundJumpCooldown(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := false, CFG.featLoot := false, CFG.featCombat := false
+    CFG.featSound := true, CFG.featParkour := true, CFG.scanSoundMs := 0
+    CFG.soundDodgeJumpChance := 100, CFG.humanize := false
+    ApplyPerfProfile("fast")
+    CFG.soundReactMs := 380, CFG.jumpMinGapMs := 1400, CFG.patrolHoldMs := 2000, CFG.pauseChance := 0
+    ResetFixtureSoundRoam()
+    ST.lastJumpT := 0
+    w := FixtureKeyCounts(b, SC.w), space := FixtureKeyCounts(b, SC.space)
+    otherW := FixtureKeyCounts(a, SC.w), otherSpace := FixtureKeyCounts(a, SC.space)
+    SetFixtureFrame(b, 36)
+    first := TickFixture(b)
+    ExpectKey(b, SC.space, space[1] + 1, space[2] + 1)
+    Check(ST.soundCacheSeq = first.captureId && ST.soundRing.shot && !ST.soundRing.chest && !ST.held.Count
+        && ST.lastAction = "реакция на текущую метку звука", "первый прыжок принят и отпущен")
+    soundAt := ST.lastSound, jumpAt := ST.lastJumpT, sounds := ST.sounds, jumps := ST.jumps
+
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    forward := ST.held[SC.w], segment := ST.segUntil
+    Sleep(Max(0, soundAt + CFG.soundReactMs + 16 - A_TickCount))
+    SetFixtureFrame(b, 36)
+    blocked := TickFixture(b)
+    Check(ST.soundCacheSeq = blocked.captureId && ST.soundRing.shot && !ST.soundRing.chest
+        && blocked.capturedAt >= soundAt + CFG.soundReactMs && A_TickCount < jumpAt + CFG.jumpMinGapMs
+        , "повторный скан попал после интервала звука, но до допуска Space")
+    ExpectKey(b, SC.space, space[1] + 1, space[2] + 1)
+    ; Если W была заменена, дождаться обоих сообщений в приёмнике.
+    if (ST.held.Has(SC.w) && ST.held[SC.w] != forward)
+        ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    Check(ST.held.Get(SC.w, 0) = forward && ST.segUntil = segment && ST.lastSound = soundAt
+        && ST.lastJumpT = jumpAt && ST.sounds = sounds && ST.jumps = jumps
+        , "отказ в прыжке не прерывает патруль и не расходует повторную реакцию")
+
+    Sleep(Max(0, jumpAt + CFG.jumpMinGapMs + 16 - A_TickCount))
+    ready := TickFixture(b)
+    Check(ST.soundCacheSeq = ready.captureId && ST.sounds = sounds + 1 && ST.jumps = jumps + 1
+        && !ST.held.Has(SC.w), "после интервала свежая метка снова разрешает Space")
+    ExpectKey(b, SC.space, space[1] + 2, space[2] + 2)
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+    ExpectKey(a, SC.w, otherW*)
+    ExpectKey(a, SC.space, otherSpace*)
+}
+
 ResetFixtureSoundRoam() {
     global ST
     HaltMatchMovement()
@@ -1352,7 +1401,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 36
+    Loop 37
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1532,8 +1581,8 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 165, 46, 11, 12, 0xE89028)
         PaintFixture(buf, w, 176, 58, 11, 12, 0xE89028)
     }
-    if (scene = 34 || scene = 35) {
-        ; Красная группа на другом радиусе, по x у центра: проверяем Space,
+    if (scene >= 34 && scene <= 36) {
+        ; Красная группа по x у центра, в сцене 36 она без золота: проверяем Space,
         ; не отправляя поворот мышью в реальное активное окно.
         PaintFixture(buf, w, 226, 180, 14, 15, 0xEE2727)
         PaintFixture(buf, w, 240, 195, 14, 14, 0xEE2727)
