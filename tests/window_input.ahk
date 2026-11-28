@@ -1075,11 +1075,15 @@ TestChestSoundRecovery(a, b) {
     mixed := TickFixture(b)
     diff := WorldMotionDiff(good, mixed)
     Check(diff >= 0 && diff < CFG.stuckDiffThreshold, "проход остался неподвижным, даже если метка изменилась")
+    ; PostMessage ставит событие в очередь: при начавшемся обходе дождёмся
+    ; доставки и отпускания D, а не только выставленного флага.
+    if (ST.stuckRecoverKey = SC.d)
+        ExpectKey(b, SC.d, d[1] + 1, d[2] + 1, 1500)
+    ExpectKey(b, SC.d, d*)
     Check(!ST.stuckRecoverUntil && ST.soundCacheSeq = mixed.captureId && ST.soundRing.goldAmbiguous
         && ST.held.Get(SC.w, 0) = forward && forward.releaseId = lease
         && ST.stuckShot = mixed && ST.stuckStillMs >= CFG.stuckMs
         , "до свежего согласованного звука нельзя начинать D по застреванию")
-    ExpectKey(b, SC.d, d*)
     HaltMatchMovement()
 }
 
