@@ -868,6 +868,7 @@ global ST := {
     lastClickAt:  0,            ; для clickGapMs (не чаще одного клика)
     lootCache:    0,
     chestCache:   0,
+    chestCacheAmbiguous: false, ; неоднозначность того же измерения, что и chestCacheSeq
     chestCacheAt: 0,            ; когда сундуки искали в последний раз
     chestCacheSeq: 0,           ; кадр использованной маски
     soundCache:   0,
@@ -3233,11 +3234,11 @@ ChestGlowInfo(shot, c, isRare := false) {
     return {core: coreAvg, ring: ringAvg, contrast: coreAvg - ringAvg}
 }
 
-FindChest(shot, masks := 0) {
+FindChest(shot, masks := 0, &ambiguous := false) {
     ; v11.0: ищем и обычные золотые сундуки (chestGold), и редкие синие (chestRare).
     ; Отсекаем небо, собственный аватар, плоские стены/крыши и плохие точки.
     global CFG
-    live := !IsObject(masks)
+    ambiguous := false, live := !IsObject(masks)
     prefer := 0, skips := []
     if live {
         masks := CachedLootMasks(shot)
@@ -3249,7 +3250,7 @@ FindChest(shot, masks := 0) {
     maxArea := Round(CFG.chestGoldMax * sc * sc)
     maxW := Round(CFG.chestMaxW * sc), maxH := Round(CFG.chestMaxH * sc)
     cxMid := shot.w * 0.5, cyMid := shot.h * 0.5
-    best := 0, bestScore := -1, followed := 0, followDist := 1.0
+    best := 0, bestScore := -1, followed := 0
     for mode in ["chestGold", "chestRare"] {
         isRare := (mode = "chestRare")
         for c in LootMask(masks, mode) {
@@ -3276,20 +3277,19 @@ FindChest(shot, masks := 0) {
             dist := Hypot(c.cx - cxMid, c.cy - cyMid)
             prox := Max(0.2, 1.0 - dist / (shot.w * 0.85))
             score := (c.area * (isRare ? 1.25 : 1.0) + glow.contrast * 35.0) * prox
-            ; Сначала сопоставляем текущую цель, а не перескакиваем на пятно,
-            ; которое стало ярче. Сопоставление только по свежим пикселям.
-            localDist := 1.0
-            if (prefer && mode = prefer.kind && CandidateNear(prefer.samples, c.cx, c.cy, shot.w, shot.h))
-                localDist := Hypot((c.cx - prefer.samples.x) / shot.w, (c.cy - prefer.samples.y) / shot.h)
-            if (!best || score > bestScore || localDist < followDist) {
-                item := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area
-                    , kind: mode, score: score, glow: glow.core
-                    , drawX: c.x, drawY: c.y}
-                if (!best || score > bestScore)
-                    best := item, bestScore := score
-                if (localDist < followDist)
-                    followed := item, followDist := localDist
+            item := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area
+                , kind: mode, score: score, glow: glow.core, drawX: c.x, drawY: c.y}
+            ; Яркость помогает начать поиск, но не разрешает унаследовать
+            ; текущую попытку. Два совместимых пятна — неоднозначный замер.
+            if (prefer && ChestFollowFits(prefer, item, shot)) {
+                if followed {
+                    ambiguous := true
+                    return 0
+                }
+                followed := item
             }
+            if (!best || score > bestScore)
+                best := item, bestScore := score
         }
     }
     return followed ? followed : best
@@ -6893,6 +6893,16 @@ StartPromptAttempt(shot, sender := 0) {
     return true
 }
 
+ChestFollowFits(approach, item, shot) {
+    ref := approach.glow
+    ; Контуры грубые (ячейки 18 px). Допускаем сдвиг/смену размера,
+    ; пока рамки пересекаются, а размеры по каждой оси отличаются не более чем вдвое.
+    return ref && approach.kind = item.kind && CandidateNear(approach.samples, item.x, item.y, shot.w, shot.h)
+        && Max(ref.w, item.w) <= 2 * Min(ref.w, item.w) && Max(ref.h, item.h) <= 2 * Min(ref.h, item.h)
+        && Max(ref.drawX, item.drawX) < Min(ref.drawX + ref.w, item.drawX + item.w)
+        && Max(ref.drawY, item.drawY) < Min(ref.drawY + ref.h, item.drawY + item.h)
+}
+
 ChestFollowHint(shot) {
     global CFG, ST
     a := ST.walkTarget
@@ -6945,9 +6955,10 @@ TryApproach(shot, now, visualStill := 0) {
     if (!CFG.featMove || ST.enemy || ST.breakTarget || !WorldFrameCurrent(shot))
         return false
     chest := CFG.featChest ? CachedChest(shot) : 0
+    ambiguous := CFG.featChest && ST.chestCacheSeq = shot.captureId && ST.chestCacheAmbiguous
     if (ST.chestCacheSeq != shot.captureId)
         chest := 0
-    loot := (!chest && CFG.featLoot && WorldFrameCurrent(shot)) ? CachedLoot(shot) : 0
+    loot := (!chest && !ambiguous && CFG.featLoot && WorldFrameCurrent(shot)) ? CachedLoot(shot) : 0
     if (ST.lootCacheSeq != shot.captureId)
         loot := 0
     if !WorldFrameCurrent(shot)
@@ -6958,8 +6969,21 @@ TryApproach(shot, now, visualStill := 0) {
     if (approach && (shot.captureId <= Max(tr.seq, approach.missSeq) || shot.capturedAt < tr.at))
         return !!target || ST.lootMasksSeq = shot.captureId
     hint := (CFG.featChest && ST.chestCacheSeq = shot.captureId) ? ChestFollowHint(shot) : 0
-    sameGlow := hint && chest && chest.kind = hint.kind
-        && CandidateNear(hint.samples, chest.x, chest.y, shot.w, shot.h)
+    if (hint && ambiguous) {
+        ; Из двух совместимых пятен не выбираем победителя по яркости или
+        ; порядку маски. Даже если одно позже исчезнет, старый срок не переносим.
+        leaseEnd := ST.guidedUntil
+        HaltMatchMovement()
+        hint.missSeq := shot.captureId, tr.hits := 0, hint.ambiguous := true
+        if (now < leaseEnd && now - hint.at <= 8000)
+            ST.guidedUntil := leaseEnd
+        else
+            ST.walkTarget := 0
+        ST.lastAction := "два похожих свечения: не продолжаю прежний подход"
+        return true
+    }
+    fits := hint && chest && ChestFollowFits(hint, chest, shot)
+    sameGlow := fits && !hint.ambiguous
     if (hint && !hint.missSeq && !sameGlow) {
         ; Краткое мерцание: остановиться на один замер, даже если виден сосед.
         ; Прежний центр остаётся подсказкой, а подтверждение набираем заново.
@@ -6977,20 +7001,20 @@ TryApproach(shot, now, visualStill := 0) {
         return false
     }
     kind := chest ? chest.kind : "loot"
-    otherSpot := tr && tr.seq && SameFrameView(tr.view, shot) && !CandidateNear(tr, target.x, target.y, shot.w, shot.h)
+    otherSpot := tr && tr.seq && SameFrameView(tr.view, shot)
+        && (chest ? !ChestFollowFits(approach, chest, shot) : !CandidateNear(tr, target.x, target.y, shot.w, shot.h))
     ; Окно поиска после обхода может быть длиннее обычного порога простоя.
-    ; Свежий совпавший центр внутри окна сохраняет старый срок подхода,
-    ; но не восстанавливает сброшенные подтверждения.
+    ; Единственное совпадение внутри окна сохраняет исходный срок, не hits.
     reacquiring := sameGlow && !tr.hits && now < ST.guidedUntil
-    if (!approach || approach.kind != kind || approach.hwnd != shot.hwnd || otherSpot
+    if (!approach || approach.ambiguous || approach.kind != kind || approach.hwnd != shot.hwnd || otherSpot
         || approach.epoch != shot.inputEpochAtCapture || approach.w != shot.w || approach.h != shot.h
         || (!reacquiring && now - approach.last > Max(900, CFG.scanLootMs * 3))) {
         approach := {kind:kind, at:now, last:now, hwnd:shot.hwnd, epoch:shot.inputEpochAtCapture
-            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false, missSeq:0}
+            , w:shot.w, h:shot.h, samples:NewCandidateTracker(), waited:false, missSeq:0, glow:0, ambiguous:false}
         ST.walkTarget := approach, tr := approach.samples
     }
-    approach.last := now, approach.missSeq := 0
-    ; Дважды видим похожий центр, прежде чем идти к нему. После поворота
+    approach.last := now, approach.missSeq := 0, approach.glow := chest
+    ; Дважды видим совместимые наблюдения, прежде чем идти. После поворота
     ; подтверждаем снова, но 8-секундный предел всего подхода остаётся.
     point := {cx:target.x, cy:target.y}
     confirmed := ConfirmWorldCandidate(tr, shot, point, 2)
@@ -7868,12 +7892,13 @@ CachedChest(shot) {
     CachedLootMasks(shot)
     if (ST.lootMasksSeq != shot.captureId)
         return ST.chestCache
-    chestResult := FindChest(shot)
+    chestResult := FindChest(shot, , &ambiguous)
     prev := Critical("On")
     try {
         if !WorldFrameCurrent(shot)
             return 0
-        ST.chestCache := chestResult, ST.chestCacheSeq := shot.captureId, ST.chestCacheAt := now
+        ST.chestCache := chestResult, ST.chestCacheAmbiguous := ambiguous
+        ST.chestCacheSeq := shot.captureId, ST.chestCacheAt := now
         return chestResult
     } finally {
         Critical(prev)
@@ -7931,7 +7956,7 @@ ResetCaches() {
     CancelRetreatStep()
     CancelNavHop()
     ST.lootMasksAt := 0, ST.chestCacheAt := 0, ST.lootMasksSeq := 0, ST.lootCacheSeq := 0, ST.chestCacheSeq := 0
-    ST.enemyCache := 0, ST.chestCache := 0, ST.lootCache := 0, ST.lootMasks := 0
+    ST.enemyCache := 0, ST.chestCache := 0, ST.chestCacheAmbiguous := false, ST.lootCache := 0, ST.lootMasks := 0
     ST.scanEnemyFastAt := 0, ST.scanWideAt := 0, ST.scanDmgAt := 0
     ST.enemyView := 0, ST.enemySeenSeq := 0, ST.enemySeenAt := 0, ST.enemyFirstAt := 0
     ST.enemyTrackSeq := 0

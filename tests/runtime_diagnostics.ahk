@@ -1469,7 +1469,7 @@ CheckChestReacquireDeadline() {
         began := next.capturedAt - 7700
         tr := {seq:baseline.captureId, at:seenAt, hits:0, x:initial.x, y:initial.y, view:FrameView(baseline)}
         original := {kind:initial.kind, at:began, last:seenAt, hwnd:baseline.hwnd, epoch:baseline.inputEpochAtCapture
-            , w:w, h:h, samples:tr, waited:true, missSeq:0}
+            , w:w, h:h, samples:tr, waited:true, missSeq:0, glow:initial, ambiguous:false}
         ST.walkTarget := original, ST.guidedUntil := seenAt + retryMs, ST.scanWork := 0
         Check(TryApproach(next, next.capturedAt) && ST.chestCacheSeq = next.captureId && ST.chest
             && ST.chest.x < initial.x && CandidateNear({x:initial.x, y:initial.y}, ST.chest.x, ST.chest.y, w, h)
@@ -1500,28 +1500,70 @@ TestAmbiguousChestRecheck() {
 CheckAmbiguousChestRecheck() {
     global CFG, ST
     CFG.scanLootMs := 0
-    ready := 0
-    Loop 3 {
-        ready := WorldFixture(380 + A_Index, "center"), ST.scanWork := 0
-        Check(TryApproach(ready, ready.capturedAt), "исходное свечение у прицела")
+    for scenario in ["one-remains", "still-two", "detached"] {
+        ResetCaches()
+        Loop 3 {
+            ready := WorldFixture(380 + A_Index, "center"), ST.scanWork := 0
+            Check(TryApproach(ready, ready.capturedAt), "исходное свечение у прицела")
+        }
+        approach := ST.walkTarget, anchor := approach.samples.x
+        Check(approach.samples.hits >= 2 && ST.guidedUntil, "у прежней цели уже был направленный шаг")
+        ; Как после ограниченного бокового шага: старый центр — подсказка, не попадание.
+        approach.samples.hits := 0, began := approach.at := A_TickCount - 7700
+        leaseEnd := ST.guidedUntil := A_TickCount + 720
+        if (scenario != "detached") {
+            doubles := NearbyGlowsFrame(384, "two"), ST.scanWork := 0
+            masks := ScanLootMasks(doubles), count := 0
+            for part in LootMask(masks, "chestGold") {
+                item := {kind:"chestGold", x:part.cx, y:part.cy, drawX:part.x, drawY:part.y, w:part.w, h:part.h}
+                if ChestFollowFits(approach, item, doubles) && ChestGlowInfo(doubles, part).core >= 118
+                    count += 1
+            }
+            Check(count = 2 && FindChest(doubles, masks), "два совместимых пятна; измерение без истории выдаёт кандидата")
+            doubles.capturedAt := A_TickCount
+            Check(TryApproach(doubles, doubles.capturedAt) && ST.walkTarget = approach && ST.chestCacheAmbiguous
+                && ST.chestCacheSeq = doubles.captureId && approach.missSeq = doubles.captureId && !approach.samples.hits
+                && approach.samples.x = anchor && approach.at = began && ST.guidedUntil = leaseEnd
+                && !ST.chest && !ST.held.Count && !ST.tgt, "две близкие группы не подтверждают цель и не продлевают ожидание")
+            Check(TryApproach(doubles, doubles.capturedAt) && ST.guidedUntil = leaseEnd && !approach.samples.hits
+                , "повтор кадра не разрешает неоднозначность")
+            ST.scanWork := CFG.scanPerTickMax
+            deferred := NearbyGlowsFrame(385, "right")
+            Check(!TryApproach(deferred, deferred.capturedAt) && ST.chestCacheSeq != deferred.captureId
+                && approach.missSeq = doubles.captureId && ST.guidedUntil = leaseEnd, "отложенная маска не является новым наблюдением")
+        } else {
+            detached := NearbyGlowsFrame(385, "detached"), ST.scanWork := 0
+            Check(TryApproach(detached, detached.capturedAt) && ST.chest && ST.walkTarget = approach && !approach.samples.hits
+                && CandidateNear(approach.samples, ST.chest.x, ST.chest.y, detached.w, detached.h)
+                && !ChestFollowFits(approach, ST.chest, detached) && approach.missSeq = detached.captureId
+                , "близкий центр без пересечения рамок — потеря, а не возврат старой цели")
+        }
+        if (scenario = "still-two") {
+            ST.guidedUntil := A_TickCount - 1, ST.scanWork := 0
+            repeat := NearbyGlowsFrame(386, "two")
+            Check(TryApproach(repeat, repeat.capturedAt) && !ST.walkTarget && !ST.guidedUntil && !ST.chestSkips.Length
+                , "повторная неоднозначность после окна заканчивает прежнюю попытку без пропуска")
+            continue
+        }
+        next := NearbyGlowsFrame(386, scenario = "detached" ? "detached" : "right"), ST.scanWork := 0
+        approach.at := next.capturedAt - 8001 ; старый срок не должен исключить нового кандидата
+        Check(TryApproach(next, next.capturedAt) && ST.chest && ST.walkTarget != approach
+            && ST.walkTarget.at = next.capturedAt && ST.walkTarget.samples.hits = 1 && !ST.walkTarget.waited
+            && !ST.chestSkips.Length && !ST.held.Count && !ST.tgt, "оставшемуся пятну нужны свой срок и своя пара")
+        repeat := NearbyGlowsFrame(387, scenario = "detached" ? "detached" : "right"), ST.scanWork := 0
+        Check(TryApproach(repeat, repeat.capturedAt) && ST.walkTarget.samples.hits = 2
+            && ST.walkTarget.at = next.capturedAt && !ST.chestSkips.Length && !ST.promptN && !ST.tgt
+            , "только второй свежий замер подтверждает новую цель; E и открытие не выводятся из свечения")
     }
-    approach := ST.walkTarget, began := approach.at, anchor := approach.samples.x
-    Check(approach.samples.hits >= 2 && ST.guidedUntil, "у прежней цели уже был направленный шаг")
-    ; Как после ограниченного бокового шага: старый центр — подсказка, не попадание.
-    approach.samples.hits := 0, approach.rechecking := true
-    leaseEnd := ST.guidedUntil := A_TickCount + 720
-    doubles := WorldFixture(384), ST.scanWork := 0
-    FixtureRect(doubles, 182, 148, 36, 36, 0xFFAA20)
-    FixtureRect(doubles, 263, 148, 36, 36, 0xFFCB18)
-    count := 0
-    for part in LootMask(ScanLootMasks(doubles), "chestGold")
-        if (CandidateNear(approach.samples, part.cx, part.cy, doubles.w, doubles.h) && ChestGlowInfo(doubles, part).core >= 118)
-            count += 1
-    Check(count = 2, "две раздельные валидные группы попадают в один допуск")
-    doubles.capturedAt := A_TickCount
-    Check(TryApproach(doubles, doubles.capturedAt) && ST.walkTarget = approach && !approach.samples.hits
-        && approach.samples.x = anchor && approach.at = began && ST.guidedUntil = leaseEnd
-        && !ST.chest && !ST.held.Count && !ST.tgt, "две близкие группы не подтверждают прежнюю цель и не продлевают ожидание")
+}
+
+NearbyGlowsFrame(id, scene) {
+    shot := WorldFixture(id)
+    if (scene = "two")
+        FixtureRect(shot, 192, 148, 36, 36, 0xFFAA20)
+    FixtureRect(shot, scene = "detached" ? 270 : 263, 148, 30, 36, 0xFFCB18)
+    shot.capturedAt := A_TickCount
+    return shot
 }
 
 PromptPixels(w, h, kind) {
