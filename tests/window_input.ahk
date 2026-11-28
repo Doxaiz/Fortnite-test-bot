@@ -1029,6 +1029,15 @@ TestChestSoundLease(a, b) {
         , "дубликат не переносит реальное отпускание W")
     ExpectKey(b, SC.w, w[1] + 1, w[2])
 
+    ; Если исходная клавиша уже успела отпуститься, не смешиваем эту
+    ; проверку направленного W с новым обычным отрезком патруля.
+    ST.pauseUntil := A_TickCount + 1500
+    SetFixtureFrame(b, 32)
+    mixed := TickFixture(b)
+    Check(ST.soundCacheSeq = mixed.captureId && ST.soundRing.goldCount = 2 && ST.soundRing.goldAmbiguous
+        && Abs(ST.soundRing.chest.angleDeg) <= 14 && forward.releaseId = lease && ST.guidedUntil = deadline
+        , "крупнейшая метка всё ещё впереди, но конфликт не продлевает удержание W")
+
     SetFixtureFrame(b, 31)
     stillGold := TickFixture(b, false)
     Check(!FrameHasMatchHud(stillGold) && forward.releaseId = lease && ST.guidedUntil = deadline
@@ -1112,7 +1121,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 32
+    Loop 33
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1278,11 +1287,17 @@ BuildFixtureFrame(scene) {
                     , Round(spec[3] * k), Round(spec[4] * k), 0xD08048)
         }
     }
-    if (scene = 30 || scene = 31) {
-        ; Две золотые части выше прицела: угол почти нулевой и обе части
-        ; попадают в сетку даже при +6 к шагу. До зоны свечения не доходят.
-        PaintFixture(buf, w, 229, 46, 11, 12, 0xE89028)
-        PaintFixture(buf, w, 240, 58, 11, 12, 0xE89028)
+    if (scene >= 30 && scene <= 32) {
+        ; Две золотые части выше прицела дают крупную метку впереди.
+        ; До зоны свечения в мире не доходят.
+        PaintFixture(buf, w, 226, 40, 14, 15, 0xE89028)
+        PaintFixture(buf, w, 240, 55, 14, 14, 0xE89028)
+    }
+    if (scene = 32) {
+        ; Ещё одно направление, но группа меньше фронтальной при любом
+        ; штатном шаге скана. Фон остаётся прежним, HUD на месте.
+        PaintFixture(buf, w, 165, 46, 11, 12, 0xE89028)
+        PaintFixture(buf, w, 176, 58, 11, 12, 0xE89028)
     }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)

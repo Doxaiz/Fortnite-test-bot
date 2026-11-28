@@ -2719,18 +2719,23 @@ TestSoundFrames() {
     WithGroundFixture(CheckSoundFrames)
     WithGroundFixture(CheckSoundDirectionGuards)
     WithGroundFixture(CheckAmbiguousSoundFrames)
+    WithGroundFixture(CheckSoundSectorSpread)
     WithGroundFixture(CheckSoundReactionPriority)
 }
 
 SoundFixture(id, x := 316, y := 128) {
     global ST
     shot := WorldFixture(id, "blank", ST.hwnd)
-    if x {
-        FixtureRect(shot, x, y, 7, 12, 0xE89028)
-        FixtureRect(shot, x + 7, y + 12, 8, 12, 0xE89028)
-    }
+    if x
+        PaintSoundFixtureMark(shot, x, y)
     shot.hudEvidence := {confirmed:true}, shot.capturedAt := A_TickCount
     return shot
+}
+
+PaintSoundFixtureMark(shot, x, y, width := 7) {
+    FixtureRect(shot, x, y, width, 12, 0xE89028)
+    FixtureRect(shot, x + width, y + 12, width + 1, 12, 0xE89028)
+    shot.capturedAt := A_TickCount
 }
 
 ProbeChestSound(shot) {
@@ -2834,35 +2839,85 @@ CheckSoundDirectionGuards() {
     Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "два новых кадра с HUD возвращают шаг")
 }
 
-CheckAmbiguousSoundFrames() {
-    global ST
-    first := SoundFixture(500, 231, 50)
-    Check(!ProbeChestSound(first) && ST.soundRing.chest, "направление прямо пока только кандидат")
-    quiet := ST.guidedUntil
-    mixed := SoundFixture(501, 231, 50)
-    ; Та же крупная группа впереди и отдельная меньшая слева. Прежний
-    ; выбор по площади видел только первую, как будто направление повторилось.
+MixedSoundFixture(id) {
+    mixed := SoundFixture(id, 231, 50)
+    ; Крупная группа впереди и отдельная меньшая слева. Обе проходят
+    ; фильтр цвета и формы; размер больше не решает конфликт направлений.
     FixtureRect(mixed, 159, 55, 5, 10, 0xE89028)
     FixtureRect(mixed, 164, 65, 5, 10, 0xE89028)
     mixed.capturedAt := A_TickCount
+    return mixed
+}
+
+CheckAmbiguousSoundFrames() {
+    global CFG, ST
+    id := 500
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.soundRing.chest, "направление прямо пока только кандидат")
+    quiet := ST.guidedUntil, episode := ST.chestAudioAt
+    mixed := MixedSoundFixture(++id)
     Check(!ProbeChestSound(mixed) && ST.guidedUntil = quiet
         , "вторая группа в другом направлении не должна подтверждать W по крупнейшей")
+    Check(ST.soundRing.goldAmbiguous && ST.soundRing.goldCount = 2 && Abs(ST.soundRing.chest.angleDeg) <= 14
+        && !ST.chestAudioReading.mark && ST.chestAudioAt = episode
+        && InStr(GoldSoundText(mixed.soundReading), "разные направления · групп 2 · без наведения")
+        , "точный замер конфликта сохраняется отдельно от пустого кадра")
+    Check(!SeekChestBySound(mixed, A_TickCount) && !ProbeChestSound(MixedSoundFixture(++id))
+        && ST.guidedUntil = quiet && ST.chestAudioAt = episode, "конфликт и его повторы не продлевают паузу или срок пробы")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = quiet
+        , "после конфликта одному оставшемуся углу нужно собственное подтверждение")
+    Check(ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.chestAudioAt = episode && !ST.tgt
+        , "второй однозначный кадр возвращает W, но не разрешает E")
+
+    ResetCaches()
+    CFG.featCombat := false, CFG.featLoot := false, CFG.pauseChance := 0
+    ST.scanWork := 0, ST.segUntil := 0, ST.camPitch := 0
+    mixed := MixedSoundFixture(++id)
+    Roam(mixed, mixed.capturedAt)
+    Check(ST.soundRing.goldAmbiguous && !ST.guidedUntil && !ST.chestAudioAt && ST.segUntil
+        && ST.lastAction = "прямой ход", "без прежней цели конфликт не делает паузу и не блокирует обычный патруль")
+}
+
+CheckSoundSectorSpread() {
+    global ST
+    id := 520
+    ; Два отдельных куска на одном луче, затем два рядом с границей ±180°.
+    for spec in [[231, 50, 231, 98], [238, 172, 225, 211]] {
+        ResetCaches()
+        Loop 2 {
+            same := SoundFixture(++id, spec[1], spec[2])
+            PaintSoundFixtureMark(same, spec[3], spec[4])
+            acted := ProbeChestSound(same)
+            Check(ST.soundRing.goldCount = 2 && !ST.soundRing.goldAmbiguous && acted = (A_Index = 2)
+                , "один узкий сектор допускает две группы и всё равно требует два кадра")
+        }
+    }
+    ResetCaches()
+    wide := SoundFixture(++id, 205, 49)
+    PaintSoundFixtureMark(wide, 255, 48)
+    PaintSoundFixtureMark(wide, 228, 98, 12)
+    Check(!ProbeChestSound(wide) && ST.soundRing.goldCount = 3 && ST.soundRing.goldAmbiguous
+        && Abs(ST.soundRing.chest.angleDeg) < 4 && !ST.guidedUntil
+        , "три группы: близость каждой боковой к крупнейшей не доказывает общий узкий сектор")
 }
 
 CheckSoundReactionPriority() {
     global CFG, ST
     CFG.featCombat := false, CFG.featLoot := false
-    first := SoundFixture(450, 231, 50)
-    Check(!ProbeChestSound(first), "угол для второго замера перед красной меткой")
-    both := SoundFixture(451, 231, 50)
-    FixtureRect(both, 316, 128, 7, 12, 0xEE2727)
-    FixtureRect(both, 323, 140, 8, 12, 0xEE2727)
-    both.capturedAt := A_TickCount, ST.scanWork := 0, ST.scanSoundAt := 0
-    before := ST.sounds
-    Roam(both, both.capturedAt)
-    Check(ST.sounds = before + 1 && ST.soundCacheSeq = both.captureId && ST.soundRing.chest
-        && ST.lastAction = "реакция на текущую метку звука" && !ST.chestAudioReading.mark
-        , "красная реакция не уступает подтверждённому золотому углу на том же скане")
+    for conflict in [false, true] {
+        ResetCaches()
+        ST.lastSound := 0
+        first := SoundFixture(450, 231, 50)
+        Check(!ProbeChestSound(first), "угол для второго замера перед красной меткой")
+        both := conflict ? MixedSoundFixture(451) : SoundFixture(451, 231, 50)
+        FixtureRect(both, 316, 128, 7, 12, 0xEE2727)
+        FixtureRect(both, 323, 140, 8, 12, 0xEE2727)
+        both.capturedAt := A_TickCount, ST.scanWork := 0, ST.scanSoundAt := 0
+        before := ST.sounds
+        Roam(both, both.capturedAt)
+        Check(ST.sounds = before + 1 && ST.soundCacheSeq = both.captureId && ST.soundRing.chest
+            && ST.soundRing.goldAmbiguous = conflict && ST.lastAction = "реакция на текущую метку звука"
+            && !ST.chestAudioReading.mark, "красная реакция сохраняется при одном и при нескольких золотых направлениях")
+    }
 }
 
 RunFixtureRoam(shot) {

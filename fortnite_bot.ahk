@@ -340,6 +340,7 @@ global CFG := {
     ; ---- звук (визуализация) ----
     soundRingMin:   16,     ; размер метки на кольце визуализации звука, px (при 1280)
     soundRingMax:   135,
+    soundGoldArcDeg: 20,   ; допустимый разброс углов золотых групп на кольце и между замерами
 
     soundFlashDelta: 14,    ; прирост яркости кадра = вспышка выстрела
     soundReactMs:   380,    ; быстрая реакция на выстрел, шаги и звук сундука
@@ -3346,15 +3347,20 @@ Atan2Deg(x, y) {
     return rad * 57.2957795
 }
 
+SoundBearingOffset(angle, reference) {
+    d := angle - reference
+    return (d > 180) ? d - 360 : ((d < -180) ? d + 360 : d)
+}
+
 SoundRingScan(shot) {
-    ; v11.0: раздельное чтение кольца «Visualize Sound Effects» вокруг прицела.
-    ; Возвращает {shot, chest, step, best}, у каждой метки есть angleDeg (-180..180).
+    ; Раздельное чтение кольца «Visualize Sound Effects». chest — лишь
+    ; наибольшая группа золота; goldAmbiguous отдельно запрещает наведение.
     global CFG
-    out := {shot: 0, chest: 0, step: 0, best: 0}
+    out := {shot: 0, chest: 0, step: 0, best: 0, goldCount: 0, goldAmbiguous: false}
     res := MaskClustersMulti(shot, CFG.regSound, ["white", "gold", "red"], 14, ScanStep(5), 2)
     cx := shot.w * 0.5, cy := shot.h * 0.5
     rMin := shot.h * 0.10, rMax := shot.h * 0.45
-    bestRank := -1
+    bestRank := -1, goldRef := 0.0, goldLo := 0.0, goldHi := 0.0
     for mode, list in res {
         rank := (mode = "red") ? 3 : ((mode = "gold") ? 2 : 1)
         for c in list {
@@ -3373,19 +3379,32 @@ SoundRingScan(shot) {
             item := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area, kind: mode, angleDeg: ang}
             if (mode = "red" && (!out.shot || c.area > out.shot.area))
                 out.shot := item
-            else if (mode = "gold" && (!out.chest || c.area > out.chest.area))
-                out.chest := item
-            else if (mode = "white" && (!out.step || c.area > out.step.area))
+            else if (mode = "gold") {
+                if !out.goldCount
+                    goldRef := ang
+                off := SoundBearingOffset(ang, goldRef)
+                goldLo := Min(goldLo, off), goldHi := Max(goldHi, off)
+                out.goldCount += 1
+                if (!out.chest || c.area > out.chest.area)
+                    out.chest := item
+            } else if (mode = "white" && (!out.step || c.area > out.step.area))
                 out.step := item
             if (!out.best || rank > bestRank || (rank = bestRank && c.area > out.best.area))
                 out.best := item, bestRank := rank
         }
     }
+    ; Нужен один узкий сектор для ВСЕХ групп. Соседство с самой большой
+    ; или цепочка близких пар не делают крайние направления согласованными.
+    out.goldAmbiguous := goldHi - goldLo > CFG.soundGoldArcDeg
     return out
 }
 
-GoldSoundText(mark) {
-    return mark ? (Round(mark.angleDeg, 1) "° · центр (" mark.x "," mark.y ") · только кандидат") : "нет"
+GoldSoundText(ring) {
+    if ring.goldAmbiguous
+        return "разные направления · групп " ring.goldCount " · без наведения"
+    mark := ring.chest
+    return mark ? (Round(mark.angleDeg, 1) "° · центр (" mark.x "," mark.y ") · групп " ring.goldCount
+        . " · только кандидат") : "нет"
 }
 
 FindIncomingHitArc(shot) {
@@ -6706,15 +6725,20 @@ SeekChestBySound(shot, now) {
         if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot))
             return false
     }
-    mark := hasHud ? ST.soundRing.chest : 0
+    ambiguous := hasHud && ST.soundRing.goldAmbiguous
+    mark := hasHud && !ambiguous ? ST.soundRing.chest : 0
     reading := {seq:shot.captureId, at:shot.capturedAt, view:FrameView(shot), mark:mark}
     ST.chestAudioReading := reading
+    gap := prior ? reading.at - prior.at : 0
+    longGap := gap > Max(800, CFG.scanSoundMs * 3)
     if !mark {
-        ST.chestAudioAt := 0
+        ; Конфликт целей — измеренный кадр без пригодного направления.
+        ; Не считаем его пустым и не открываем новую паузу при каждом мерцании.
+        if (!ambiguous || longGap)
+            ST.chestAudioAt := 0
         return false
     }
-    gap := prior ? reading.at - prior.at : 0
-    starting := !ST.chestAudioAt || gap > Max(800, CFG.scanSoundMs * 3)
+    starting := !ST.chestAudioAt || longGap
     if starting
         ST.chestAudioAt := reading.at
     ; Новый угол или собственный поворот не начинают отсчёт попытки заново.
@@ -6726,9 +6750,9 @@ SeekChestBySound(shot, now) {
     if (turn && !CFG.dryRun && !MouseAllowed(shot.hwnd))
         return false
     confirmMs := ChestSoundConfirmMs()
-    delta := prior && prior.mark ? Abs(ang - prior.mark.angleDeg) : 0
+    delta := prior && prior.mark ? Abs(SoundBearingOffset(ang, prior.mark.angleDeg)) : 0
     if (starting || !prior || !prior.mark || !SameFrameView(prior.view, shot)
-        || gap > confirmMs || Min(delta, 360 - delta) > 20) {
+        || gap > confirmMs || delta > CFG.soundGoldArcDeg) {
         ; Только одна короткая пауза для второго кадра. Смена угла,
         ; дубликат и отсрочка не могут удерживать патруль на месте.
         if (starting && A_TickCount < reading.at + confirmMs) {
@@ -15600,7 +15624,7 @@ SaveDryPair(pair, root) {
             text .= "  захват: " CaptureTimingText(frame.captureTiming) "`r`n"
         if frame.HasOwnProp("combatTrace")
             text .= "  боевой скан: " CombatTraceText(frame.combatTrace) "`r`n"
-        sound := frame.HasOwnProp("soundReading") ? GoldSoundText(frame.soundReading.chest)
+        sound := frame.HasOwnProp("soundReading") ? GoldSoundText(frame.soundReading)
             : (frame.HasOwnProp("soundDeferred") ? "скан отложен бюджетом" : "нет замера на этом кадре")
         text .= "  золотая группа кольца: " sound "`r`n"
     }
@@ -15748,7 +15772,7 @@ BuildCalibrationReport(shot) {
     }
     lines.Push("  звук: метка " (sound ? ("(" sound.x "," sound.y ") " sound.w "x" sound.h) : "нет")
         . "   вспышка " Round(flashPct) "%")
-    lines.Push("  золотая группа кольца: " GoldSoundText(ring.chest))
+    lines.Push("  золотая группа кольца: " GoldSoundText(ring))
     sq := SquadScanHud(shot)
     slp := FindSleepScreen(shot)
     redL := FindLeaveButton(shot)
