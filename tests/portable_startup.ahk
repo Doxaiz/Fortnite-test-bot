@@ -60,7 +60,7 @@ TestPortableExe(source, scenario, dll) {
         for required in ["=== Запуск: FORMA v" version[1] " · EXE «FORMA.exe»", "DryRun (без нажатий)", "горячие клавиши:"]
             PortableCheck(InStr(text, required), "Нет записи в свежей части run.log: " required)
         CheckPortableLog(text)
-        if (version[1] = "11.0.14" && A_Args.Length = 2)
+        if (A_Args.Length = 2 && VerCompare(version[1], "11.0.14") >= 0)
             PortableCheck(InStr(text, "сохранить пару DryRun ^+F5"), "EXE не зарегистрировал клавишу сохранения пары")
         if backend
             PortableCheck(InStr(text, "Пиксельные сканы: " backend), "Бэкенд не подтверждён в журнале: " backend)

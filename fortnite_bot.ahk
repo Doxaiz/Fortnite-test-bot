@@ -5,11 +5,11 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.14.0
+;@Ahk2Exe-SetVersion          11.0.15.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.14 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.15 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
 ;  Анализ кадров на AutoHotkey v2 с необязательными сканами на Rust.
 ;  Среда AHK включена в переносимый EXE:
@@ -72,7 +72,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.14"
+global FORMA_VERSION := "11.0.15"
 
 global CFG := {
     ; ---- окно игры ----
