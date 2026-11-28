@@ -5972,10 +5972,10 @@ InputReleaseRun(epoch, kind, code, hold := 0, releaseId := 0) {
     }
 }
 
-TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0) {
+TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0, shot := 0) {
     global CFG, ST
     ; Зафиксировать поколение до KeyDown даже для обычных коротких нажатий.
-    ; Для E сохраняем переданное поколение кадра, а не подменяем его текущим.
+    ; Кадр проверяется только для down; up всё равно идёт в исходное удержание.
     previous := Critical("On")
     epoch := expectedEpoch >= 0 ? expectedEpoch : ST.inputEpoch
     Critical(previous)
@@ -5983,7 +5983,7 @@ TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0) {
     SendLevel 0
     if CFG.humanize
         holdMs := Round(holdMs * RndF(0.8, 1.35))
-    if !KeyDown(code, epoch, expectedHwnd)
+    if !KeyDown(code, epoch, expectedHwnd, shot)
         return false
     previous := Critical("On")
     if (ST.inputEpoch != epoch) {
@@ -6589,21 +6589,21 @@ AdsSet(on, shot := 0) {
     }
 }
 
-JumpNow(reason := "") {
+TrySoundJump(shot) {
     global CFG, SC, ST
-    if !CFG.featParkour
+    ; Интервал реакции на кольцо короче интервала прыжков. Проверяем
+    ; допуск Space до остановки, иначе отказ сам рвёт патрульный W.
+    if (!CFG.featParkour || A_TickCount - ST.lastJumpT < CFG.jumpMinGapMs
+        || Random(0, 99) >= CFG.soundDodgeJumpChance || !WorldFrameCurrent(shot))
         return false
-    if (A_TickCount - ST.lastJumpT < CFG.jumpMinGapMs)
+    HaltMatchMovement()
+    if !WorldFrameCurrent(shot)
         return false
-    ST.lastJumpT := A_TickCount
-    ST.jumps += 1
-    if CFG.dryRun {
-        LogThrottledKey("[dryjump]", "[dry-run] прыжок — " reason)
-        return true
-    }
-    TapKey(SC.space, 90)
-    ST.lastAction := "прыжок"
-    LogThrottledKey("[jump]", "[~] прыжок — " reason)
+    jumpAt := A_TickCount, dry := CFG.dryRun
+    if (!dry && !TapKey(SC.space, 90, shot.inputEpochAtCapture, 0, shot))
+        return false
+    ST.lastJumpT := jumpAt, ST.jumps += 1
+    LogThrottledKey(dry ? "[dryjump]" : "[jump]", (dry ? "[dry-run] " : "[~] ") "прыжок — свежая метка выстрела")
     return true
 }
 
@@ -7586,10 +7586,8 @@ SoundReact(shot, now) {
         if (!CFG.dryRun && !TurnBy(dx * 0.25, 0, Min(42, CFG.turnMaxPx))
             && ST.cameraSeq = shot.cameraSeqAtCapture)
             return false
-    } else if (mark.kind = "red" && Abs(dx) < shot.w * 0.20 && CFG.featParkour
-        && Random(0, 99) < CFG.soundDodgeJumpChance) {
-        HaltMatchMovement()
-        if (!WorldFrameCurrent(shot) || !JumpNow("свежая метка выстрела"))
+    } else if (mark.kind = "red" && Abs(dx) < shot.w * 0.20) {
+        if !TrySoundJump(shot)
             return false
     } else
         return false

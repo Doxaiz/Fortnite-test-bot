@@ -1317,6 +1317,11 @@ TestSoundJumpCooldown(a, b) {
     ready := TickFixture(b)
     Check(ST.soundCacheSeq = ready.captureId && ST.sounds = sounds + 1 && ST.jumps = jumps + 1
         && !ST.held.Has(SC.w), "после интервала свежая метка снова разрешает Space")
+    stale := ready.Clone(), stale.capturedAt := A_TickCount - 251
+    moved := ready.Clone(), moved.capturedAt := A_TickCount, moved.cameraSeqAtCapture += 1
+    foreign := ready.Clone(), foreign.capturedAt := A_TickCount, foreign.hwnd := a
+    for shot in [stale, moved, foreign]
+        Check(!TapKey(SC.space, 90, shot.inputEpochAtCapture, 0, shot), "отправка не принимает просроченный или чужой вид")
     ExpectKey(b, SC.space, space[1] + 2, space[2] + 2)
     ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
     ExpectKey(a, SC.w, otherW*)
