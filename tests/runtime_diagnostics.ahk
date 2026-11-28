@@ -2722,6 +2722,7 @@ TestSoundFrames() {
     WithGroundFixture(CheckAmbiguousSoundFrames)
     WithGroundFixture(CheckSoundSectorSpread)
     WithGroundFixture(CheckSoundReactionPriority)
+    WithGroundFixture(CheckSoundReactionFrames)
 }
 
 SoundFixture(id, x := 316, y := 128) {
@@ -2733,9 +2734,9 @@ SoundFixture(id, x := 316, y := 128) {
     return shot
 }
 
-PaintSoundFixtureMark(shot, x, y, width := 7) {
-    FixtureRect(shot, x, y, width, 12, 0xE89028)
-    FixtureRect(shot, x + width, y + 12, width + 1, 12, 0xE89028)
+PaintSoundFixtureMark(shot, x, y, width := 7, color := 0xE89028) {
+    FixtureRect(shot, x, y, width, 12, color)
+    FixtureRect(shot, x + width, y + 12, width + 1, 12, color)
     shot.capturedAt := A_TickCount
 }
 
@@ -2966,14 +2967,38 @@ CheckSoundReactionPriority() {
         first := SoundFixture(450, 231, 50)
         Check(!ProbeChestSound(first), "угол для второго замера перед красной меткой")
         both := conflict ? MixedSoundFixture(451) : SoundFixture(451, 231, 50)
-        FixtureRect(both, 316, 128, 7, 12, 0xEE2727)
-        FixtureRect(both, 323, 140, 8, 12, 0xEE2727)
-        both.capturedAt := A_TickCount, ST.scanWork := 0, ST.scanSoundAt := 0
+        PaintSoundFixtureMark(both, 316, 128, 7, 0xEE2727)
+        ST.scanWork := 0, ST.scanSoundAt := 0
         before := ST.sounds
         Roam(both, both.capturedAt)
         Check(ST.sounds = before + 1 && ST.soundCacheSeq = both.captureId && ST.soundRing.chest
             && ST.soundRing.goldAmbiguous = conflict && ST.lastAction = "реакция на текущую метку звука"
             && !ST.chestAudioReading.mark, "красная реакция сохраняется при одном и при нескольких золотых направлениях")
+    }
+}
+
+CheckSoundReactionFrames() {
+    global CFG, ST
+    id := 620
+    for kind, color in Map("red", 0xEE2727, "white", 0xEEEEEE) {
+        ResetCaches()
+        ST.lastSound := 0, ST.scanWork := 0, before := ST.sounds
+        missing := SoundFixture(++id, 0)
+        missing.hudEvidence.confirmed := false
+        PaintSoundFixtureMark(missing, 316, 128, 7, color)
+        Check(!SoundReact(missing, A_TickCount) && ST.soundCacheSeq = missing.captureId
+            && missing.soundReading.best.kind = kind && ST.scanWork = 1 && !ST.lastSound && ST.sounds = before
+            , kind ": измерение сохраняется для DryRun, но повороту нужен текущий HUD")
+        skipped := SoundFixture(++id, 0), ST.scanSoundAt := 0, ST.scanWork := CFG.scanPerTickMax
+        PaintSoundFixtureMark(skipped, 316, 128, 7, color)
+        Check(FrameHasMatchHud(skipped) && !SoundReact(skipped, A_TickCount) && skipped.HasOwnProp("soundDeferred")
+            && ST.soundCacheSeq = missing.captureId && ST.sounds = before && !ST.lastSound
+            , kind ": возврат HUD без свежего скана не использует старую метку")
+        fresh := SoundFixture(++id, 0), ST.scanWork := 0
+        PaintSoundFixtureMark(fresh, 316, 128, 7, color)
+        Check(SoundReact(fresh, A_TickCount) && ST.soundCacheSeq = fresh.captureId && fresh.soundReading.best.kind = kind
+            && ST.scanWork = 1 && ST.sounds = before + 1 && ST.lastSound
+            , kind ": свежие HUD и метка возвращают поворот в DryRun")
     }
 }
 

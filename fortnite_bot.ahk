@@ -7569,11 +7569,14 @@ TrackDamageAfterFire(shot, prevFire, enemy) {
 ;                      ПОВЕДЕНИЕ: РЕАКЦИЯ НА ЗВУК
 ; ============================================================================
 SoundReact(shot, now) {
-    global CFG, SC, ST
+    global CFG, ST
     if (!CFG.featSound || !CFG.featMove || !WorldFrameCurrent(shot) || now - ST.lastSound < CFG.soundReactMs)
         return false
     mark := CachedSound(shot)
-    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot) || !mark || mark.kind = "gold")
+    ; Кольцо остаётся доступно для диагностики. Память GAME не заменяет
+    ; подтверждение HUD на кадре, который разрешает поворот или Space.
+    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot) || !FrameHasMatchHud(shot)
+        || !mark || mark.kind = "gold")
         return false
     dx := mark.x - shot.w / 2
     if (Abs(dx) > 15 && !CFG.teamSafe) {
@@ -7586,7 +7589,7 @@ SoundReact(shot, now) {
     } else if (mark.kind = "red" && Abs(dx) < shot.w * 0.20 && CFG.featParkour
         && Random(0, 99) < CFG.soundDodgeJumpChance) {
         HaltMatchMovement()
-        if !JumpNow("свежая метка выстрела")
+        if (!WorldFrameCurrent(shot) || !JumpNow("свежая метка выстрела"))
             return false
     } else
         return false
