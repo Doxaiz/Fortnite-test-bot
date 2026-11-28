@@ -2718,6 +2718,7 @@ CheckFireGate() {
 TestSoundFrames() {
     WithGroundFixture(CheckSoundFrames)
     WithGroundFixture(CheckSoundDirectionGuards)
+    WithGroundFixture(CheckAmbiguousSoundFrames)
     WithGroundFixture(CheckSoundReactionPriority)
 }
 
@@ -2777,7 +2778,7 @@ CheckSoundFrames() {
     Check(!ProbeChestSound(fresh) && ST.soundCacheSeq = fresh.captureId && !ST.soundRing.chest && !ST.chestAudioAt
         , "измеренный пустой кадр заканчивает аудиоподход")
     Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "после пропажи метки: одного нового замера мало для шага")
-    front := SoundFixture(++id, 235, 50)
+    front := SoundFixture(++id, 239, 50) ; при шаге 5 группа занимает две колонки маски
     Check(ProbeChestSound(front) && ST.lastAction = "короткий шаг по метке звука" && !ST.tgt && !ST.held.Count
         , "два близких угла впереди разрешают ограниченный W в DryRun")
     stepEnd := ST.guidedUntil
@@ -2831,6 +2832,21 @@ CheckSoundDirectionGuards() {
         && ST.guidedUntil = quiet, "золото без текущего HUD не подтверждает W даже при недавней игре")
     Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "после возврата HUD прежний угол не засчитывается")
     Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "два новых кадра с HUD возвращают шаг")
+}
+
+CheckAmbiguousSoundFrames() {
+    global ST
+    first := SoundFixture(500, 231, 50)
+    Check(!ProbeChestSound(first) && ST.soundRing.chest, "направление прямо пока только кандидат")
+    quiet := ST.guidedUntil
+    mixed := SoundFixture(501, 231, 50)
+    ; Та же крупная группа впереди и отдельная меньшая слева. Прежний
+    ; выбор по площади видел только первую, как будто направление повторилось.
+    FixtureRect(mixed, 159, 55, 5, 10, 0xE89028)
+    FixtureRect(mixed, 164, 65, 5, 10, 0xE89028)
+    mixed.capturedAt := A_TickCount
+    Check(!ProbeChestSound(mixed) && ST.guidedUntil = quiet
+        , "вторая группа в другом направлении не должна подтверждать W по крупнейшей")
 }
 
 CheckSoundReactionPriority() {
