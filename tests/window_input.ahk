@@ -46,7 +46,7 @@ RunWindowTests() {
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
             , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
-            , TestChestSoundRecovery] {
+            , TestChestSoundRecovery, TestChestSoundFlicker] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -1156,14 +1156,67 @@ TestChestSoundRecovery(a, b) {
         ExpectKey(a, k, counts*)
 }
 
-StartFixtureSoundWalk(h) {
-    global ST, SC
+TestChestSoundFlicker(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := true, CFG.featSound := true, CFG.scanSoundMs := 0
+    CFG.featCombat := false, CFG.featLoot := false, CFG.featParkour := false
+    ApplyPerfProfile("fast")
+    CFG.patrolHoldMs := 900, CFG.pauseChance := 0
+    ResetFixtureSoundRoam()
+    w := FixtureKeyCounts(b, SC.w), e := FixtureKeyCounts(b, SC.e), otherW := FixtureKeyCounts(a, SC.w)
+    SetFixtureFrame(b, 0)
+    TickFixture(b)
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+    SetFixtureFrame(b, 30)
+    first := TickFixture(b), waitUntil := ST.guidedUntil
+    Check(ST.soundCacheSeq = first.captureId && ST.soundRing.chest
+        && waitUntil = first.capturedAt + ChestSoundConfirmMs() && !ST.held.Has(SC.w)
+        , "новая метка может взять одну паузу на подтверждение")
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+    SetFixtureFrame(b, 0)
+    clear := TickFixture(b)
+    Check(ST.soundCacheSeq = clear.captureId && !ST.soundRing.chest && !ST.chestAudioReading.mark
+        && ST.guidedUntil = waitUntil, "измеренная пропажа разрывает пару, не продлевая ожидание")
+    Sleep(Max(0, waitUntil + 16 - A_TickCount))
+    TickFixture(b)
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+    forward := ST.held[SC.w], segment := ST.segUntil
+    for scene in [30, 0, 30] {
+        SetFixtureFrame(b, scene)
+        shot := TickFixture(b)
+        Check(ST.soundCacheSeq = shot.captureId && (!!ST.soundRing.chest = (scene = 30))
+            , "мерцание задано реальными замерами кольца с HUD")
+        ; Если пришло нежелательное отпускание, ждём его в приёмнике.
+        if !ST.held.Has(SC.w)
+            ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+        ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+        Check(ST.segUntil = segment && !ST.guidedUntil && ST.held.Get(SC.w, 0) = forward
+            , "одиночные появления не отбирают патрульный W")
+    }
+    TickFixture(b)
+    Check(!ST.segUntil && ST.guidedUntil > A_TickCount && ST.held.Get(SC.w, 0) = forward
+        && ST.lastAction = "короткий шаг по метке звука", "повтор угла переводит текущий W в короткий направленный шаг")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2, 1500)
+    ExpectKey(b, SC.e, e*)
+    ExpectKey(a, SC.w, otherW*)
+}
+
+ResetFixtureSoundRoam() {
+    global ST
     HaltMatchMovement()
     ResetNavigation()
     ResetSceneEvidence()
     ResetCaches()
     ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
-    ST.pauseUntil := A_TickCount + 1500, ST.cameraAt := 0, ST.lastSound := 0
+    ST.pauseUntil := 0, ST.cameraAt := 0, ST.lastSound := 0
+}
+
+StartFixtureSoundWalk(h) {
+    global ST, SC
+    ResetFixtureSoundRoam()
+    ST.pauseUntil := A_TickCount + 1500
     SetFixtureFrame(h, 30)
     TickFixture(h)
     good := TickFixture(h), forward := ST.held.Get(SC.w, 0)
