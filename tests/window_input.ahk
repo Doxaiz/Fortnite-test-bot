@@ -45,7 +45,7 @@ RunWindowTests() {
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
-            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease] {
+            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -294,7 +294,8 @@ TestDryPairBundle(pair, root) {
         && InStr(report, "current.bmp · кадр #" pair.current.captureId) && InStr(report, "Возраст current при запросе: " pair.age)
         && InStr(report, CaptureTimingText(pair.current.captureTiming)) && !InStr(report, root)
         && InStr(report, CombatTraceText(pair.previous.combatTrace)) && InStr(report, CombatTraceText(pair.current.combatTrace))
-        , "оба кадра в отчёте несут каждый свой замер, а не время последнего F7")
+        && InStr(report, "золотая группа кольца: нет замера на этом кадре")
+        , "отчёт цитирует замеры кадров и не пересканирует звук при экспорте")
     manifest := saved.folder "\vision.tsv", raw := FileRead(manifest, "UTF-8")
     unlabelled := false
     try ReadVisionSet(manifest)
@@ -992,6 +993,52 @@ TestPatrolHudLease(a, b) {
     ExpectKey(a, SC.shift, otherSprint*)
 }
 
+TestChestSoundLease(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := true, CFG.featSound := true, CFG.scanSoundMs := 0
+    HaltMatchMovement()
+    ResetNavigation()
+    ResetSceneEvidence()
+    ResetCaches()
+    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
+    ST.pauseUntil := 0, ST.lastSound := 0
+    w := FixtureKeyCounts(b, SC.w), e := FixtureKeyCounts(b, SC.e), otherW := FixtureKeyCounts(a, SC.w)
+    SetFixtureFrame(b, 30)
+    first := TickFixture(b)
+    Check(ST.soundCacheSeq = first.captureId && ST.soundRing.chest && Abs(ST.soundRing.chest.angleDeg) <= 14
+        && !ST.held.Has(SC.w), "первая метка с HUD впереди есть, но не даёт W")
+    ExpectKey(b, SC.w, w*)
+
+    SetFixtureFrame(b, 31)
+    lost := TickFixture(b, false)
+    Check(!FrameHasMatchHud(lost) && ST.state = "GAME" && ST.soundCacheSeq = lost.captureId
+        && ST.soundRing.chest && !ST.held.Has(SC.w), "золото без свежего HUD не может начать W")
+    ExpectKey(b, SC.w, w*)
+
+    SetFixtureFrame(b, 30)
+    TickFixture(b)
+    ExpectKey(b, SC.w, w*)
+    good := TickFixture(b)
+    forward := ST.held.Get(SC.w, 0)
+    Check(forward && forward.target = b && ST.lastAction = "короткий шаг по метке звука"
+        , "два новых кадра дают короткий W только выбранному окну")
+    lease := forward.releaseId, deadline := ST.guidedUntil
+    Check(WorldFrameCurrent(good) && !SeekChestBySound(good, A_TickCount) && forward.releaseId = lease
+        , "дубликат не переносит реальное отпускание W")
+    ExpectKey(b, SC.w, w[1] + 1, w[2])
+
+    SetFixtureFrame(b, 31)
+    stillGold := TickFixture(b, false)
+    Check(!FrameHasMatchHud(stillGold) && forward.releaseId = lease && ST.guidedUntil = deadline
+        , "при пропаже HUD шаг не продлевается, даже если метка осталась")
+    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1, 1500)
+    Check(!ST.held.Has(SC.w), "W отпущена без следующего тика")
+    ExpectKey(a, SC.w, otherW*)
+    ExpectKey(b, SC.e, e*)
+}
+
 PrimeGuidedStill(shot) {
     global CFG, ST
     ; Подводим счётчики к границе, чтобы потеря/пропуск пришлись на нужный тик.
@@ -1065,7 +1112,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 30
+    Loop 32
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1142,8 +1189,8 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    ; Сцена 27 — тот же открытый проход, что 0, но без признаков HUD.
-    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene != 27)) {
+    ; 27 — открытый проход без HUD, 31 — та же метка звука, что 30, но без HUD.
+    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene != 27 && scene != 31)) {
         PaintFixture(buf, w, 24, 256, (scene = 14 || scene = 15) ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -1168,7 +1215,7 @@ BuildFixtureFrame(scene) {
         PaintFixture(buf, w, 184, 166, 111, 45, 0xC2C2C2) ; локальный край поперёк центра
     if (scene = 22 || scene = 23)
         PaintFixture(buf, w, 222, 108, 36, 33, 0xFFAA20) ; ядро заполняет ячейки выше края без перекрытия прицела
-    if (scene = 20 || scene = 21 || (scene >= 24 && scene != 27)) {
+    if (scene = 20 || scene = 21 || (scene >= 24 && scene <= 29 && scene != 27)) {
         ; Плотные полосы слева и в центре; правая полоса остаётся открытой.
         ; Вариант с другой яркостью меняет кадр мира, но не оценку коридора.
         for bounds in [[0.15, 0.34], [0.39, 0.61]] {
@@ -1230,6 +1277,12 @@ BuildFixtureFrame(scene) {
                 PaintFixture(buf, w, cx + Round(spec[1] * k), 126 + Round(spec[2] * k)
                     , Round(spec[3] * k), Round(spec[4] * k), 0xD08048)
         }
+    }
+    if (scene = 30 || scene = 31) {
+        ; Две золотые части выше прицела: угол почти нулевой и обе части
+        ; попадают в сетку даже при +6 к шагу. До зоны свечения не доходят.
+        PaintFixture(buf, w, 229, 46, 11, 12, 0xE89028)
+        PaintFixture(buf, w, 240, 58, 11, 12, 0xE89028)
     }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)

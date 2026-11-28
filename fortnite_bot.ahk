@@ -885,9 +885,9 @@ global ST := {
     stormAt:      0,            ; время последней проверки Бури и линии зоны
     inStorm:      false,        ; игрок находится внутри фиолетовой Бури
     zoneAngle:    999,          ; угол к белой линии зоны на миникарте (-180..180, 999=нет)
-    chestAudioAt:       0,      ; с какого момента идём на золотую дугу сундука
-    chestAudioLastAt:   0,      ; время последнего свежего наблюдения
-    chestAudioCooldown: 0,      ; пауза аудио-поиска, если сундук оказался на другом этаже
+    chestAudioAt:       0,      ; начало непрерывной пробы по золотой группе
+    chestAudioReading:  0,      ; последний использованный замер направления (включая промах)
+    chestAudioCooldown: 0,      ; пауза после попытки без визуальной цели
     ; v11.0: 4-канальный детектор врага, адаптивный бой, стрейф и перезарядка
     inHitAngle:         999,    ; угол входящего урона по дуге вокруг прицела (-180..180)
     inHitAt:            0,      ; время обнаружения дуги входящего урона
@@ -3384,8 +3384,8 @@ SoundRingScan(shot) {
     return out
 }
 
-SoundMarks(shot) {
-    return SoundRingScan(shot).best
+GoldSoundText(mark) {
+    return mark ? (Round(mark.angleDeg, 1) "° · центр (" mark.x "," mark.y ") · только кандидат") : "нет"
 }
 
 FindIncomingHitArc(shot) {
@@ -6685,42 +6685,75 @@ CancelInteraction() {
         KeyUp(SC.e, pending.keyHold)
 }
 
+ChestSoundConfirmMs() {
+    global CFG
+    ; Место для повторного скана, одного пропущенного интервала и тика цикла.
+    return Max(300, 2 * CFG.scanSoundMs + CFG.loopMs)
+}
+
 SeekChestBySound(shot, now) {
-    ; Только направление на метку текущего кадра, не цель для E.
+    ; Золотая группа на кольце — только подсказка о направлении, не цель для E.
     global CFG, ST
     if (!CFG.featChest || !CFG.featSound || !CFG.chestAudioSeek || !CFG.featMove
         || ST.enemy || ST.chest || now < ST.chestAudioCooldown || !WorldFrameCurrent(shot))
         return false
-    CachedSound(shot)
-    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot))
+    prior := ST.chestAudioReading
+    if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
         return false
-    if !ST.soundRing.chest {
-        ST.chestAudioAt := 0, ST.chestAudioLastAt := 0
+    hasHud := FrameHasMatchHud(shot)
+    if hasHud {
+        CachedSound(shot)
+        if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot))
+            return false
+    }
+    mark := hasHud ? ST.soundRing.chest : 0
+    reading := {seq:shot.captureId, at:shot.capturedAt, view:FrameView(shot), mark:mark}
+    ST.chestAudioReading := reading
+    if !mark {
+        ST.chestAudioAt := 0
         return false
     }
-    if (!ST.chestAudioAt || now - ST.chestAudioLastAt > Max(800, CFG.scanSoundMs * 3))
-        ST.chestAudioAt := now
-    ST.chestAudioLastAt := now
-    if (now - ST.chestAudioAt > 9500) {
+    gap := prior ? reading.at - prior.at : 0
+    starting := !ST.chestAudioAt || gap > Max(800, CFG.scanSoundMs * 3)
+    if starting
+        ST.chestAudioAt := reading.at
+    ; Новый угол или собственный поворот не начинают отсчёт попытки заново.
+    if (reading.at - ST.chestAudioAt > 9500) {
         ST.chestAudioAt := 0, ST.chestAudioCooldown := now + 12000
         return false
     }
-    ang := ST.soundRing.chest.angleDeg
-    if (Abs(ang) > 14) {
-        if (!CFG.dryRun && !MouseAllowed(shot.hwnd))
-            return false
+    ang := mark.angleDeg, turn := Abs(ang) > 14
+    if (turn && !CFG.dryRun && !MouseAllowed(shot.hwnd))
+        return false
+    confirmMs := ChestSoundConfirmMs()
+    delta := prior && prior.mark ? Abs(ang - prior.mark.angleDeg) : 0
+    if (starting || !prior || !prior.mark || !SameFrameView(prior.view, shot)
+        || gap > confirmMs || Min(delta, 360 - delta) > 20) {
+        ; Только одна короткая пауза для второго кадра. Смена угла,
+        ; дубликат и отсрочка не могут удерживать патруль на месте.
+        if (starting && A_TickCount < reading.at + confirmMs) {
+            HaltMatchMovement()
+            if WorldFrameCurrent(shot) {
+                ST.guidedUntil := reading.at + confirmMs
+                ST.lastAction := "метка звука: жду повтор направления"
+            }
+        }
+        return false
+    }
+    if turn {
         HaltMatchMovement()
         if !WorldFrameCurrent(shot)
             return false
         if (!CFG.dryRun && !TurnBy(Clamp(ang * 1.2, -40, 40), 0, CFG.turnMaxPx)
             && ST.cameraSeq = shot.cameraSeqAtCapture)
             return false
-        ST.guidedUntil := A_TickCount + Max(260, CFG.scanSoundMs)
-        ST.lastAction := "метка сундука: поворачиваюсь, жду новый кадр"
+        reading.mark := 0 ; после поворота заново два замера, даже в DryRun
+        ST.guidedUntil := A_TickCount + confirmMs
+        ST.lastAction := "метка звука: поворачиваюсь, жду новый кадр"
     } else {
         if !ForwardStep(shot, 430, CFG.scanSoundMs)
             return false
-        ST.lastAction := "короткий шаг по метке сундука"
+        ST.lastAction := "короткий шаг по метке звука"
     }
     ST.moveMode := "по метке звука"
     return true
@@ -6944,7 +6977,7 @@ SkipChestSpot(shot, target) {
         , rx:Max(6, Min(shot.w * 0.05, target.w * 0.6)), ry:Max(6, Min(shot.h * 0.06, target.h * 0.6))})
     ST.chestSkips := spots
     ; Не возвращаться сразу на тот же сигнал из-за другой ветки поиска.
-    ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := Max(ST.chestAudioCooldown, now + 2000)
+    ST.chestAudioAt := 0, ST.chestAudioReading := 0, ST.chestAudioCooldown := Max(ST.chestAudioCooldown, now + 2000)
     LogThrottledKey("[chest-skip]", "[chest] Нет подсказки после подхода; пропускаю пятно в ("
         . target.x "," target.y ") на " Round(CFG.chestSkipMs / 1000) " с в этом виде. Ищу дальше.")
     return true
@@ -7926,7 +7959,7 @@ CachedLoot(shot) {
 
 CachedSound(shot) {
     global CFG, ST
-    if (ST.soundCacheSeq != shot.captureId && !shot.HasOwnProp("soundDeferred")
+    if (shot.captureId > ST.soundCacheSeq && !shot.HasOwnProp("soundDeferred")
         && WorldFrameCurrent(shot) && A_TickCount - ST.scanSoundAt >= CFG.scanSoundMs) {
         if !ScanAllow(1) {
             shot.soundDeferred := true
@@ -7935,9 +7968,16 @@ CachedSound(shot) {
         ring := SoundRingScan(shot)
         TickCheck("после скана звука")
         prev := Critical("On")
-        ST.soundRing := ring, ST.soundCache := ring.best, ST.soundCacheSeq := shot.captureId
-        ST.scanSoundAt := A_TickCount
-        Critical(prev)
+        try {
+            if WorldFrameCurrent(shot) {
+                ST.soundRing := ring, ST.soundCache := ring.best, ST.soundCacheSeq := shot.captureId
+                ST.scanSoundAt := A_TickCount
+                if CFG.dryRun
+                    shot.soundReading := ring
+            }
+        } finally {
+            Critical(prev)
+        }
     }
     return ST.soundCache
 }
@@ -7950,7 +7990,7 @@ ResetCaches() {
     ; значения обновятся по одному в ближайших тиках (бюджет не даст все сразу).
     ST.scanDensityAt := 0, ST.scanSoundAt := 0
     ST.soundCache := 0, ST.sound := 0, ST.soundCacheSeq := 0, ST.soundRing := 0
-    ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := 0
+    ST.chestAudioAt := 0, ST.chestAudioReading := 0, ST.chestAudioCooldown := 0
     ST.walkTarget := 0, ST.chestSkips := [], ST.guidedUntil := 0
     CancelInteraction()
     CancelRetreatStep()
@@ -10208,9 +10248,14 @@ Roam(shot, now) {
     ; Пока маски на паузе, не перебиваем визуальный подход звуковым.
     if (ST.walkTarget && A_TickCount < ST.guidedUntil)
         return
-    if (SeekChestBySound(shot, now) || SoundReact(shot, now))
+    if SoundReact(shot, now) {
+        ; Срочная звуковая реакция использует тот же скан, но не оставляет
+        ; предыдущий золотой угол опорой для следующего шага.
+        if ST.chestAudioReading
+            ST.chestAudioReading.mark := 0
         return
-    if (!WorldFrameCurrent(shot) || A_TickCount < ST.guidedUntil)
+    }
+    if (SeekChestBySound(shot, now) || !WorldFrameCurrent(shot) || A_TickCount < ST.guidedUntil)
         return
     if (EnsureWeapon(now) || TacticalReloadTick(now, false)) {
         ST.lastAction := "слот / перезарядка"
@@ -15555,6 +15600,9 @@ SaveDryPair(pair, root) {
             text .= "  захват: " CaptureTimingText(frame.captureTiming) "`r`n"
         if frame.HasOwnProp("combatTrace")
             text .= "  боевой скан: " CombatTraceText(frame.combatTrace) "`r`n"
+        sound := frame.HasOwnProp("soundReading") ? GoldSoundText(frame.soundReading.chest)
+            : (frame.HasOwnProp("soundDeferred") ? "скан отложен бюджетом" : "нет замера на этом кадре")
+        text .= "  золотая группа кольца: " sound "`r`n"
     }
     reading := shot.HasOwnProp("enemyReading") ? shot.enemyReading : 0
     text .= "Рамка current в цикле: " (reading ? (reading.src " · " reading.x "," reading.y "," reading.w "," reading.h)
@@ -15651,7 +15699,7 @@ BuildCalibrationReport(shot) {
     diagnostic := {skinPct:0}
     enemy := ReadStaticFigure(shot, CFG.enemyFastFrac, 0, diagnostic)
     prompt := ReadInteractPrompt(shot)
-    ring := SoundMarks(shot)
+    ring := SoundRingScan(shot), sound := ring.best
     flashPct := SoundFlash(shot), nav := ScanNavCorridors(shot)
 
     lines := []
@@ -15698,8 +15746,9 @@ BuildCalibrationReport(shot) {
         lines.Push("     · " c.src (c.pass ? (": " c.w "x" c.h " @ (" c.cx "," c.cy ")") : "")
             . " · только диагностика")
     }
-    lines.Push("  звук: метка " (ring ? ("(" ring.x "," ring.y ") " ring.w "x" ring.h) : "нет")
+    lines.Push("  звук: метка " (sound ? ("(" sound.x "," sound.y ") " sound.w "x" sound.h) : "нет")
         . "   вспышка " Round(flashPct) "%")
+    lines.Push("  золотая группа кольца: " GoldSoundText(ring.chest))
     sq := SquadScanHud(shot)
     slp := FindSleepScreen(shot)
     redL := FindLeaveButton(shot)
