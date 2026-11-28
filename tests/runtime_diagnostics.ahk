@@ -29,7 +29,8 @@ try {
             , TestQueueOutcome, TestEndHandoff, TestReturnEvidence, TestEndStopGuards, TestCalibrationIsolation
             , TestNavigationState, TestMotionUsesSameWindow
             , TestModeScenes, TestLeaveSequence, TestLeaveCancellation, TestChestApproach, TestChestSelection
-            , TestChestReacquireDeadline, TestPromptPixels, TestPromptScanFreshness, TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
+            , TestChestReacquireDeadline, TestAmbiguousChestRecheck, TestPromptPixels, TestPromptScanFreshness
+            , TestPromptAttempts, TestPromptGeometry, TestUnchangedPrompt
             , TestPromptAbsenceDeadline, TestEnemyEvidence, TestCombatPreemption, TestCombatAimCorrection, TestCombatRetreat
             , TestCombatScanFreshness, TestCombatTrace, TestCombatPixels, TestProjectedScenery
             , TestAlternativeFigure, TestEnemySwitch, TestLocalMotion, TestFireGate, TestSoundFrames
@@ -1490,6 +1491,37 @@ CheckChestReacquireDeadline() {
             && !ChestSpotSkipped(ST.chestSkips, strongest.kind, strongest.x, strongest.y) && !ST.held.Count && !ST.tgt
             , "второй замер завершает подход: пропуск только подтверждённого пятна, не соседа; действие: " ST.lastAction)
     }
+}
+
+TestAmbiguousChestRecheck() {
+    WithGroundFixture(CheckAmbiguousChestRecheck)
+}
+
+CheckAmbiguousChestRecheck() {
+    global CFG, ST
+    CFG.scanLootMs := 0
+    ready := 0
+    Loop 3 {
+        ready := WorldFixture(380 + A_Index, "center"), ST.scanWork := 0
+        Check(TryApproach(ready, ready.capturedAt), "исходное свечение у прицела")
+    }
+    approach := ST.walkTarget, began := approach.at, anchor := approach.samples.x
+    Check(approach.samples.hits >= 2 && ST.guidedUntil, "у прежней цели уже был направленный шаг")
+    ; Как после ограниченного бокового шага: старый центр — подсказка, не попадание.
+    approach.samples.hits := 0, approach.rechecking := true
+    leaseEnd := ST.guidedUntil := A_TickCount + 720
+    doubles := WorldFixture(384), ST.scanWork := 0
+    FixtureRect(doubles, 182, 148, 36, 36, 0xFFAA20)
+    FixtureRect(doubles, 263, 148, 36, 36, 0xFFCB18)
+    count := 0
+    for part in LootMask(ScanLootMasks(doubles), "chestGold")
+        if (CandidateNear(approach.samples, part.cx, part.cy, doubles.w, doubles.h) && ChestGlowInfo(doubles, part).core >= 118)
+            count += 1
+    Check(count = 2, "две раздельные валидные группы попадают в один допуск")
+    doubles.capturedAt := A_TickCount
+    Check(TryApproach(doubles, doubles.capturedAt) && ST.walkTarget = approach && !approach.samples.hits
+        && approach.samples.x = anchor && approach.at = began && ST.guidedUntil = leaseEnd
+        && !ST.chest && !ST.held.Count && !ST.tgt, "две близкие группы не подтверждают прежнюю цель и не продлевают ожидание")
 }
 
 PromptPixels(w, h, kind) {
