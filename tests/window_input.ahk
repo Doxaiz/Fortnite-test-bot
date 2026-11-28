@@ -28,7 +28,7 @@ RunWindowTests() {
     CFG.promptScanMs := 0, CFG.promptEcooldownMs := 0
     CFG.fwdMinMs := 8000, CFG.fwdMaxMs := 8000
     tag := "FORMA fixture " ProcessExist() " " A_TickCount
-    pid := 0, code := 0
+    pid := 0, code := 0, suiteAt := A_TickCount, scenario := "запуск приёмников"
     try {
         Check(!UI.gui && !ST.running, "#Include не запускает рабочий интерфейс")
         SetDpiAware()
@@ -47,11 +47,12 @@ RunWindowTests() {
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
             , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
             , TestChestSoundRecovery, TestChestSoundFlicker] {
+            scenario := test.Name
             test(a, b)
-            FileAppend("OK: " test.Name "`n", "*", "UTF-8")
+            FileAppend("OK: " scenario "`n", "*", "UTF-8")
         }
     } catch as e {
-        FileAppend("FAIL: " e.Message " (line " e.Line ")`n", "**", "UTF-8")
+        FileAppend("FAIL: " scenario " · " e.Message " (line " e.Line ", " (A_TickCount - suiteAt) " ms)`n", "**", "UTF-8")
         code := 1
     } finally {
         ST.running := false
@@ -767,6 +768,9 @@ TestGuidedLipHop(a, b) {
     FocusFixture(a), SelectFixture(b)
     CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true
     CFG.featCombat := false, CFG.featSound := false, CFG.featChest := true, CFG.featParkour := true
+    ; Маску читаем на каждом ручном тике. Даём W запас на паузу 175 мс
+    ; и GDI на загруженном CI, не меняя пороги неподвижности и прыжка.
+    loopMs := CFG.loopMs, CFG.loopMs := 390
     CFG.scanLootMs := 0, CFG.navScanMs := 0
     CFG.stuckSampleMs := 150, CFG.stuckMs := 8000
     ResetNavigation()
@@ -793,6 +797,7 @@ TestGuidedLipHop(a, b) {
     Loop 12 {
         Sleep(175)
         TickFixture(b)
+        Check(ST.held.Get(SC.w, 0) = forward, "W не должна истечь между ручными замерами уступа (#" A_Index ")")
         if ST.navHop
             break
     }
@@ -816,6 +821,7 @@ TestGuidedLipHop(a, b) {
     ExpectKey(b, SC.e, 6, 6, 1500)
     ExpectKey(a, SC.space, 0, 0)
     ExpectKey(a, SC.e, 3, 3)
+    CFG.loopMs := loopMs
 }
 
 TestGuidedRecoveryRecheck(a, b) {
@@ -1312,7 +1318,9 @@ ServeReceiver(tag) {
         rx[win.Hwnd] := {gui:win, scene:0, counts:Map()}
         win.Show("NA x" (label = "A" ? 16 : 512) " y40 w480 h288")
     }
-    SetTimer(ExitApp, -30000)
+    ; Родитель завершает процесс в finally. Этот предел нужен на случай
+    ; аварии родителя, а не как дедлайн всего набора на медленном CI.
+    SetTimer(ExitApp, -90000)
 }
 
 ReceiverFrame(w, l, msg, h) {
