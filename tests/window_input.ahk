@@ -1336,7 +1336,7 @@ TestPatrolMeasuredBypass(a, b) {
     CFG.featChest := false, CFG.featLoot := false, CFG.featCombat := false
     CFG.featSound := false, CFG.featParkour := false
     ApplyPerfProfile("fast")
-    CFG.navScanMs := 0, CFG.stuckSampleMs := 550, CFG.stuckMs := 1200, CFG.stuckRecoveryMs := 650
+    CFG.navScanMs := 0, CFG.stuckSampleMs := 550, CFG.stuckMs := 2400, CFG.stuckRecoveryMs := 650
     CFG.patrolHoldMs := 2400, CFG.pauseChance := 0
     ResetFixtureSoundRoam()
     w := FixtureKeyCounts(b, SC.w), left := FixtureKeyCounts(b, SC.a), right := FixtureKeyCounts(b, SC.d)
@@ -1361,19 +1361,33 @@ TestPatrolMeasuredBypass(a, b) {
     ExpectKey(b, SC.a, left*)
     ExpectKey(b, SC.d, right*)
 
+    ; Подменяем W между тиками, как если бы старая аренда уже отпустилась.
+    PrimeGuidedStill(changed)
+    Check(KeyUp(SC.w, forward) && KeyDown(SC.w, changed.inputEpochAtCapture, 0, changed)
+        && InputReleaseLater("key", SC.w, CFG.patrolHoldMs), "старая W отпущена, начато новое удержание")
+    newer := ST.held[SC.w], resumed := TickFixture(b)
+    Check(newer != forward && ST.held.Get(SC.w, 0) = newer && ST.stuckForward = newer && ST.stuckShot = resumed
+        && !ST.stuckStillSamples && ST.stuckTotal = attempts && WorldMotionDiff(changed, resumed) = 0
+        , "тот же вид с новой W не наследует неподвижность старого удержания")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+    ExpectKey(b, SC.a, left*)
+    ExpectKey(b, SC.d, right*)
+
     ; Замеры движения и полос не обязаны совпадать по интервалу.
     CFG.navScanMs := 60000
-    PrimeGuidedStill(changed)
+    PrimeGuidedStill(resumed)
+    stillAt := ST.stuckSampleAt, stillMs := ST.stuckStillMs
     stuck := TickFixture(b)
-    Check(WorldMotionDiff(changed, stuck) = 0, "фактически захваченный мир не изменился")
+    Check(WorldMotionDiff(resumed, stuck) = 0 && stillMs + A_TickCount - stillAt < CFG.stuckMs
+        , "тот же мир, обычный срок слепого обхода ещё не истёк")
     if (ST.stuckRecoverKey = SC.d)
         ExpectKey(b, SC.d, right[1] + 1, right[2])
     ExpectKey(b, SC.d, right*)
     ExpectKey(b, SC.a, left[1] + 1, left[2])
     Check(ST.stuckTotal = attempts + 1 && ST.stuckRecoverKey = SC.a && ST.navInfo.seq = stuck.captureId
         && ST.navInfo.turn = -1 && ST.navInfo.turnStable && !ST.held.Has(SC.w)
-        , "выбор по измерениям текущего кадра выпускает W и даёт короткий A")
-    ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+        , "выбор по измерениям текущего кадра отпускает W и даёт короткий A")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
     ExpectKey(b, SC.a, left[1] + 1, left[2] + 1, 1500)
     Check(!ST.held.Count, "боковая клавиша отпущена таймером без нового тика")
     ExpectKey(b, SC.e, e*)
@@ -1405,10 +1419,10 @@ StartFixtureSoundWalk(h) {
 }
 
 PrimeGuidedStill(shot) {
-    global CFG, ST
+    global CFG, ST, SC
     ; Подводим счётчики к границе, чтобы потеря/пропуск пришлись на нужный тик.
     ; Сравнение пикселей на этом тике и все события клавиш остаются настоящими.
-    ST.stuckShot := shot, ST.stuckSampleAt := A_TickCount - CFG.stuckSampleMs
+    ST.stuckForward := ST.held.Get(SC.w, 0), ST.stuckShot := shot, ST.stuckSampleAt := A_TickCount - CFG.stuckSampleMs
     ST.stuckStillSamples := 2, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
 }
 

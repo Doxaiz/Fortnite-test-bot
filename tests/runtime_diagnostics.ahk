@@ -998,7 +998,7 @@ NavFixture(id, kind, w := 480, h := 288) {
                 shade := 64 + col * 3
                 if (kind = "flat")
                     shade := 96
-                else if (kind = "busy" && lane >= 2)
+                else if ((kind = "busy" && lane >= 2) || (kind = "openRight" && lane <= 2))
                     shade := Mod(col, 2) ? 48 : 202
                 else if (row >= 8 && (kind = "horizon" || (kind = "lip" && lane = 2 && col >= 2 && col <= 14)))
                     shade += 60
@@ -1012,6 +1012,7 @@ NavFixture(id, kind, w := 480, h := 288) {
 
 TestNavigationState() {
     WithGroundFixture(CheckNavigation)
+    WithGroundFixture(CheckPatrolBypassEvidence)
 }
 
 CheckNavigation() {
@@ -1073,6 +1074,38 @@ CheckNavigation() {
         , "если кадр устарел во время скана, оценка и подтверждение не обновляются")
     ResetNavigation()
     Check(!ST.lastObsJump && !ST.navInfo && !ST.patrolLeaseAt, "у нового матча чистая навигация")
+}
+
+CheckPatrolBypassEvidence() {
+    global CFG, ST
+    CFG.navScanMs := 60000
+    ST.segUntil := A_TickCount + 4000
+    ST.stuckStillSamples := 1, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
+    first := NavFixture(80, "busy")
+    Check(RefreshNavigation(first) && ST.navInfo.turn = -1, "первый кандидат обхода слева")
+    second := NavFixture(81, "busy"), prior := ST.navInfo
+    Check(!StuckRecoverySide(second, second.capturedAt, false) && ST.navInfo = prior
+        , "одного сравнения мира недостаточно даже при том же коридоре")
+    ST.stuckStillSamples := 2, second.hudEvidence.confirmed := false
+    Check(!StuckRecoverySide(second, second.capturedAt, false) && ST.navInfo = prior
+        , "без текущего HUD патруль не уточняет сторону для нового обхода")
+    crossed := NavFixture(82, "openRight")
+    Check(!RefreshNavigation(crossed) && !StuckRecoverySide(crossed, crossed.capturedAt, false)
+        && ST.navInfo.seq = crossed.captureId && ST.navInfo.turn = 1 && !ST.navInfo.turnStable
+        , "свежий замер опровергает старую левую сторону, но ещё не подтверждает правую")
+    agreed := NavFixture(83, "openRight")
+    Check(StuckRecoverySide(agreed, agreed.capturedAt, false) = 1 && ST.navInfo.turnStable
+        && ST.navInfo.seq = agreed.captureId, "два измерения в том же виде разрешают правую сторону")
+    measured := ST.navInfo
+    Check(!RefreshNavigation(agreed, true) && ST.navInfo = measured, "срочная проверка тоже не сканирует кадр дважды")
+    ST.stuckRecoverN := 1
+    later := NavFixture(84, "openRight")
+    Check(!StuckRecoverySide(later, later.capturedAt, false) && ST.navInfo = measured
+        , "ещё один ранний шаг не вытесняет этапы начатого обхода")
+    ST.stuckRecoverN := 0, ST.cameraSeq += 1
+    changed := NavFixture(85, "openRight")
+    Check(!StuckRecoverySide(changed, changed.capturedAt, false) && ST.navInfo = measured
+        , "согласие со старым видом после поворота не даёт обход")
 }
 
 TestMotionUsesSameWindow() {

@@ -583,6 +583,7 @@ global ST := {
     cameraCmdX: 0,             ; сумма dx команд бота, не измерение камеры
     cameraCmdY: 0,             ; сумма dy команд бота, не измерение камеры
     stuckShot: 0,
+    stuckForward: 0,           ; владелец непрерывного W для замеров движения
     stuckSampleAt: 0,
     stuckStillMs: 0,
     stuckStillSamples: 0,
@@ -5047,7 +5048,7 @@ MouseCalCompareFrames(a, b, budgetMs := 2500, guard := 0) {
 
 ResetMoveWatch(resetAttempts := false) {
     global ST
-    ST.stuckShot := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
+    ST.stuckShot := 0, ST.stuckForward := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
     ST.stuckMotionN := 0
     if resetAttempts
         ST.stuckRecoverN := 0
@@ -5128,7 +5129,7 @@ NavKindRu(kind) {
     }
 }
 
-RefreshNavigation(shot) {
+RefreshNavigation(shot, recoveryRecheck := false) {
     global CFG, ST
     if !WorldFrameCurrent(shot)
         return false
@@ -5136,7 +5137,9 @@ RefreshNavigation(shot) {
     same := prior && SameFrameView(prior.view, shot)
     if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
         return false
-    if (same && now - prior.at < CFG.navScanMs)
+    ; Перед кандидатом на боковой шаг важен кадр действия, но скан
+    ; на уже измеренном кадре повторно не выполняется.
+    if (!recoveryRecheck && same && now - prior.at < CFG.navScanMs)
         return false
     n := ScanNavCorridors(shot, ST.navTurnSign)
     TickCheck("после скана коридоров")
@@ -5314,20 +5317,35 @@ CheckStormAndZone(shot, now) {
     return false
 }
 
-GuidedStill(shot, now) {
+ReadyForStillProbe(shot) {
     global CFG, ST
-    return now < ST.guidedUntil && !ST.segUntil && !ST.navHop && !ST.stuckRecoverN
-        && ST.stuckStillSamples >= 2 && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs)
-        && FrameHasMatchHud(shot)
+    return !ST.navHop && !ST.stuckRecoverN && ST.stuckStillSamples >= 2
+        && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs) && FrameHasMatchHud(shot)
 }
 
-GuidedRecoverySide(shot, now) {
+GuidedStill(shot, now) {
     global ST
+    return now < ST.guidedUntil && !ST.segUntil && ReadyForStillProbe(shot)
+}
+
+StuckRecoverySide(shot, now, guided) {
+    global CFG, ST
     ; Плотные края сами по себе не стена: нужны сравнения мира и два
     ; согласованных скана коридоров, последний — на кадре действия.
-    if !GuidedStill(shot, now)
-        return 0
-    RefreshNavigation(shot)
+    if guided {
+        if !GuidedStill(shot, now)
+            return 0
+    } else {
+        if (!ST.segUntil || !ReadyForStillProbe(shot))
+            return 0
+        ; На патруле уточняем уже замеченный выход даже между обычными
+        ; замерами. Не учащаем скан в поисках выхода, если подсказки нет.
+        prior := ST.navInfo
+        if (!prior || prior.kind != "busy" || !prior.turn || !SameFrameView(prior.view, shot)
+            || shot.capturedAt - prior.at > CFG.confirmGapMs)
+            return 0
+    }
+    RefreshNavigation(shot, !guided)
     n := ST.navInfo
     return n && n.kind = "busy" && n.turnStable && n.seq = shot.captureId
         && SameFrameView(n.view, shot) && WorldFrameCurrent(shot) ? n.turn : 0
@@ -5370,8 +5388,11 @@ MoveWatch(shot, now, &guidedStill := 0) {
         ResetMoveWatch()
         return false
     }
-    if !ST.stuckShot {
-        ST.stuckShot := shot, ST.stuckSampleAt := now
+    if (!ST.stuckShot || ST.stuckForward != forward) {
+        ; Срок аренды мог закончиться между замерами. Новый down не
+        ; наследует неподвижность с прошлого удержания W.
+        ResetMoveWatch()
+        ST.stuckForward := forward, ST.stuckShot := shot, ST.stuckSampleAt := now
         return false
     }
     if !SameFrameView(FrameView(ST.stuckShot), shot) {
@@ -5417,14 +5438,14 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
     global CFG, SC, ST
     ; Звуковой W не должен попадать в общий обход без подтверждения,
     ; которое передаёт SeekChestBySound с кадра действия.
-    if (IsSoundForward(forward) && (!soundReading || soundReading != ST.chestAudioReading
-        || soundReading.seq != shot.captureId || !soundReading.mark))
+    if (ST.stuckForward != forward || (IsSoundForward(forward) && (!soundReading
+        || soundReading != ST.chestAudioReading || soundReading.seq != shot.captureId || !soundReading.mark)))
         return false
     guided := approach || soundReading, motionShot := ST.stuckShot
     if (guided && (!motionShot || (approach && ST.walkTarget != approach)
         || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
         return false
-    side := GuidedRecoverySide(shot, now)
+    side := StuckRecoverySide(shot, now, guided)
     if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
     if (guided && motionShot.captureId != shot.captureId) {
@@ -5460,7 +5481,8 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
                 ST.guidedUntil := ST.stuckRecoverUntil + Max(300, 2 * CFG.scanLootMs)
             }
             if side
-                LogThrottledKey("[guided-bypass]", "[nav] Подход без видимого продвижения; пробую короткий шаг "
+                LogThrottledKey(guided ? "[guided-bypass]" : "[patrol-bypass]", "[nav] "
+                    . (guided ? "Подход" : "Патруль") " без видимого продвижения; пробую короткий шаг "
                     . (side < 0 ? "влево" : "вправо") " по двум измерениям. Кадр #" shot.captureId)
         }
     }
