@@ -47,7 +47,7 @@ RunWindowTests() {
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
             , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
             , TestChestSoundRecovery, TestChestSoundFlicker, TestSoundReactionHud, TestSoundJumpCooldown
-            , TestPatrolMeasuredBypass] {
+            , TestPatrolMeasuredBypass, TestPatrolBypassOutcome] {
             scenario := test.Name
             test(a, b)
             FileAppend("OK: " scenario "`n", "*", "UTF-8")
@@ -1392,6 +1392,85 @@ TestPatrolMeasuredBypass(a, b) {
     Check(!ST.held.Count, "боковая клавиша отпущена таймером без нового тика")
     ExpectKey(b, SC.e, e*)
     ExpectKey(b, SC.space, space*)
+    for code, counts in other
+        ExpectKey(a, code, counts*)
+}
+
+TestPatrolBypassOutcome(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := false, CFG.featLoot := false, CFG.featCombat := false
+    CFG.featSound := false, CFG.featParkour := false
+    ApplyPerfProfile("fast")
+    CFG.navScanMs := 0, CFG.stuckSampleMs := 275, CFG.stuckMs := 2400, CFG.stuckRecoveryMs := 450
+    CFG.patrolHoldMs := 2200, CFG.pauseChance := 0, CFG.runKeepW := true
+    other := Map(SC.w, FixtureKeyCounts(a, SC.w), SC.a, FixtureKeyCounts(a, SC.a), SC.d, FixtureKeyCounts(a, SC.d))
+    for progressing in [false, true] {
+        ResetFixtureSoundRoam()
+        w := FixtureKeyCounts(b, SC.w), left := FixtureKeyCounts(b, SC.a), right := FixtureKeyCounts(b, SC.d)
+        back := FixtureKeyCounts(b, SC.s), e := FixtureKeyCounts(b, SC.e), space := FixtureKeyCounts(b, SC.space)
+        before := ST.stuckTotal
+        SetFixtureFrame(b, 37)
+        TickFixture(b)
+        blocked := TickFixture(b)
+        PrimeGuidedStill(blocked)
+        TickFixture(b)
+        probe := ST.patrolProbe, finish := ST.stuckRecoverUntil
+        Check(probe && probe.side = -1 && !probe.afterSeq && ST.stuckRecoverKey = SC.a
+            , "проверка результата заведена только после принятого левого обхода")
+        ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+        ExpectKey(b, SC.a, left[1] + 1, left[2] + 1, 1500)
+
+        Sleep(Max(0, finish + 16 - A_TickCount))
+        SetFixtureFrame(b, 20)
+        released := TickFixture(b)
+        Check(probe = ST.patrolProbe && probe.afterSeq = released.captureId && !ST.stuckShot && !ST.navInfo
+            , "тик отпускания не наследует ни старый коридор, ни старую базу движения")
+        ExpectKey(b, SC.w, w[1] + 1, w[2] + 1)
+        first := TickFixture(b), forward := ST.held.Get(SC.w, 0)
+        Check(forward && !ST.navInfo.turnStable && ST.navInfo.turn = 1 && ST.navInfo.seq = first.captureId
+            , "новый W и только первое измерение другой полосы")
+        baseline := TickFixture(b)
+        Check(ST.stuckForward = forward && ST.stuckShot = baseline && ST.navInfo.turn = 1 && ST.navInfo.turnStable
+            && ST.navInfo.seq = baseline.captureId, "две полосы измерены после отпускания; базу даёт новый W")
+        ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+        started := ST.stuckSampleAt
+        if progressing {
+            for i, scene in [21, 20, 21] {
+                Sleep(Max(0, ST.stuckSampleAt + CFG.stuckSampleMs + 16 - A_TickCount))
+                SetFixtureFrame(b, scene)
+                shot := TickFixture(b)
+                Check(WorldMotionDiff(baseline, shot) >= CFG.stuckDiffThreshold && ST.stuckMotionN = i
+                    && ST.held.Get(SC.w, 0) = forward && ST.stuckTotal = before + 1
+                    , "изменение мира после обхода не перебивает W, замер " i)
+                baseline := shot
+            }
+            Check(!ST.patrolProbe && !ST.stuckRecoverN, "три сравнения с изменениями завершают пробу")
+            ExpectKey(b, SC.d, right*)
+            ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
+            HaltMatchMovement()
+        } else {
+            Loop 8 {
+                Sleep(Max(0, ST.stuckSampleAt + CFG.stuckSampleMs + 16 - A_TickCount))
+                shot := TickFixture(b)
+                Check(WorldMotionDiff(baseline, shot) = 0, "мир после нового W остался тем же")
+                if ST.stuckRecoverUntil
+                    break
+                Check(ST.held.Get(SC.w, 0) = forward, "проба не меняет удержание W")
+            }
+            ExpectKey(b, SC.d, right[1] + 1, right[2])
+            Check(A_TickCount - started < CFG.stuckMs && ST.stuckRecoverKey = SC.d && ST.stuckRecoverN = 3
+                && !ST.patrolProbe && ST.stuckTotal = before + 2, "не было продвижения: пробуем другой бок вместо S")
+            ExpectKey(b, SC.d, right[1] + 1, right[2] + 1, 1500)
+        }
+        Check(!ST.held.Count, "после сценария клавиши отпущены")
+        ExpectKey(b, SC.w, w[1] + 2, w[2] + 2)
+        ExpectKey(b, SC.a, left[1] + 1, left[2] + 1)
+        ExpectKey(b, SC.s, back*)
+        ExpectKey(b, SC.e, e*)
+        ExpectKey(b, SC.space, space*)
+    }
     for code, counts in other
         ExpectKey(a, code, counts*)
 }

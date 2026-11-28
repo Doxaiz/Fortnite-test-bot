@@ -591,6 +591,7 @@ global ST := {
     stuckRecoverUntil: 0,
     stuckRecoverKey: "",
     stuckMotionN: 0,
+    patrolProbe: 0,             ; короткая проверка W после первого измеренного обхода
     promptN:      0,            ; принятые к отправке попытки E; не открытия
     lastPromptE:  0,            ; время последней попытки E по подсказке
     promptAttempts: [],         ; скользящее окно попыток, сохраняется через паузу/стоп
@@ -5051,13 +5052,13 @@ ResetMoveWatch(resetAttempts := false) {
     ST.stuckShot := 0, ST.stuckForward := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
     ST.stuckMotionN := 0
     if resetAttempts
-        ST.stuckRecoverN := 0
+        ST.stuckRecoverN := 0, ST.patrolProbe := 0
 }
 
 ResetNavigation() {
     global ST
     CancelNavHop()
-    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0
+    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0, ST.patrolProbe := 0
     ST.lastScanT := 0, ST.navTurnSign := 1
 }
 
@@ -5232,7 +5233,9 @@ SteerOpenSpace(shot, now) {
     n := ST.navInfo
     if (n.kind != "clear")
         SprintSet(false)
-    if (n.hits < 2 || !WorldFrameCurrent(shot))
+    ; После бокового шага нужны замеры, но не новый разворот, пока
+    ; короткая проба W ещё проверяет продвижение в этом виде.
+    if (n.hits < 2 || ST.patrolProbe || !WorldFrameCurrent(shot))
         return false
     if (ST.segUntil && TryNavHop(shot, now)) {
         KeepPatrolMoving(shot)
@@ -5317,9 +5320,9 @@ CheckStormAndZone(shot, now) {
     return false
 }
 
-ReadyForStillProbe(shot) {
+ReadyForStillProbe(shot, previousAttempt := 0) {
     global CFG, ST
-    return !ST.navHop && !ST.stuckRecoverN && ST.stuckStillSamples >= 2
+    return !ST.navHop && ST.stuckRecoverN = previousAttempt && ST.stuckStillSamples >= 2
         && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs) && FrameHasMatchHud(shot)
 }
 
@@ -5328,7 +5331,16 @@ GuidedStill(shot, now) {
     return now < ST.guidedUntil && !ST.segUntil && ReadyForStillProbe(shot)
 }
 
-StuckRecoverySide(shot, now, guided) {
+CurrentPatrolProbe(shot) {
+    global ST
+    probe := ST.patrolProbe
+    if (probe && (ST.stuckRecoverN != 1 || A_TickCount >= probe.until
+        || !SameFrameView(probe.view, shot) || !FrameHasMatchHud(shot)))
+        ST.patrolProbe := 0
+    return ST.patrolProbe
+}
+
+StuckRecoverySide(shot, now, guided, probe := 0) {
     global CFG, ST
     ; Плотные края сами по себе не стена: нужны сравнения мира и два
     ; согласованных скана коридоров, последний — на кадре действия.
@@ -5336,13 +5348,15 @@ StuckRecoverySide(shot, now, guided) {
         if !GuidedStill(shot, now)
             return 0
     } else {
-        if (!ST.segUntil || !ReadyForStillProbe(shot))
+        if (!ST.segUntil || !ReadyForStillProbe(shot, probe ? 1 : 0))
             return 0
         ; На патруле уточняем уже замеченный выход даже между обычными
-        ; замерами. Не учащаем скан в поисках выхода, если подсказки нет.
+        ; замерами. Для второй попытки два замера должны быть после
+        ; отпускания боковой клавиши и указывать на другую сторону.
         prior := ST.navInfo
         if (!prior || prior.kind != "busy" || !prior.turn || !SameFrameView(prior.view, shot)
-            || shot.capturedAt - prior.at > CFG.confirmGapMs)
+            || shot.capturedAt - prior.at > CFG.confirmGapMs
+            || (probe && (!probe.afterSeq || prior.seq <= probe.afterSeq || prior.turn != -probe.side)))
             return 0
     }
     RefreshNavigation(shot, !guided)
@@ -5364,16 +5378,25 @@ MoveWatch(shot, now, &guidedStill := 0) {
     if !allowed {
         if (ST.stuckRecoverKey != "")
             KeyUp(ST.stuckRecoverKey)
-        ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
+        ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0, ST.patrolProbe := 0
         ResetMoveWatch()
         return false
     }
+    probe := CurrentPatrolProbe(shot)
     if ST.stuckRecoverUntil {
         if (now < ST.stuckRecoverUntil)
             return true
         KeyUp(ST.stuckRecoverKey)
         ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0, ST.segUntil := 0
         ResetMoveWatch()
+        if (probe && WorldFrameCurrent(shot)) {
+            ; Боковой шаг меняет изображение и без команды камеры. Кадр
+            ; отпускания не даёт ни базу для W, ни замер новой полосы.
+            probe.afterSeq := shot.captureId, ST.navInfo := 0
+            ST.lastAction := "после обхода: жду свежий кадр для проверки W"
+            return true
+        }
+        ST.patrolProbe := 0
         ; Кадр этого тика мог начаться до отпускания A/D/S. Если ждём
         ; визуальную цель, начнём новый замер на следующем тике.
         if (ST.walkTarget && ST.guidedUntil) {
@@ -5420,8 +5443,13 @@ MoveWatch(shot, now, &guidedStill := 0) {
     }
     if (diff >= CFG.stuckDiffThreshold) {
         ST.stuckStillMs := 0, ST.stuckStillSamples := 0, ST.stuckMotionN += 1
-        if (ST.stuckMotionN >= 3)
-            ST.stuckRecoverN := 0
+        if (ST.stuckMotionN >= 3) {
+            ST.stuckRecoverN := 0, ST.patrolProbe := 0
+            if probe {
+                ST.lastAction := "после обхода: кадры меняются, продолжаю ход"
+                LogThrottledKey("[patrol-resumed]", "[nav] После обхода кадры снова меняются при W; продолжаю патруль.")
+            }
+        }
         return false
     }
     ST.stuckMotionN := 0, ST.stuckStillMs += dt, ST.stuckStillSamples += 1
@@ -5445,7 +5473,8 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
     if (guided && (!motionShot || (approach && ST.walkTarget != approach)
         || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
         return false
-    side := StuckRecoverySide(shot, now, guided)
+    probe := guided ? 0 : CurrentPatrolProbe(shot)
+    side := StuckRecoverySide(shot, now, guided, probe)
     if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
     if (guided && motionShot.captureId != shot.captureId) {
@@ -5459,11 +5488,15 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
     }
     if (!WorldFrameCurrent(shot) || ST.held.Get(SC.w, 0) != forward || (guided && A_TickCount >= ST.guidedUntil))
         return false
-    if side
+    alternate := probe && side
+    if (side && !alternate)
         ST.navTurnSign := side
-    ST.stuckRecoverN += 1
-    ST.stuckTotal += 1
-    attempt := ST.stuckRecoverN
+    ; Если свежий замер уже подсказал другой бок, не тратим шаг назад
+    ; и не повторяем этот бок на следующей ступени. Перескок фиксируем
+    ; только если новый шаг действительно принят к отправке с таймером.
+    attempt := alternate ? 3 : ST.stuckRecoverN + 1
+    if !alternate
+        ST.stuckRecoverN := attempt, ST.stuckTotal += 1
     HaltMatchMovement()
     ; Обход не угадывает дверь и не переключается на кирку без цели.
     if (attempt >= 4) {
@@ -5471,9 +5504,16 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
             ST.stuckRecoverN := 0
         TurnBy(ST.navTurnSign * (attempt = 4 ? -70 : 110), 0, CFG.turnMaxPx)
     } else {
-        k := attempt = 2 ? SC.s : ((attempt = 1) = (ST.navTurnSign > 0) ? SC.d : SC.a)
+        k := side ? (side < 0 ? SC.a : SC.d)
+            : attempt = 2 ? SC.s : ((attempt = 1) = (ST.navTurnSign > 0) ? SC.d : SC.a)
         if (KeyDown(k, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", k, CFG.stuckRecoveryMs)) {
             ST.stuckRecoverKey := k, ST.stuckRecoverUntil := A_TickCount + CFG.stuckRecoveryMs
+            if alternate
+                ST.stuckRecoverN := attempt, ST.stuckTotal += 1
+            if (side && !guided && attempt = 1) {
+                observeMs := Max(CFG.stuckMs, 1100, 3 * CFG.stuckSampleMs) + 2 * CFG.stuckSampleMs
+                ST.patrolProbe := {side:side, view:FrameView(shot), afterSeq:0, until:ST.stuckRecoverUntil + observeMs}
+            }
             if (approach && ST.walkTarget = approach) {
                 ; Смещение меняет вид даже без поворота камеры. Центр
                 ; остаётся подсказкой, но в подтверждение больше не входит.
@@ -5484,6 +5524,9 @@ TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
                 LogThrottledKey(guided ? "[guided-bypass]" : "[patrol-bypass]", "[nav] "
                     . (guided ? "Подход" : "Патруль") " без видимого продвижения; пробую короткий шаг "
                     . (side < 0 ? "влево" : "вправо") " по двум измерениям. Кадр #" shot.captureId)
+        } else if alternate {
+            ST.lastAction := "после обхода: другой шаг не принят к отправке"
+            return true
         }
     }
     ST.lastAction := "обхожу препятствие (" attempt "/" CFG.stuckRecoveryMax ")"
@@ -6412,14 +6455,14 @@ StartSegment(shot) {
         if (!ST.held.Has(SC.w) && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
             return false
     }
-    ClearMatchStrafe()
+    ClearMatchStrafe(true)
     CrouchSet(false)
     ST.segUntil := A_TickCount + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
     if !KeepPatrolMoving(shot, true) {
         HaltMatchMovement()
         return false
     }
-    ST.lastAction := "прямой ход"
+    ST.lastAction := ST.patrolProbe ? "после обхода: проверяю продвижение" : "прямой ход"
     return true
 }
 
@@ -6454,17 +6497,19 @@ StopMove() {
     AdsSet(false)
     ST.moveMode := "стою"
     ReleaseKeys()
-    ST.segUntil := 0, ST.guidedUntil := 0
+    ST.segUntil := 0, ST.guidedUntil := 0, ST.patrolProbe := 0
     ST.idleUntil := A_TickCount + Random(CFG.idleMinMs, CFG.idleMaxMs)
     ; v7.5: пауза короткая и явная — раньше был «стоп на 0.1-0.35 с» без причины
     ST.pauseUntil := 0
 }
 
-ClearMatchStrafe() {
+ClearMatchStrafe(keepPatrolProbe := false) {
     global ST, SC
     KeyUp(SC.a), KeyUp(SC.s), KeyUp(SC.d)
     ST.retreat := 0, ST.strafeKey := "", ST.strafeFlipAt := 0
     ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
+    if !keepPatrolProbe
+        ST.patrolProbe := 0
 }
 
 HaltMatchMovement() {
@@ -10353,11 +10398,15 @@ Roam(shot, now) {
     ; Для патруля память GAME не заменяет замер на кадре действия.
     ; Не начинаем новый отрезок и не сдвигаем таймеры уже выданных W/Shift.
     if !hasHud {
+        if ST.patrolProbe {
+            ST.patrolProbe := 0
+            ResetMoveWatch()
+        }
         ST.lastAction := shot.HasOwnProp("healthDeferred") ? "патруль: замер HP отложен" : "патруль: жду подтверждение HUD"
         return
     }
     if (!WorldFrameCurrent(shot) || (!watchGuided && MoveWatch(shot, now)) || CheckStormAndZone(shot, now)
-        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now))
+        || SteerOpenSpace(shot, now) || (!ST.patrolProbe && LevelHorizonStep(shot, now)))
         return
     if (now < ST.pauseUntil || !WorldFrameCurrent(shot))
         return
@@ -10375,7 +10424,7 @@ Roam(shot, now) {
     ; Даём несколько спокойных кадров детектору движения и застревания.
     ; Осмотр не совмещаем с новым отрезком или поворотом в коридор.
     quietMs := CFG.stuckMs + CFG.stuckCameraQuietMs + CFG.stuckSampleMs
-    if (now - Max(ST.lastScanT, ST.cameraAt) >= quietMs
+    if (!ST.patrolProbe && now - Max(ST.lastScanT, ST.cameraAt) >= quietMs
         && (CFG.dryRun || TurnBy(RndF(-CFG.turnMinPx, CFG.turnMinPx) * 0.5, 0, 16))) {
         ST.lastScanT := now
         ST.lastAction := "плавный осмотр"

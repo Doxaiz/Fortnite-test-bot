@@ -1013,6 +1013,7 @@ NavFixture(id, kind, w := 480, h := 288) {
 TestNavigationState() {
     WithGroundFixture(CheckNavigation)
     WithGroundFixture(CheckPatrolBypassEvidence)
+    WithGroundFixture(CheckPatrolProbeGuards)
 }
 
 CheckNavigation() {
@@ -1106,6 +1107,37 @@ CheckPatrolBypassEvidence() {
     changed := NavFixture(85, "openRight")
     Check(!StuckRecoverySide(changed, changed.capturedAt, false) && ST.navInfo = measured
         , "согласие со старым видом после поворота не даёт обход")
+}
+
+CheckPatrolProbeGuards() {
+    global CFG, ST
+    CFG.navScanMs := 0
+    ST.segUntil := A_TickCount + 4000, ST.stuckRecoverN := 1
+    ST.stuckStillSamples := 2, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
+    old := NavFixture(90, "openRight")
+    Check(RefreshNavigation(old) && ST.navInfo.turn = 1, "старое направление известно до отпускания")
+    probe := {side:-1, view:FrameView(old), afterSeq:old.captureId, until:A_TickCount + 2000}
+    ST.patrolProbe := probe
+    first := NavFixture(91, "openRight"), prior := ST.navInfo
+    Check(!StuckRecoverySide(first, first.capturedAt, false, probe) && ST.navInfo = prior
+        , "замер на границе отпускания не подтверждает другой бок")
+    ST.navInfo := 0
+    same := NavFixture(92, "busy")
+    Check(RefreshNavigation(same) && ST.navInfo.turn = probe.side, "видна прежняя сторона")
+    next := NavFixture(93, "busy"), prior := ST.navInfo
+    Check(!StuckRecoverySide(next, next.capturedAt, false, probe) && ST.navInfo = prior
+        , "та же сторона не заменяет штатный отход назад")
+    Check(!SteerOpenSpace(next, next.capturedAt) && !ST.navSteerAt && ST.navInfo.turnStable
+        , "пока идёт проверка W, новый замер не запускает прежний разворот")
+    for field in ["cameraSeqAtCapture", "w", "inputEpochAtCapture", "hwnd"] {
+        altered := next.Clone(), altered.%field% += 1
+        ST.patrolProbe := probe
+        Check(!CurrentPatrolProbe(altered), "старый обход не переносится при смене " field)
+    }
+    ST.patrolProbe := probe, next.hudEvidence.confirmed := false
+    Check(!CurrentPatrolProbe(next), "кадр без HUD не оценивает результат обхода")
+    ST.patrolProbe := probe, next.hudEvidence.confirmed := true, probe.until := A_TickCount
+    Check(!CurrentPatrolProbe(next), "проверка прогресса имеет конечный срок")
 }
 
 TestMotionUsesSameWindow() {
