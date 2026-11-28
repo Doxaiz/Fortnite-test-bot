@@ -1263,14 +1263,29 @@ TestSoundJumpCooldown(a, b) {
     CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
     CFG.featChest := false, CFG.featLoot := false, CFG.featCombat := false
     CFG.featSound := true, CFG.featParkour := true, CFG.scanSoundMs := 0
-    CFG.soundDodgeJumpChance := 100, CFG.humanize := false
+    CFG.soundDodgeJumpChance := 0, CFG.humanize := false
     ApplyPerfProfile("fast")
-    CFG.soundReactMs := 380, CFG.jumpMinGapMs := 1400, CFG.patrolHoldMs := 2000, CFG.pauseChance := 0
+    CFG.soundReactMs := 380, CFG.jumpMinGapMs := 1400, CFG.patrolHoldMs := 3600, CFG.pauseChance := 0
     ResetFixtureSoundRoam()
-    ST.lastJumpT := 0
+    ST.lastJumpT := 0, ST.pauseUntil := A_TickCount + 1000
     w := FixtureKeyCounts(b, SC.w), space := FixtureKeyCounts(b, SC.space)
     otherW := FixtureKeyCounts(a, SC.w), otherSpace := FixtureKeyCounts(a, SC.space)
     SetFixtureFrame(b, 36)
+    guarded := TickFixture(b)
+    CFG.soundDodgeJumpChance := 100, ST.pauseUntil := 0
+    Check(WorldFrameCurrent(guarded) && ST.soundCacheSeq = guarded.captureId && ST.soundRing.shot
+        && ST.soundRing.best = ST.soundRing.shot && Abs(ST.soundRing.shot.x - guarded.w / 2) <= 15
+        && !ST.held.Count, "отказ отправки проверяется на свежей красной метке и HUD")
+    sounds := ST.sounds, jumps := ST.jumps, last := ST.lastAction, settle := ST.altSettleUntil
+    ; Имитируем включение защиты между захватом и отправкой, без реального Alt+Tab.
+    ST.altSettleUntil := A_TickCount + 1000
+    try reacted := SoundReact(guarded, guarded.capturedAt)
+    finally ST.altSettleUntil := settle
+    ExpectKey(b, SC.space, space*)
+    Check(!reacted && ST.sounds = sounds && ST.jumps = jumps && ST.lastAction = last
+        && !ST.lastSound && !ST.lastJumpT, "отказ Alt+Tab при прежнем Space " space[1] "/" space[2]
+            . " не должен считаться прыжком и реакцией")
+
     first := TickFixture(b)
     ExpectKey(b, SC.space, space[1] + 1, space[2] + 1)
     Check(ST.soundCacheSeq = first.captureId && ST.soundRing.shot && !ST.soundRing.chest && !ST.held.Count
@@ -1281,6 +1296,7 @@ TestSoundJumpCooldown(a, b) {
     TickFixture(b)
     ExpectKey(b, SC.w, w[1] + 1, w[2])
     forward := ST.held[SC.w], segment := ST.segUntil
+    lease := forward.releaseId, leaseAt := ST.patrolLeaseAt
     Sleep(Max(0, soundAt + CFG.soundReactMs + 16 - A_TickCount))
     SetFixtureFrame(b, 36)
     blocked := TickFixture(b)
@@ -1292,7 +1308,8 @@ TestSoundJumpCooldown(a, b) {
     if (ST.held.Has(SC.w) && ST.held[SC.w] != forward)
         ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
     ExpectKey(b, SC.w, w[1] + 1, w[2])
-    Check(ST.held.Get(SC.w, 0) = forward && ST.segUntil = segment && ST.lastSound = soundAt
+    Check(ST.held.Get(SC.w, 0) = forward && ST.segUntil = segment
+        && forward.releaseId = lease && ST.patrolLeaseAt = leaseAt && ST.lastSound = soundAt
         && ST.lastJumpT = jumpAt && ST.sounds = sounds && ST.jumps = jumps
         , "отказ в прыжке не прерывает патруль и не расходует повторную реакцию")
 
