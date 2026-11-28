@@ -46,7 +46,7 @@ RunWindowTests() {
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
             , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
-            , TestChestSoundRecovery, TestChestSoundFlicker] {
+            , TestChestSoundRecovery, TestChestSoundFlicker, TestSoundReactionHud] {
             scenario := test.Name
             test(a, b)
             FileAppend("OK: " scenario "`n", "*", "UTF-8")
@@ -1209,6 +1209,54 @@ TestChestSoundFlicker(a, b) {
     ExpectKey(a, SC.w, otherW*)
 }
 
+TestSoundReactionHud(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := true, CFG.featSound := true, CFG.scanSoundMs := 0
+    CFG.featCombat := false, CFG.featLoot := false, CFG.featParkour := true
+    CFG.soundDodgeJumpChance := 100, CFG.humanize := false
+    ApplyPerfProfile("fast")
+    space := FixtureKeyCounts(b, SC.space), d := FixtureKeyCounts(b, SC.d), e := FixtureKeyCounts(b, SC.e)
+    other := Map(SC.space, FixtureKeyCounts(a, SC.space), SC.w, FixtureKeyCounts(a, SC.w))
+    for withHud in [false, true] {
+        w := FixtureKeyCounts(b, SC.w), before := ST.sounds
+        good := StartFixtureSoundWalk(b), forward := ST.held[SC.w], prior := ST.chestAudioReading
+        lease := forward.releaseId, deadline := ST.guidedUntil
+        ExpectKey(b, SC.w, w[1] + 1, w[2])
+        ST.lastJumpT := 0
+        PrimeGuidedStill(good)
+        SetFixtureFrame(b, withHud ? 34 : 35)
+        shot := TickFixture(b, withHud)
+        mark := ST.soundRing.shot
+        Check(ST.soundCacheSeq = shot.captureId && mark && ST.soundRing.best = mark
+            && Abs(mark.x - shot.w / 2) <= 15 && ST.soundRing.chest && !ST.soundRing.goldAmbiguous
+            , "на кадре есть красная метка у центра и согласованное золото впереди")
+        ExpectKey(b, SC.d, d*)
+        if !withHud {
+            Check(!FrameHasMatchHud(shot) && ST.state = "GAME" && ST.hudLastT = good.capturedAt
+                , "сцена GAME удерживается предыдущим HUD")
+            ; Нежелательную реакцию проверяем по доставке, а не по счётчику.
+            if (ST.sounds > before)
+                ExpectKey(b, SC.space, space[1] + 1, space[2] + 1)
+            ExpectKey(b, SC.space, space*)
+            Check(ST.sounds = before && !ST.lastSound && !ST.lastJumpT && ST.held.Get(SC.w, 0) = forward
+                && forward.releaseId = lease && ST.guidedUntil = deadline
+                , "без текущего HUD красная метка не прыгает и не перебивает исходный W")
+        } else {
+            ExpectKey(b, SC.space, space[1] + 1, space[2] + 1)
+            Check(ST.sounds = before + 1 && ST.lastAction = "реакция на текущую метку звука"
+                && ST.chestAudioReading = prior && !prior.mark && !ST.held.Has(SC.w)
+                , "с HUD красная реакция раньше повторного золота и его обхода")
+        }
+        ExpectKey(b, SC.w, w[1] + 1, w[2] + 1, 1500)
+        Check(!ST.held.Has(SC.w), "W отпущена без очередного тика")
+    }
+    ExpectKey(b, SC.e, e*)
+    for k, counts in other
+        ExpectKey(a, k, counts*)
+}
+
 ResetFixtureSoundRoam() {
     global ST
     HaltMatchMovement()
@@ -1304,7 +1352,7 @@ ExpectKey(h, scanCode, downs, ups, waitMs := 250) {
 ServeReceiver(tag) {
     global rx := Map(), fixtureFrames := []
     SetDpiAware()
-    Loop 34
+    Loop 36
         fixtureFrames.Push(BuildFixtureFrame(A_Index - 1))
     OnMessage(0x000F, ReceiverPaint)     ; WM_PAINT (DC окна)
     OnMessage(0x0317, ReceiverPrint)     ; WM_PRINT
@@ -1383,8 +1431,8 @@ BuildFixtureFrame(scene) {
             PaintFixture(buf, w, col * 20, row * 12, 20, 12, shade * 0x010101)
         }
     }
-    ; 27 — открытый проход без HUD, 31 — та же метка звука, что 30, но без HUD.
-    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene != 27 && scene != 31)) {
+    ; 27 — проход без HUD, 31 и 35 — метки звука без подтверждения HUD.
+    if (scene < 7 || scene = 9 || scene = 10 || (scene >= 13 && scene != 27 && scene != 31 && scene != 35)) {
         PaintFixture(buf, w, 24, 256, (scene = 14 || scene = 15) ? 28 : 80, 20, 0x2ABA31) ; HUD HP
         PaintFixture(buf, w, 416, 270, 8, 8, 0xEEEEEE)       ; слот, в том числе при красном прицеле
         PaintFixture(buf, w, 233, 142, 7, 5, 0xFFFFFF)        ; прицел
@@ -1472,7 +1520,7 @@ BuildFixtureFrame(scene) {
                     , Round(spec[3] * k), Round(spec[4] * k), 0xD08048)
         }
     }
-    if (scene >= 30 && scene <= 33) {
+    if (scene >= 30 && scene <= 35) {
         ; Две золотые части выше прицела дают крупную метку впереди.
         ; До зоны свечения в мире не доходят.
         PaintFixture(buf, w, 226, 40, 14, 15, 0xE89028)
@@ -1483,6 +1531,12 @@ BuildFixtureFrame(scene) {
         ; штатном шаге скана. Фон остаётся прежним, HUD на месте.
         PaintFixture(buf, w, 165, 46, 11, 12, 0xE89028)
         PaintFixture(buf, w, 176, 58, 11, 12, 0xE89028)
+    }
+    if (scene = 34 || scene = 35) {
+        ; Красная группа на другом радиусе, по x у центра: проверяем Space,
+        ; не отправляя поворот мышью в реальное активное окно.
+        PaintFixture(buf, w, 226, 180, 14, 15, 0xEE2727)
+        PaintFixture(buf, w, 240, 195, 14, 14, 0xEE2727)
     }
     info := Buffer(40, 0)
     NumPut("UInt", 40, "Int", w, "Int", -h, "UShort", 1, "UShort", 32, info)
