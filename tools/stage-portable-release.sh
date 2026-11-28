@@ -2,7 +2,7 @@
 # Stage a package from the green Windows job in this workflow, without publishing.
 set -euo pipefail
 
-fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+fail() { printf '::error title=Draft staging failed::%s\n' "$*" >&2; exit 1; }
 
 tag=${1-}
 dir=${2-}
@@ -74,7 +74,7 @@ draft=$(read_draft)
 id=$(jq -r '.id' <<< "$draft")
 plan "$draft"
 if (( ${#pending[@]} )); then
-    gh release upload "$tag" --repo "$repo" "${pending[@]}"
+    gh release upload "$tag" --repo "$repo" "${pending[@]}" || fail 'GitHub did not accept the draft asset upload.'
 fi
 
 draft=$(read_draft)
@@ -85,7 +85,7 @@ plan "$draft"
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 for file in "${files[@]}"; do
-    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$file"
+    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$file" || fail "Could not download $file from the draft."
     cmp -- "$dir/$file" "$work/$file" || fail "Downloaded $file differs from the smoke-tested build."
     printf '::notice title=Verified draft asset::%s sha256:%s %s bytes\n' "$file" "${hashes[$file]}" "${sizes[$file]}"
 done

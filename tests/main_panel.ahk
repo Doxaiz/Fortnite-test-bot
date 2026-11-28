@@ -119,12 +119,12 @@ TestPanelNavigation() {
     PanelCheck(outerW <= r-l && outerH <= b-t, "панель помещается на рабочем столе")
     CheckPanelSessionRow([UI.btnStart, UI.btnPause, UI.btnStop, UI.btnCont, p.detail, UI.btnBypass], w, h)
     CheckPanelSessionRow([UI.ddMode, UI.cbDry, p.homeCheck], w, h)
-    ini := FileRead(CFG.iniFile), log := FileExist(CFG.logFile) ? FileRead(CFG.logFile) : ""
+    ini := FileRead(CFG.iniFile), logBefore := FileExist(CFG.logFile) ? FileRead(CFG.logFile) : ""
     PanelCheck(PanelIsVisible(p.homeCheck) && InStr(p.inputLabel.Value, "БЕЗ ВВОДА"), "проверка запуска и состояние DryRun на обзоре")
     PanelClick(p.homeCheck)
     PanelCheck(p.view = "startup" && PanelIsVisible(p.startupReport) && !PanelIsVisible(p.homeCheck)
         && !ST.running && !ST.hwnd && !ST.captureSeq && !ST.held.Count && FileRead(CFG.iniFile) == ini
-        && (FileExist(CFG.logFile) ? FileRead(CFG.logFile) : "") == log, "переход к сводке не запускает сеанс, ввод или захват")
+        && (FileExist(CFG.logFile) ? FileRead(CFG.logFile) : "") == logBefore, "переход к сводке не запускает сеанс, ввод или захват")
     PanelSelectView("home")
 
     Log("запись вне превью")
