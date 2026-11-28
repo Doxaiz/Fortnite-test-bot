@@ -999,12 +999,9 @@ TestChestSoundLease(a, b) {
     FocusFixture(a), SelectFixture(b)
     CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
     CFG.featChest := true, CFG.featSound := true, CFG.scanSoundMs := 0
-    HaltMatchMovement()
-    ResetNavigation()
-    ResetSceneEvidence()
-    ResetCaches()
-    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
-    ST.pauseUntil := 0, ST.lastSound := 0
+    ResetFixtureSoundRoam()
+    ; Проверяем именно направленный W: временно исключаем обычный патруль.
+    ST.pauseUntil := A_TickCount + 1500
     w := FixtureKeyCounts(b, SC.w), e := FixtureKeyCounts(b, SC.e), otherW := FixtureKeyCounts(a, SC.w)
     SetFixtureFrame(b, 30)
     first := TickFixture(b)
@@ -1195,9 +1192,12 @@ TestChestSoundFlicker(a, b) {
         Check(ST.segUntil = segment && !ST.guidedUntil && ST.held.Get(SC.w, 0) = forward
             , "одиночные появления не отбирают патрульный W")
     }
+    lease := forward.releaseId
     TickFixture(b)
     Check(!ST.segUntil && ST.guidedUntil > A_TickCount && ST.held.Get(SC.w, 0) = forward
-        && ST.lastAction = "короткий шаг по метке звука", "повтор угла переводит текущий W в короткий направленный шаг")
+        && IsSoundForward(forward) && forward.releaseId > lease && ST.lastAction = "короткий шаг по метке звука"
+        , "повтор угла переводит текущий W в короткий направленный шаг")
+    ExpectKey(b, SC.w, w[1] + 2, w[2] + 1)
     ExpectKey(b, SC.w, w[1] + 2, w[2] + 2, 1500)
     ExpectKey(b, SC.e, e*)
     ExpectKey(a, SC.w, otherW*)

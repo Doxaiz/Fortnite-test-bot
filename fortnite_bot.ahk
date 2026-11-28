@@ -886,8 +886,8 @@ global ST := {
     stormAt:      0,            ; время последней проверки Бури и линии зоны
     inStorm:      false,        ; игрок находится внутри фиолетовой Бури
     zoneAngle:    999,          ; угол к белой линии зоны на миникарте (-180..180, 999=нет)
-    chestAudioAt:       0,      ; начало непрерывной пробы по золотой группе
-    chestAudioReading:  0,      ; последний использованный замер направления (включая промах)
+    chestAudioAt:       0,      ; начало пробы по золотой группе, включая короткие пропажи
+    chestAudioReading:  0,      ; последний замер угла или отметка серии пустых сканов
     chestAudioCooldown: 0,      ; пауза после попытки без визуальной цели
     ; v11.0: 4-канальный детектор врага, адаптивный бой, стрейф и перезарядка
     inHitAngle:         999,    ; угол входящего урона по дуге вокруг прицела (-180..180)
@@ -6751,20 +6751,24 @@ SeekChestBySound(shot, now, soundStill := 0) {
     }
     ambiguous := hasHud && ST.soundRing.goldAmbiguous
     mark := hasHud && !ambiguous ? ST.soundRing.chest : 0
-    reading := {seq:shot.captureId, at:shot.capturedAt, view:FrameView(shot), mark:mark}
+    at := shot.capturedAt, view := FrameView(shot), gap := prior ? at - prior.at : 0
+    confirmMs := ChestSoundConfirmMs(), resetMs := Max(800, CFG.scanSoundMs * 3)
+    empty := hasHud && !ambiguous && !mark
+    emptyAt := empty ? at : 0
+    if (empty && prior && prior.emptyAt && gap <= confirmMs && SameFrameView(prior.view, shot))
+        emptyAt := prior.emptyAt
+    reading := {seq:shot.captureId, at:at, view:view, mark:mark, emptyAt:emptyAt}
     ST.chestAudioReading := reading
-    gap := prior ? reading.at - prior.at : 0
-    longGap := gap > Max(800, CFG.scanSoundMs * 3)
-    if !mark {
-        ; Конфликт целей — измеренный кадр без пригодного направления.
-        ; Не считаем его пустым и не открываем новую паузу при каждом мерцании.
-        if (!ambiguous || longGap)
-            ST.chestAudioAt := 0
+    ; Один промах уже разрывает пару углов, но не возвращает право
+    ; останавливать патруль. Для этого нужна серия пустых замеров
+    ; или прежний тайм-аут без нового наблюдения.
+    if (gap > resetMs || (emptyAt && at - emptyAt >= resetMs))
+        ST.chestAudioAt := 0
+    if !mark
         return false
-    }
-    starting := !ST.chestAudioAt || longGap
+    starting := !ST.chestAudioAt
     if starting
-        ST.chestAudioAt := reading.at
+        ST.chestAudioAt := at
     ; Новый угол или собственный поворот не начинают отсчёт попытки заново.
     if (reading.at - ST.chestAudioAt > 9500) {
         ST.chestAudioAt := 0, ST.chestAudioCooldown := now + 12000
@@ -6773,12 +6777,11 @@ SeekChestBySound(shot, now, soundStill := 0) {
     ang := mark.angleDeg, turn := Abs(ang) > 14
     if (turn && !CFG.dryRun && !MouseAllowed(shot.hwnd))
         return false
-    confirmMs := ChestSoundConfirmMs()
     delta := prior && prior.mark ? Abs(SoundBearingOffset(ang, prior.mark.angleDeg)) : 0
     if (starting || !prior || !prior.mark || !SameFrameView(prior.view, shot)
         || gap > confirmMs || delta > CFG.soundGoldArcDeg) {
-        ; Только одна короткая пауза для второго кадра. Смена угла,
-        ; дубликат и отсрочка не могут удерживать патруль на месте.
+        ; Одна короткая пауза для второго кадра. Мерцание, новый угол,
+        ; дубликат и отсрочка не начинают её заново.
         if (starting && A_TickCount < reading.at + confirmMs) {
             HaltMatchMovement()
             if WorldFrameCurrent(shot) {
@@ -10304,10 +10307,10 @@ Roam(shot, now) {
     if (ST.walkTarget && A_TickCount < ST.guidedUntil)
         return
     if SoundReact(shot, now) {
-        ; Срочная звуковая реакция использует тот же скан, но не оставляет
-        ; предыдущий золотой угол опорой для следующего шага.
+        ; Срочная реакция использует тот же скан, но не продолжает
+        ; ни пару золотых углов, ни серию пустых замеров.
         if ST.chestAudioReading
-            ST.chestAudioReading.mark := 0
+            ST.chestAudioReading.mark := 0, ST.chestAudioReading.emptyAt := 0
         return
     }
     if (SeekChestBySound(shot, now, soundStill) || !WorldFrameCurrent(shot) || A_TickCount < ST.guidedUntil)

@@ -2718,6 +2718,7 @@ CheckFireGate() {
 TestSoundFrames() {
     WithGroundFixture(CheckSoundFrames)
     WithGroundFixture(CheckSoundDirectionGuards)
+    WithGroundFixture(CheckSoundRearm)
     WithGroundFixture(CheckAmbiguousSoundFrames)
     WithGroundFixture(CheckSoundSectorSpread)
     WithGroundFixture(CheckSoundReactionPriority)
@@ -2779,18 +2780,22 @@ CheckSoundFrames() {
     Check(ProbeChestSound(SoundFixture(++id)) && ST.chestAudioAt = episode
         , "два новых замера разрешают поворот без продления общего срока")
 
-    fresh := SoundFixture(++id, 0)
-    Check(!ProbeChestSound(fresh) && ST.soundCacheSeq = fresh.captureId && !ST.soundRing.chest && !ST.chestAudioAt
-        , "измеренный пустой кадр заканчивает аудиоподход")
-    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "после пропажи метки: одного нового замера мало для шага")
+    fresh := SoundFixture(++id, 0), untilOld := ST.guidedUntil
+    Check(!ProbeChestSound(fresh) && ST.soundCacheSeq = fresh.captureId && !ST.soundRing.chest
+        && !ST.chestAudioReading.mark && ST.chestAudioAt = episode && ST.guidedUntil = untilOld
+        , "пустой замер сбрасывает угол, но не срок попытки")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = untilOld
+        , "после пропажи одного замера мало для шага или новой паузы")
     front := SoundFixture(++id, 239, 50) ; при шаге 5 группа занимает две колонки маски
     Check(ProbeChestSound(front) && ST.lastAction = "короткий шаг по метке звука" && !ST.tgt && !ST.held.Count
         , "два близких угла впереди разрешают ограниченный W в DryRun")
     stepEnd := ST.guidedUntil
     Check(!SeekChestBySound(front, A_TickCount) && ST.guidedUntil = stepEnd, "дубликат не продлевает W")
     ST.chestAudioAt := A_TickCount - 9501
+    Check(!ProbeChestSound(SoundFixture(++id, 0)) && ST.chestAudioAt && ST.guidedUntil = stepEnd
+        , "короткая пропажа не сбрасывает исчерпанный срок")
     Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.chestAudioCooldown > A_TickCount
-        && ST.guidedUntil = stepEnd, "устойчивый сигнал не продлевает пробу после общего предела")
+        && ST.guidedUntil = stepEnd, "вернувшийся сигнал не продлевает пробу после общего предела")
 }
 
 CheckSoundDirectionGuards() {
@@ -2837,6 +2842,58 @@ CheckSoundDirectionGuards() {
         && ST.guidedUntil = quiet, "золото без текущего HUD не подтверждает W даже при недавней игре")
     Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "после возврата HUD прежний угол не засчитывается")
     Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "два новых кадра с HUD возвращают шаг")
+}
+
+CheckSoundRearm() {
+    global CFG, ST
+    id := 570, resetMs := Max(800, CFG.scanSoundMs * 3)
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "первый угол для проверки повторной паузы")
+    waitUntil := ST.guidedUntil, episode := A_TickCount - 2 * resetMs
+    ST.chestAudioAt := episode
+    for change in ["конфликт", "нет HUD", "ракурс", "разреженные замеры"] {
+        clear := SoundFixture(++id, 0)
+        Check(!ProbeChestSound(clear) && ST.chestAudioReading.emptyAt = clear.capturedAt
+            && ST.chestAudioAt = episode, change ": один пустой кадр только начинает серию")
+        ; Подводим начало серии к порогу, а новый скан выполняется по пикселям.
+        ST.chestAudioReading.emptyAt := A_TickCount - resetMs
+        if (change = "ракурс")
+            ST.cameraSeq += 1
+        shot := change = "конфликт" ? MixedSoundFixture(++id) : SoundFixture(++id, 0)
+        if (change = "нет HUD")
+            shot.hudEvidence.confirmed := false
+        if (change = "разреженные замеры")
+            ST.chestAudioReading.at := shot.capturedAt - ChestSoundConfirmMs() - 1
+        expected := (change = "ракурс" || change = "разреженные замеры") ? shot.capturedAt : 0
+        Check(!ProbeChestSound(shot) && ST.chestAudioReading.emptyAt = expected && ST.chestAudioAt = episode
+            , change ": не завершает серию измеренной тишины")
+        Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = waitUntil
+            && ST.chestAudioAt = episode && !ST.chestAudioReading.emptyAt
+            , change ": не разрешает новой паузы и не подтверждает угол")
+    }
+
+    clear := SoundFixture(++id, 0)
+    Check(!ProbeChestSound(clear) && ST.chestAudioReading.emptyAt = clear.capturedAt, "начало серии пустых замеров")
+    near := SoundFixture(++id, 0)
+    ST.chestAudioReading.emptyAt := near.capturedAt - resetMs + 1
+    Check(!ProbeChestSound(near) && ST.chestAudioAt = episode, "за миллисекунду до порога попытка сохраняется")
+    prior := ST.chestAudioReading
+    prior.emptyAt := A_TickCount - resetMs
+    Check(!SeekChestBySound(near, A_TickCount) && ST.chestAudioAt = episode, "дубликат не подтверждает серию")
+    deferred := SoundFixture(++id, 0), ST.scanWork := CFG.scanPerTickMax, ST.scanSoundAt := 0
+    Check(!SeekChestBySound(deferred, A_TickCount) && deferred.HasOwnProp("soundDeferred")
+        && ST.chestAudioReading = prior && ST.chestAudioAt = episode, "пропуск не завершает серию пустых замеров")
+    clear := SoundFixture(++id, 0), prior.emptyAt := clear.capturedAt - resetMs
+    Check(!ProbeChestSound(clear) && !ST.chestAudioAt && ST.guidedUntil = waitUntil
+        , "только измеренная серия заканчивает попытку на пороге, не открывая паузу сама")
+    first := SoundFixture(++id, 231, 50)
+    Check(!ProbeChestSound(first) && ST.chestAudioAt = first.capturedAt
+        && ST.guidedUntil = first.capturedAt + ChestSoundConfirmMs(), "после серии первая метка снова может дать короткую паузу")
+    Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "даже после тишины нужны два согласованных замера для шага")
+
+    later := SoundFixture(++id, 231, 50)
+    ST.chestAudioReading.at := later.capturedAt - resetMs - 1
+    Check(!ProbeChestSound(later) && ST.chestAudioAt = later.capturedAt
+        && ST.guidedUntil = later.capturedAt + ChestSoundConfirmMs(), "большой разрыв сохраняет отдельное правило новой попытки")
 }
 
 MixedSoundFixture(id) {
