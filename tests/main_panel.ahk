@@ -105,7 +105,7 @@ PanelChooseCombo(control, value) {
 }
 
 TestPanelNavigation() {
-    global CFG, UI
+    global CFG, ST, UI
     p := UI.panel
     PanelCheck(UI.visible && p.view = "home" && PanelIsVisible(UI.ddMode), "главный обзор")
     PanelCheck(UI.ddMode.Value = 2 && UI.cbDry.Value && UI.cbTeam.Value && p.keys[1].Value = "F10"
@@ -117,6 +117,15 @@ TestPanelNavigation() {
     WinGetPos(, , &outerW, &outerH, "ahk_id " UI.gui.Hwnd)
     MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
     PanelCheck(outerW <= r-l && outerH <= b-t, "панель помещается на рабочем столе")
+    CheckPanelSessionRow([UI.btnStart, UI.btnPause, UI.btnStop, UI.btnCont, p.detail, UI.btnBypass], w, h)
+    CheckPanelSessionRow([UI.ddMode, UI.cbDry, p.homeCheck], w, h)
+    ini := FileRead(CFG.iniFile), log := FileExist(CFG.logFile) ? FileRead(CFG.logFile) : ""
+    PanelCheck(PanelIsVisible(p.homeCheck) && InStr(p.inputLabel.Value, "БЕЗ ВВОДА"), "проверка запуска и состояние DryRun на обзоре")
+    PanelClick(p.homeCheck)
+    PanelCheck(p.view = "startup" && PanelIsVisible(p.startupReport) && !PanelIsVisible(p.homeCheck)
+        && !ST.running && !ST.hwnd && !ST.captureSeq && !ST.held.Count && FileRead(CFG.iniFile) == ini
+        && (FileExist(CFG.logFile) ? FileRead(CFG.logFile) : "") == log, "переход к сводке не запускает сеанс, ввод или захват")
+    PanelSelectView("home")
 
     Log("запись вне превью")
     Log("пробная запись панели")
@@ -159,6 +168,17 @@ TestPanelNavigation() {
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "событие после очистки") && !InStr(UI.logEdit.Value, "пробная запись")
         , "после очистки новые события продолжают поступать")
+}
+
+CheckPanelSessionRow(row, clientW, clientH) {
+    ; Фактические координаты Win32 после масштабирования, а не копия сетки.
+    right := 0
+    for ctrl in row {
+        ctrl.GetPos(&x, &y, &w, &h)
+        PanelCheck(PanelIsVisible(ctrl) && x >= right && y >= 0 && x + w <= clientW && y + h <= clientH
+            , "кнопки и режим помещаются на обзоре без перекрытия по X")
+        right := x + w
+    }
 }
 
 TestPanelJournal() {
@@ -562,9 +582,10 @@ TestPanelActions() {
     PanelClick(UI.btnPause)
     PanelCheck(!ST.paused && UI.btnPause.Text = "Пауза", "снятие паузы")
     PanelClick(UI.cbDry)
-    PanelCheck(!CFG.dryRun && ST.paused, "смена DryRun требует ручного продолжения, как прежде")
+    PanelCheck(!CFG.dryRun && ST.paused && UI.panel.inputLabel.Value = "РЕАЛЬНЫЙ ВВОД"
+        , "смена DryRun видна на обзоре и требует ручного продолжения, как прежде")
     PanelClick(UI.cbDry)
-    PanelCheck(CFG.dryRun && ST.paused, "DryRun восстановлен; пауза не снялась")
+    PanelCheck(CFG.dryRun && ST.paused && InStr(UI.panel.inputLabel.Value, "БЕЗ ВВОДА"), "DryRun восстановлен; пауза не снялась")
     PanelClick(UI.btnCont)
     PanelCheck(!ST.cancelHold && ST.paused, "возобновление очереди не снимает общую паузу")
     PanelClick(UI.btnPause)

@@ -11893,10 +11893,10 @@ PanelPalette(theme) {
                 , ink:"F3F5FC", muted:"B8C0D1", accent:"B5C7FA", danger:"F7A5B8", quiet:"8C95A9"
                 , violet:"A8A9EF", cyan:"82D4DB", pink:"DC9FCC", peach:"EDAE95", calc:"7AD2B4", onCalc:"17332C"}
         default:
-            return {canvas:"1C2030", side:"171B29", card:"272C40", well:"1D2233", line:"383F58"
-                , chip:"303751", mark:"323E69", primary:"485DC0", onPrimary:"FFFFFF"
-                , ink:"F1F3FF", muted:"AFB8D3", accent:"BCC8FF", danger:"FFA7BA", quiet:"8791AC"
-                , violet:"8395FF", cyan:"69C7E3", pink:"E38ED9", peach:"F1A68B", calc:"72D8B5", onCalc:"17332C"}
+            return {canvas:"101827", side:"0D1422", card:"182237", well:"111B2D", line:"2D3C58"
+                , chip:"222E47", mark:"29365B", primary:"475CC5", onPrimary:"FFFFFF"
+                , ink:"F2F5FF", muted:"B2BED7", accent:"C6D0FF", danger:"FFADBF", quiet:"8F9AB4"
+                , violet:"899BFF", cyan:"74DFDA", pink:"D9A7F2", peach:"F4B09C", calc:"72D8B5", onCalc:"17332C"}
     }
 }
 
@@ -12204,14 +12204,28 @@ class PanelArt {
         }
     }
 
-    Ring(c, percent) {
+    Scope(x, y, c) {
+        ; Декоративная визирная сетка, не данные захвата.
         pen := 0
-        DllCall("gdiplus\GdipCreatePen1", "UInt", PanelArt.Color(c.line), "Float", 8, "Int", 2, "Ptr*", &pen)
-        try this.Arc(pen, 360)
+        DllCall("gdiplus\GdipCreatePen1", "UInt", PanelArt.Color(c.line), "Float", 1, "Int", 2, "Ptr*", &pen)
+        try {
+            for r in [14, 29, 44]
+                DllCall("gdiplus\GdipDrawEllipse", "Ptr", this.dc, "Ptr", pen, "Float", x - r, "Float", y - r
+                    , "Float", 2 * r, "Float", 2 * r)
+        } finally DllCall("gdiplus\GdipDeletePen", "Ptr", pen)
+        this.Rect(x - 51, y, 102, 1, c.line)
+        this.Rect(x, y - 51, 1, 102, c.line)
+        this.Card(x + 17, y - 19, 7, 7, 3.5, c.cyan)
+    }
+
+    Ring(c, percent, size) {
+        pen := 0
+        DllCall("gdiplus\GdipCreatePen1", "UInt", PanelArt.Color(c.line), "Float", 7, "Int", 2, "Ptr*", &pen)
+        try this.Arc(pen, 360, size)
         finally DllCall("gdiplus\GdipDeletePen", "Ptr", pen)
         if (percent > 0) {
-            brush := this.Gradient(8, 8, 122, 122, c.pink, c.violet), pen := this.Stroke(brush, 8)
-            try this.Arc(pen, 3.6 * percent)
+            brush := this.Gradient(8, 8, size - 16, size - 16, c.cyan, c.violet), pen := this.Stroke(brush, 7)
+            try this.Arc(pen, 3.6 * percent, size)
             finally {
                 DllCall("gdiplus\GdipDeletePen", "Ptr", pen)
                 DllCall("gdiplus\GdipDeleteBrush", "Ptr", brush)
@@ -12219,9 +12233,9 @@ class PanelArt {
         }
     }
 
-    Arc(pen, angle) {
-        DllCall("gdiplus\GdipDrawArc", "Ptr", this.dc, "Ptr", pen, "Float", 9, "Float", 9
-            , "Float", 120, "Float", 120, "Float", -90, "Float", angle)
+    Arc(pen, angle, size) {
+        DllCall("gdiplus\GdipDrawArc", "Ptr", this.dc, "Ptr", pen, "Float", 8, "Float", 8
+            , "Float", size - 16, "Float", size - 16, "Float", -90, "Float", angle)
     }
 
     Into(control) {
@@ -12245,22 +12259,22 @@ PanelBackdrop() {
     art.Rect(206, 72, 852, 1, c.line)
     switch p.view {
         case "home":
+            art.Card(206, 85, 852, 190, 16, c.card, c.violet)
+            art.Scope(777, 144, c)
+            art.Card(841, 106, 198, 33, 10, c.well, c.line)
+            art.Rect(224, 210, 815, 1, c.line)
             for i, x in [206, 494, 782] {
-                art.Card(x, 85, 276, 99, 15, c.card, c.line)
-                art.Ribbon(x + 18, 113, 240, i = 1 ? c.cyan : (i = 2 ? c.violet : c.peach)
-                    , i = 1 ? c.violet : c.pink, i = 2 ? -0.6 : 0.5)
+                art.Card(x, 287, 276, 70, 14, c.card, c.line)
+                art.Rect(x + 17, 303, 3, 37, [c.cyan, c.violet, c.pink][i])
             }
-            art.Card(206, 196, 852, 103, 15, c.card, c.line)
-            art.Card(222, 205, 39, 39, 10, c.mark, c.line)
-            art.Card(229, 212, 25, 25, 12, c.chip, c.accent)
-            art.Card(590, 203, 117, 45, 10, c.chip)
-            art.Card(717, 203, 117, 45, 10, c.chip)
-            art.Rect(222, 253, 820, 1, c.line)
-            art.Card(206, 309, 268, 213, 15, c.card, c.line)
-            art.Card(486, 309, 572, 213, 15, c.card, c.violet)
-            art.Card(206, 532, 268, 134, 15, c.card, c.line)
-            art.Card(486, 532, 572, 134, 15, c.card, c.line)
-            art.Card(504, 576, 536, 73, 9, c.well, c.line)
+            art.Card(206, 369, 276, 173, 14, c.card, c.line)
+            art.Card(494, 369, 564, 173, 14, c.card, c.line)
+            art.Card(512, 430, 135, 43, 9, c.well, c.line)
+            art.Card(655, 430, 135, 43, 9, c.well, c.line)
+            art.Rect(512, 481, 528, 1, c.line)
+            art.Card(206, 554, 276, 112, 14, c.card, c.line)
+            art.Card(494, 554, 564, 112, 14, c.card, c.line)
+            art.Card(512, 594, 528, 60, 9, c.well, c.line)
         case "settings":
             for x in [206, 638] {
                 art.Card(x, 109, 420, 111, 15, c.card, c.line)
@@ -12518,7 +12532,7 @@ PanelBuildSidebar() {
     p := UI.panel
     PanelText([25, 29, 25, 26], "F", 17, "bold", "accent", "mark", "Center +0x200")
     PanelText([68, 23, 105, 24], "FORMA", 15, "bold", "ink", "side")
-    PanelText([69, 49, 106, 17], "Управление", 9, "norm", "muted", "side")
+    PanelText([69, 49, 106, 17], "Панель сеанса", 8, "norm", "muted", "side")
     PanelText([20, 92, 140, 18], "МЕНЮ", 8, "bold", "muted", "side")
     for i, item in [["home", "Обзор"], ["log", "Журнал"], ["settings", "Настройки"]]
         p.nav[item[1]] := PanelButton([12, 116 + (i - 1) * 43, 160, 37], item[2]
@@ -12537,7 +12551,8 @@ PanelBuildSidebar() {
     PanelText([20, 655, 143, 20], "v" FORMA_VERSION "  /  " (A_IsCompiled ? "EXE " (8 * A_PtrSize) " бит" : "AHK v2")
         , 9, "norm", "ink", "side")
 
-    p.heading := PanelText([206, 15, 193, 43], "", 21, "bold", "ink", "canvas")
+    PanelText([206, 10, 190, 15], "КОНСОЛЬ  /  FORMA", 8, "bold", "muted", "canvas")
+    p.heading := PanelText([206, 26, 193, 36], "", 19, "bold", "ink", "canvas")
     PanelText([403, 29, 39, 24], "ТЕМА", 8, "bold", "muted", "canvas", "+0x200")
     for i, item in [["dark", "Тёмная", 74], ["gray", "Серая", 67], ["light", "Светлая", 81]] {
         x := [447, 526, 598][i]
@@ -12552,60 +12567,61 @@ PanelBuildSidebar() {
 PanelBuildHome() {
     global UI
     p := UI.panel, p.buildView := "home"
-    p.scene := PanelText([223, 127, 240, 28], "", 16, "bold")
-    p.rounds := PanelText([511, 125, 240, 30], "", 19, "bold")
-    p.elapsed := PanelText([799, 125, 240, 30], "", 19, "bold")
-    PanelText([223, 158, 240, 18], "Состояние сеанса", 9, "norm", "muted")
-    PanelText([511, 158, 240, 18], "Раунды за сеанс", 9, "norm", "muted")
-    PanelText([799, 158, 240, 18], "В работе · без пауз", 9, "norm", "muted")
+    PanelText([224, 98, 465, 34], "Управление сеансом", 19, "bold")
+    p.action := PanelText([225, 135, 480, 22], "", 9, "norm", "muted", "card", "0xC000")
+    p.inputLabel := PanelText([850, 109, 180, 26], "", 9, "bold", "accent", "well", "Center +0x200")
+    p.homeCheck := PanelButton([840, 158, 199, 36], "Проверка запуска  ›", PanelGo.Bind("startup"), , , , 10)
+    PanelText([225, 161, 246, 17], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
+    UI.ddMode := PanelCombo([224, 179, 260, 25]
+        , ["Авто-игра (Zero Build)", "AFK-очередь (цикл матчей)", "Только Анти-АФК (движение)", "AFK XP (LEGO / Creative)"])
+    UI.ddMode.OnEvent("Change", PanelInvoke.Bind(OnBotModeChange))
+    UI.cbDry := PanelAdd("CheckBox", [502, 177, 224, 25], "DryRun · без нажатий", 10, "bold", "accent")
+    UI.cbDry.OnEvent("Click", PanelInvoke.Bind(OnModeOptionsChange))
+    UI.btnStart := PanelButton([224, 221, 151, 37], "Старт", (*) => OnStart(), "primary", , , 11)
+    UI.btnPause := PanelButton([383, 221, 128, 37], "Пауза", OnPause, , , , 10)
+    UI.btnStop := PanelButton([519, 221, 92, 37], "Стоп", (*) => OnStop(), , , , 10)
+    UI.btnCont := PanelButton([619, 221, 174, 37], "Возобновить очередь", OnResumeQueue, , , , 9)
+    p.detail := PanelButton([801, 221, 82, 37], "Сводка", ShowPanelStatus, , , , 9)
+    UI.btnBypass := PanelButton([891, 221, 148, 37], "Пропустить матч", RequestBypassMatch, , , , 9)
 
-    PanelText([234, 217, 15, 15], "F", 8, "bold", "accent", "chip", "Center +0x200")
-    PanelText([274, 203, 303, 23], "Находки FORMA", 11, "bold")
-    PanelText([274, 229, 303, 17], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
-    PanelText([597, 207, 103, 14], "ЗА СЕАНС", 8, "bold", "muted", "chip", "Center")
-    PanelText([724, 207, 103, 14], "ВСЕГО", 8, "bold", "muted", "chip", "Center")
-    p.homeFound := PanelText([597, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
-    p.homeTotal := PanelText([724, 222, 103, 22], "0", 13, "bold", "accent", "chip", "Center +0x200")
-    p.homeFindingsHistory := PanelButton([844, 207, 106, 37], "История  ›", PanelOpenFindings.Bind("all"))
-    p.resetFinds := PanelButton([959, 207, 83, 37], "Сброс…", OnPanelResetFinds, , , , 9)
-    p.homeFindingsHint := PanelText([222, 265, 216, 20], "", 8, "bold", "muted")
-    for spec in [["token", "Жетоны", 444, 193], ["banner", "Редкие баннеры", 645, 195], ["other", "Прочие записи", 848, 194]] {
-        control := PanelButton([spec[3], 260, spec[4], 30], spec[2], PanelOpenFindings.Bind(spec[1]), , , , 9)
+    for i, spec in [["scene", "СОСТОЯНИЕ СЕАНСА", 223, 15], ["rounds", "РАУНДЫ ЗА СЕАНС", 511, 18]
+        , ["elapsed", "АКТИВНОЕ ВРЕМЯ", 799, 18]] {
+        PanelText([spec[3] + 15, 298, 230, 18], spec[2], 8, "bold", "muted")
+        p.%spec[1]% := PanelText([spec[3] + 15, 318, 230, 30], "", spec[4], "bold", "ink", "card", "0xC000")
+    }
+
+    PanelText([224, 381, 241, 26], "До выхода из матча", 12, "bold")
+    dial := p.ringSize := 116
+    p.ring := PanelAdd("Picture", [224, 413, dial, dial], "", , , , "")
+    p.clockLabel := PanelText([234, 445, 96, 17], "", 7, "bold", "muted", "card", "Center")
+    p.clockValue := PanelText([232, 460, 100, 32], "", 17, "bold", "ink", "card", "Center +0x200")
+    p.clockNote := PanelText([352, 417, 113, 67], "", 8, "norm", "muted")
+    PanelButton([352, 495, 113, 31], "Настроить", PanelGo.Bind("settings"), , , , 9)
+
+    PanelText([512, 380, 396, 27], "Находки", 13, "bold")
+    PanelText([513, 407, 395, 18], "Локальные сигналы, не инвентарь Epic", 9, "norm", "muted")
+    p.homeFindingsHistory := PanelButton([921, 382, 119, 34], "История  ›", PanelOpenFindings.Bind("all"))
+    for i, spec in [["homeFound", "ЗА СЕАНС"], ["homeTotal", "ВСЕГО"]] {
+        x := i = 1 ? 522 : 665
+        PanelText([x, 433, 115, 15], spec[2], 8, "bold", "muted", "well", "Center")
+        p.%spec[1]% := PanelText([x, 448, 115, 22], "0", 13, "bold", "accent", "well", "Center +0x200")
+    }
+    p.resetFinds := PanelButton([921, 437, 119, 31], "Сброс…", OnPanelResetFinds, , , , 9)
+    p.homeFindingsHint := PanelText([512, 487, 525, 16], "", 8, "bold", "muted")
+    for spec in [["token", "Жетоны", 512, 153], ["banner", "Редкие баннеры", 673, 187], ["other", "Прочие записи", 868, 172]] {
+        control := PanelButton([spec[3], 506, spec[4], 27], spec[2], PanelOpenFindings.Bind(spec[1]), , , , 9)
         p.homeFindingsButtons[spec[1]] := {control:control, label:spec[2]}
     }
 
-    PanelText([223, 319, 235, 22], "До выхода из матча", 11, "bold")
-    p.ring := PanelAdd("Picture", [271, 343, 138, 138], "", , , , "")
-    p.clockLabel := PanelText([298, 382, 84, 16], "", 7, "bold", "muted", "card", "Center")
-    p.clockValue := PanelText([288, 399, 104, 32], "", 18, "bold", "ink", "card", "Center +0x200")
-    p.clockNote := PanelText([222, 483, 130, 34], "", 8, "norm", "muted")
-    PanelButton([354, 483, 103, 30], "Настроить", PanelGo.Bind("settings"), , , , 9)
+    PanelText([224, 564, 240, 21], "Автостоп сеанса", 11, "bold")
+    p.stopTime := PanelText([224, 586, 241, 31], "", 16, "bold", "accent")
+    p.stopNote := PanelText([224, 622, 241, 34], "", 9, "norm", "muted")
 
-    PanelText([504, 319, 272, 22], "Управление сеансом", 11, "bold")
-    p.inputLabel := PanelText([870, 321, 169, 19], "", 9, "bold", "accent", "card", "Right")
-    UI.btnStart := PanelButton([504, 346, 169, 38], "Старт", (*) => OnStart(), "primary", , , 11)
-    UI.btnPause := PanelButton([683, 346, 170, 38], "Пауза", OnPause, , , , 11)
-    UI.btnStop := PanelButton([863, 346, 177, 38], "Стоп", (*) => OnStop(), , , , 11)
-    PanelText([504, 391, 220, 18], "РЕЖИМ РАБОТЫ", 8, "bold", "muted")
-    UI.ddMode := PanelCombo([504, 411, 258, 26]
-        , ["Авто-игра (Zero Build)", "AFK-очередь (цикл матчей)", "Только Анти-АФК (движение)", "AFK XP (LEGO / Creative)"])
-    UI.ddMode.OnEvent("Change", PanelInvoke.Bind(OnBotModeChange))
-    UI.cbDry := PanelAdd("CheckBox", [780, 411, 260, 25], "Тест: без нажатий (DryRun)", 10, "bold", "accent")
-    UI.cbDry.OnEvent("Click", PanelInvoke.Bind(OnModeOptionsChange))
-    p.action := PanelText([504, 443, 530, 27], "", 9, "norm", "muted", "card", "0xC000")
-    UI.btnCont := PanelButton([504, 477, 196, 30], "Возобновить очередь", OnResumeQueue, , , , 9)
-    p.detail := PanelButton([711, 477, 141, 30], "Сводка", ShowPanelStatus, , , , 9)
-    UI.btnBypass := PanelButton([863, 477, 177, 30], "Пропустить матч", RequestBypassMatch, , , , 9)
-
-    PanelText([223, 543, 230, 23], "Автостоп сеанса", 11, "bold")
-    p.stopTime := PanelText([223, 571, 232, 31], "", 16, "bold", "accent")
-    p.stopNote := PanelText([223, 610, 232, 42], "", 9, "norm", "muted")
-
-    PanelText([504, 543, 352, 24], "Журнал действий", 11, "bold")
-    p.openLog := PanelButton([908, 542, 132, 26], "Весь журнал  ›", PanelGo.Bind("log"), , , , 9)
+    PanelText([512, 564, 352, 24], "Журнал действий", 11, "bold")
+    p.openLog := PanelButton([908, 562, 132, 26], "Весь журнал  ›", PanelGo.Bind("log"), , , , 9)
     p.homeLogRows := []
     Loop 3
-        p.homeLogRows.Push(PanelText([515, 582 + (A_Index - 1) * 21, 514, 18], "", 9, "norm"
+        p.homeLogRows.Push(PanelText([523, 597 + (A_Index - 1) * 18, 506, 17], "", 9, "norm"
             , A_Index = 1 ? "ink" : "muted", "well", "+0x80 0xC000"))
 }
 
@@ -13069,7 +13085,7 @@ PanelUpdateHome() {
     if ST.cancelHold
         note := "Подбор приостановлен. Возобновите очередь вручную."
     else if (note = "")
-        note := "Окно и HUD можно проверить на вкладке «Проверка запуска»."
+        note := "Перед стартом проверьте окно и захват в DryRun."
     PanelPut(p.action, note)
     PanelUpdateRing()
 }
@@ -13079,8 +13095,8 @@ PanelUpdateRing() {
     p := UI.panel
     clock := PanelMatchClock(A_TickCount)
     if (p.ringKey != clock.percent) {
-        art := PanelArt(138, 138, p.scale, p.colors.card)
-        art.Ring(p.colors, clock.percent)
+        art := PanelArt(p.ringSize, p.ringSize, p.scale, p.colors.card)
+        art.Ring(p.colors, clock.percent, p.ringSize)
         art.Into(p.ring)
         p.ringKey := clock.percent
     }
