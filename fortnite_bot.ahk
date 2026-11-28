@@ -5,11 +5,11 @@
 ;@Ahk2Exe-SetName             FORMA
 ;@Ahk2Exe-SetOrigFilename     FORMA.exe
 ;@Ahk2Exe-SetDescription      FORMA — панель управления Fortnite (AutoHotkey v2)
-;@Ahk2Exe-SetVersion          11.0.14.0
+;@Ahk2Exe-SetVersion          11.0.15.0
 ;@Ahk2Exe-SetCompanyName      FORMA
 ;@Ahk2Exe-SetCopyright        MIT License (c) 2026 Doxaiz
 ; ============================================================================
-;  FORMA v11.0.14 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
+;  FORMA v11.0.15 — автономный Auto-Play / AFK / Queue / XP бот для Fortnite (AHK v2)
 ;
 ;  Анализ кадров на AutoHotkey v2 с необязательными сканами на Rust.
 ;  Среда AHK включена в переносимый EXE:
@@ -72,7 +72,7 @@
 ; ============================================================================
 ;                              НАСТРОЙКИ
 ; ============================================================================
-global FORMA_VERSION := "11.0.14"
+global FORMA_VERSION := "11.0.15"
 
 global CFG := {
     ; ---- окно игры ----
@@ -340,6 +340,7 @@ global CFG := {
     ; ---- звук (визуализация) ----
     soundRingMin:   16,     ; размер метки на кольце визуализации звука, px (при 1280)
     soundRingMax:   135,
+    soundGoldArcDeg: 20,   ; допустимый разброс углов золотых групп на кольце и между замерами
 
     soundFlashDelta: 14,    ; прирост яркости кадра = вспышка выстрела
     soundReactMs:   380,    ; быстрая реакция на выстрел, шаги и звук сундука
@@ -582,6 +583,7 @@ global ST := {
     cameraCmdX: 0,             ; сумма dx команд бота, не измерение камеры
     cameraCmdY: 0,             ; сумма dy команд бота, не измерение камеры
     stuckShot: 0,
+    stuckForward: 0,           ; владелец непрерывного W для замеров движения
     stuckSampleAt: 0,
     stuckStillMs: 0,
     stuckStillSamples: 0,
@@ -589,6 +591,7 @@ global ST := {
     stuckRecoverUntil: 0,
     stuckRecoverKey: "",
     stuckMotionN: 0,
+    patrolProbe: 0,             ; короткая проверка W после первого измеренного обхода
     promptN:      0,            ; принятые к отправке попытки E; не открытия
     lastPromptE:  0,            ; время последней попытки E по подсказке
     promptAttempts: [],         ; скользящее окно попыток, сохраняется через паузу/стоп
@@ -885,9 +888,9 @@ global ST := {
     stormAt:      0,            ; время последней проверки Бури и линии зоны
     inStorm:      false,        ; игрок находится внутри фиолетовой Бури
     zoneAngle:    999,          ; угол к белой линии зоны на миникарте (-180..180, 999=нет)
-    chestAudioAt:       0,      ; с какого момента идём на золотую дугу сундука
-    chestAudioLastAt:   0,      ; время последнего свежего наблюдения
-    chestAudioCooldown: 0,      ; пауза аудио-поиска, если сундук оказался на другом этаже
+    chestAudioAt:       0,      ; начало пробы по золотой группе, включая короткие пропажи
+    chestAudioReading:  0,      ; последний замер угла или отметка серии пустых сканов
+    chestAudioCooldown: 0,      ; пауза после попытки без визуальной цели
     ; v11.0: 4-канальный детектор врага, адаптивный бой, стрейф и перезарядка
     inHitAngle:         999,    ; угол входящего урона по дуге вокруг прицела (-180..180)
     inHitAt:            0,      ; время обнаружения дуги входящего урона
@@ -3346,15 +3349,20 @@ Atan2Deg(x, y) {
     return rad * 57.2957795
 }
 
+SoundBearingOffset(angle, reference) {
+    d := angle - reference
+    return (d > 180) ? d - 360 : ((d < -180) ? d + 360 : d)
+}
+
 SoundRingScan(shot) {
-    ; v11.0: раздельное чтение кольца «Visualize Sound Effects» вокруг прицела.
-    ; Возвращает {shot, chest, step, best}, у каждой метки есть angleDeg (-180..180).
+    ; Раздельное чтение кольца «Visualize Sound Effects». chest — лишь
+    ; наибольшая группа золота; goldAmbiguous отдельно запрещает наведение.
     global CFG
-    out := {shot: 0, chest: 0, step: 0, best: 0}
+    out := {shot: 0, chest: 0, step: 0, best: 0, goldCount: 0, goldAmbiguous: false}
     res := MaskClustersMulti(shot, CFG.regSound, ["white", "gold", "red"], 14, ScanStep(5), 2)
     cx := shot.w * 0.5, cy := shot.h * 0.5
     rMin := shot.h * 0.10, rMax := shot.h * 0.45
-    bestRank := -1
+    bestRank := -1, goldRef := 0.0, goldLo := 0.0, goldHi := 0.0
     for mode, list in res {
         rank := (mode = "red") ? 3 : ((mode = "gold") ? 2 : 1)
         for c in list {
@@ -3373,19 +3381,32 @@ SoundRingScan(shot) {
             item := {x: c.cx, y: c.cy, w: c.w, h: c.h, area: c.area, kind: mode, angleDeg: ang}
             if (mode = "red" && (!out.shot || c.area > out.shot.area))
                 out.shot := item
-            else if (mode = "gold" && (!out.chest || c.area > out.chest.area))
-                out.chest := item
-            else if (mode = "white" && (!out.step || c.area > out.step.area))
+            else if (mode = "gold") {
+                if !out.goldCount
+                    goldRef := ang
+                off := SoundBearingOffset(ang, goldRef)
+                goldLo := Min(goldLo, off), goldHi := Max(goldHi, off)
+                out.goldCount += 1
+                if (!out.chest || c.area > out.chest.area)
+                    out.chest := item
+            } else if (mode = "white" && (!out.step || c.area > out.step.area))
                 out.step := item
             if (!out.best || rank > bestRank || (rank = bestRank && c.area > out.best.area))
                 out.best := item, bestRank := rank
         }
     }
+    ; Нужен один узкий сектор для ВСЕХ групп. Соседство с самой большой
+    ; или цепочка близких пар не делают крайние направления согласованными.
+    out.goldAmbiguous := goldHi - goldLo > CFG.soundGoldArcDeg
     return out
 }
 
-SoundMarks(shot) {
-    return SoundRingScan(shot).best
+GoldSoundText(ring) {
+    if ring.goldAmbiguous
+        return "разные направления · групп " ring.goldCount " · без наведения"
+    mark := ring.chest
+    return mark ? (Round(mark.angleDeg, 1) "° · центр (" mark.x "," mark.y ") · групп " ring.goldCount
+        . " · только кандидат") : "нет"
 }
 
 FindIncomingHitArc(shot) {
@@ -5028,16 +5049,16 @@ MouseCalCompareFrames(a, b, budgetMs := 2500, guard := 0) {
 
 ResetMoveWatch(resetAttempts := false) {
     global ST
-    ST.stuckShot := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
+    ST.stuckShot := 0, ST.stuckForward := 0, ST.stuckSampleAt := 0, ST.stuckStillMs := 0, ST.stuckStillSamples := 0
     ST.stuckMotionN := 0
     if resetAttempts
-        ST.stuckRecoverN := 0
+        ST.stuckRecoverN := 0, ST.patrolProbe := 0
 }
 
 ResetNavigation() {
     global ST
     CancelNavHop()
-    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0
+    ST.lastObsJump := 0, ST.navSteerAt := 0, ST.navInfo := 0, ST.patrolLeaseAt := 0, ST.patrolProbe := 0
     ST.lastScanT := 0, ST.navTurnSign := 1
 }
 
@@ -5109,7 +5130,7 @@ NavKindRu(kind) {
     }
 }
 
-RefreshNavigation(shot) {
+RefreshNavigation(shot, recoveryRecheck := false) {
     global CFG, ST
     if !WorldFrameCurrent(shot)
         return false
@@ -5117,7 +5138,9 @@ RefreshNavigation(shot) {
     same := prior && SameFrameView(prior.view, shot)
     if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
         return false
-    if (same && now - prior.at < CFG.navScanMs)
+    ; Перед кандидатом на боковой шаг важен кадр действия, но скан
+    ; на уже измеренном кадре повторно не выполняется.
+    if (!recoveryRecheck && same && now - prior.at < CFG.navScanMs)
         return false
     n := ScanNavCorridors(shot, ST.navTurnSign)
     TickCheck("после скана коридоров")
@@ -5210,7 +5233,9 @@ SteerOpenSpace(shot, now) {
     n := ST.navInfo
     if (n.kind != "clear")
         SprintSet(false)
-    if (n.hits < 2 || !WorldFrameCurrent(shot))
+    ; После бокового шага нужны замеры, но не новый разворот, пока
+    ; короткая проба W ещё проверяет продвижение в этом виде.
+    if (n.hits < 2 || ST.patrolProbe || !WorldFrameCurrent(shot))
         return false
     if (ST.segUntil && TryNavHop(shot, now)) {
         KeepPatrolMoving(shot)
@@ -5295,44 +5320,83 @@ CheckStormAndZone(shot, now) {
     return false
 }
 
-GuidedStill(shot, now) {
+ReadyForStillProbe(shot, previousAttempt := 0) {
     global CFG, ST
-    return now < ST.guidedUntil && !ST.segUntil && !ST.navHop && !ST.stuckRecoverN
-        && ST.stuckStillSamples >= 2 && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs)
-        && FrameHasMatchHud(shot)
+    return !ST.navHop && ST.stuckRecoverN = previousAttempt && ST.stuckStillSamples >= 2
+        && ST.stuckStillMs >= Max(1100, 2 * CFG.stuckSampleMs) && FrameHasMatchHud(shot)
 }
 
-GuidedRecoverySide(shot, now) {
+GuidedStill(shot, now) {
     global ST
+    return now < ST.guidedUntil && !ST.segUntil && ReadyForStillProbe(shot)
+}
+
+CurrentPatrolProbe(shot) {
+    global ST
+    probe := ST.patrolProbe
+    if (probe && (ST.stuckRecoverN != 1 || A_TickCount >= probe.until
+        || !SameFrameView(probe.view, shot) || !FrameHasMatchHud(shot)))
+        ST.patrolProbe := 0
+    return ST.patrolProbe
+}
+
+StuckRecoverySide(shot, now, guided, probe := 0) {
+    global CFG, ST
     ; Плотные края сами по себе не стена: нужны сравнения мира и два
     ; согласованных скана коридоров, последний — на кадре действия.
-    if !GuidedStill(shot, now)
-        return 0
-    RefreshNavigation(shot)
+    if guided {
+        if !GuidedStill(shot, now)
+            return 0
+    } else {
+        if (!ST.segUntil || !ReadyForStillProbe(shot, probe ? 1 : 0))
+            return 0
+        ; На патруле уточняем уже замеченный выход даже между обычными
+        ; замерами. Для второй попытки два замера должны быть после
+        ; отпускания боковой клавиши и указывать на другую сторону.
+        prior := ST.navInfo
+        if (!prior || prior.kind != "busy" || !prior.turn || !SameFrameView(prior.view, shot)
+            || shot.capturedAt - prior.at > CFG.confirmGapMs
+            || (probe && (!probe.afterSeq || prior.seq <= probe.afterSeq || prior.turn != -probe.side)))
+            return 0
+    }
+    RefreshNavigation(shot, !guided)
     n := ST.navInfo
     return n && n.kind = "busy" && n.turnStable && n.seq = shot.captureId
         && SameFrameView(n.view, shot) && WorldFrameCurrent(shot) ? n.turn : 0
 }
 
-MoveWatch(shot, now, &visualStill := 0) {
+IsSoundForward(hold) {
+    return IsObject(hold) && hold.HasOwnProp("soundGuided") && hold.soundGuided
+}
+
+MoveWatch(shot, now, &guidedStill := 0) {
     global CFG, SC, ST
-    visualStill := 0
+    guidedStill := 0
     ; Любой бой/смена режима отменяет боковую попытку.
     allowed := WorldFrameCurrent(shot) && !CFG.dryRun && CFG.featMove
         && (ST.phase = "loot" || ST.phase = "roam") && !ST.enemy && !ST.breakTarget && !ST.tgt
     if !allowed {
         if (ST.stuckRecoverKey != "")
             KeyUp(ST.stuckRecoverKey)
-        ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
+        ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0, ST.patrolProbe := 0
         ResetMoveWatch()
         return false
     }
+    probe := CurrentPatrolProbe(shot)
     if ST.stuckRecoverUntil {
         if (now < ST.stuckRecoverUntil)
             return true
         KeyUp(ST.stuckRecoverKey)
         ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0, ST.segUntil := 0
         ResetMoveWatch()
+        if (probe && WorldFrameCurrent(shot)) {
+            ; Боковой шаг меняет изображение и без команды камеры. Кадр
+            ; отпускания не даёт ни базу для W, ни замер новой полосы.
+            probe.afterSeq := shot.captureId, ST.navInfo := 0
+            ST.lastAction := "после обхода: жду свежий кадр для проверки W"
+            return true
+        }
+        ST.patrolProbe := 0
         ; Кадр этого тика мог начаться до отпускания A/D/S. Если ждём
         ; визуальную цель, начнём новый замер на следующем тике.
         if (ST.walkTarget && ST.guidedUntil) {
@@ -5341,14 +5405,17 @@ MoveWatch(shot, now, &visualStill := 0) {
         }
         return false
     }
-    visual := ST.walkTarget && ST.guidedUntil && !ST.segUntil
     forward := ST.held.Get(SC.w, 0)
+    guided := IsSoundForward(forward) || (ST.walkTarget && ST.guidedUntil && !ST.segUntil)
     if (!forward || now - ST.cameraAt < CFG.stuckCameraQuietMs) {
         ResetMoveWatch()
         return false
     }
-    if !ST.stuckShot {
-        ST.stuckShot := shot, ST.stuckSampleAt := now
+    if (!ST.stuckShot || ST.stuckForward != forward) {
+        ; Срок аренды мог закончиться между замерами. Новый down не
+        ; наследует неподвижность с прошлого удержания W.
+        ResetMoveWatch()
+        ST.stuckForward := forward, ST.stuckShot := shot, ST.stuckSampleAt := now
         return false
     }
     if !SameFrameView(FrameView(ST.stuckShot), shot) {
@@ -5359,8 +5426,8 @@ MoveWatch(shot, now, &visualStill := 0) {
     if (dt < CFG.stuckSampleMs || shot.captureId = ST.stuckShot.captureId) {
         ; Замеры движения и цвета идут с разной частотой. Недавняя оценка
         ; годится для следующего свежего замера цели, пока W та же.
-        if (visual && ST.stuckStillSamples)
-            visualStill := forward
+        if (guided && ST.stuckStillSamples)
+            guidedStill := forward
         return false
     }
     if (dt > CFG.stuckSampleMs * 3) {
@@ -5376,44 +5443,60 @@ MoveWatch(shot, now, &visualStill := 0) {
     }
     if (diff >= CFG.stuckDiffThreshold) {
         ST.stuckStillMs := 0, ST.stuckStillSamples := 0, ST.stuckMotionN += 1
-        if (ST.stuckMotionN >= 3)
-            ST.stuckRecoverN := 0
+        if (ST.stuckMotionN >= 3) {
+            ST.stuckRecoverN := 0, ST.patrolProbe := 0
+            if probe {
+                ST.lastAction := "после обхода: кадры меняются, продолжаю ход"
+                LogThrottledKey("[patrol-resumed]", "[nav] После обхода кадры снова меняются при W; продолжаю патруль.")
+            }
+        }
         return false
     }
     ST.stuckMotionN := 0, ST.stuckStillMs += dt, ST.stuckStillSamples += 1
-    if visual {
-        ; Неподвижность — не разрешение на движение к прошлой цели.
-        ; Визуальный подход решит, годится ли замер маски этого кадра.
-        visualStill := forward
+    if guided {
+        ; Неподвижность — не разрешение на обход к прежней цели.
+        ; Ввод решает ветка с новым замером свечения или направления.
+        guidedStill := forward
         return false
     }
     return TryStuckRecovery(shot, now, forward)
 }
 
-TryStuckRecovery(shot, now, forward, approach := 0) {
+TryStuckRecovery(shot, now, forward, approach := 0, soundReading := 0) {
     global CFG, SC, ST
-    motionShot := ST.stuckShot
-    if (approach && (!motionShot || ST.walkTarget != approach || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
+    ; Звуковой W не должен попадать в общий обход без подтверждения,
+    ; которое передаёт SeekChestBySound с кадра действия.
+    if (ST.stuckForward != forward || (IsSoundForward(forward) && (!soundReading
+        || soundReading != ST.chestAudioReading || soundReading.seq != shot.captureId || !soundReading.mark)))
         return false
-    side := GuidedRecoverySide(shot, now)
+    guided := approach || soundReading, motionShot := ST.stuckShot
+    if (guided && (!motionShot || (approach && ST.walkTarget != approach)
+        || A_TickCount >= ST.guidedUntil || !FrameHasMatchHud(shot)))
+        return false
+    probe := guided ? 0 : CurrentPatrolProbe(shot)
+    side := StuckRecoverySide(shot, now, guided, probe)
     if (!side && ST.stuckStillMs < CFG.stuckMs)
         return false
-    if (approach && motionShot.captureId != shot.captureId) {
-        ; Маска могла прийти между замерами движения. Перед вводом всё
-        ; равно проверяем текущий кадр: за это время мир мог измениться.
+    if (guided && motionShot.captureId != shot.captureId) {
+        ; Цель могла подтвердиться между замерами движения. Перед вводом
+        ; сравниваем и текущий кадр: за это время мир мог измениться.
         diff := WorldMotionDiff(motionShot, shot)
         if (diff < 0 || diff >= CFG.stuckDiffThreshold) {
             ResetMoveWatch()
             return false
         }
     }
-    if (!WorldFrameCurrent(shot) || ST.held.Get(SC.w, 0) != forward)
+    if (!WorldFrameCurrent(shot) || ST.held.Get(SC.w, 0) != forward || (guided && A_TickCount >= ST.guidedUntil))
         return false
-    if side
+    alternate := probe && side
+    if (side && !alternate)
         ST.navTurnSign := side
-    ST.stuckRecoverN += 1
-    ST.stuckTotal += 1
-    attempt := ST.stuckRecoverN
+    ; Если свежий замер уже подсказал другой бок, не тратим шаг назад
+    ; и не повторяем этот бок на следующей ступени. Перескок фиксируем
+    ; только если новый шаг действительно принят к отправке с таймером.
+    attempt := alternate ? 3 : ST.stuckRecoverN + 1
+    if !alternate
+        ST.stuckRecoverN := attempt, ST.stuckTotal += 1
     HaltMatchMovement()
     ; Обход не угадывает дверь и не переключается на кирку без цели.
     if (attempt >= 4) {
@@ -5421,9 +5504,16 @@ TryStuckRecovery(shot, now, forward, approach := 0) {
             ST.stuckRecoverN := 0
         TurnBy(ST.navTurnSign * (attempt = 4 ? -70 : 110), 0, CFG.turnMaxPx)
     } else {
-        k := attempt = 2 ? SC.s : ((attempt = 1) = (ST.navTurnSign > 0) ? SC.d : SC.a)
+        k := side ? (side < 0 ? SC.a : SC.d)
+            : attempt = 2 ? SC.s : ((attempt = 1) = (ST.navTurnSign > 0) ? SC.d : SC.a)
         if (KeyDown(k, shot.inputEpochAtCapture, 0, shot) && InputReleaseLater("key", k, CFG.stuckRecoveryMs)) {
             ST.stuckRecoverKey := k, ST.stuckRecoverUntil := A_TickCount + CFG.stuckRecoveryMs
+            if alternate
+                ST.stuckRecoverN := attempt, ST.stuckTotal += 1
+            if (side && !guided && attempt = 1) {
+                observeMs := Max(CFG.stuckMs, 1100, 3 * CFG.stuckSampleMs) + 2 * CFG.stuckSampleMs
+                ST.patrolProbe := {side:side, view:FrameView(shot), afterSeq:0, until:ST.stuckRecoverUntil + observeMs}
+            }
             if (approach && ST.walkTarget = approach) {
                 ; Смещение меняет вид даже без поворота камеры. Центр
                 ; остаётся подсказкой, но в подтверждение больше не входит.
@@ -5431,8 +5521,12 @@ TryStuckRecovery(shot, now, forward, approach := 0) {
                 ST.guidedUntil := ST.stuckRecoverUntil + Max(300, 2 * CFG.scanLootMs)
             }
             if side
-                LogThrottledKey("[guided-bypass]", "[nav] Подход без видимого продвижения; пробую короткий шаг "
+                LogThrottledKey(guided ? "[guided-bypass]" : "[patrol-bypass]", "[nav] "
+                    . (guided ? "Подход" : "Патруль") " без видимого продвижения; пробую короткий шаг "
                     . (side < 0 ? "влево" : "вправо") " по двум измерениям. Кадр #" shot.captureId)
+        } else if alternate {
+            ST.lastAction := "после обхода: другой шаг не принят к отправке"
+            return true
         }
     }
     ST.lastAction := "обхожу препятствие (" attempt "/" CFG.stuckRecoveryMax ")"
@@ -5943,10 +6037,10 @@ InputReleaseRun(epoch, kind, code, hold := 0, releaseId := 0) {
     }
 }
 
-TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0) {
+TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0, shot := 0) {
     global CFG, ST
     ; Зафиксировать поколение до KeyDown даже для обычных коротких нажатий.
-    ; Для E сохраняем переданное поколение кадра, а не подменяем его текущим.
+    ; Кадр проверяется только для down; up всё равно идёт в исходное удержание.
     previous := Critical("On")
     epoch := expectedEpoch >= 0 ? expectedEpoch : ST.inputEpoch
     Critical(previous)
@@ -5954,7 +6048,7 @@ TapKey(code, holdMs := 70, expectedEpoch := -1, expectedHwnd := 0) {
     SendLevel 0
     if CFG.humanize
         holdMs := Round(holdMs * RndF(0.8, 1.35))
-    if !KeyDown(code, epoch, expectedHwnd)
+    if !KeyDown(code, epoch, expectedHwnd, shot)
         return false
     previous := Critical("On")
     if (ST.inputEpoch != epoch) {
@@ -6350,19 +6444,25 @@ StartSegment(shot) {
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
     if !CFG.dryRun {
-        if !CFG.runKeepW
+        forward := ST.held.Get(SC.w, 0)
+        if IsSoundForward(forward) {
+            ; Таймер мог опоздать. Новый патруль не наследует ни W по
+            ; метке, ни его наблюдения о неподвижности.
+            KeyUp(SC.w, forward)
+            ResetMoveWatch()
+        } else if !CFG.runKeepW
             KeyUp(SC.w)
         if (!ST.held.Has(SC.w) && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
             return false
     }
-    ClearMatchStrafe()
+    ClearMatchStrafe(true)
     CrouchSet(false)
     ST.segUntil := A_TickCount + Random(CFG.fwdMinMs, CFG.fwdMaxMs), ST.guidedUntil := 0
     if !KeepPatrolMoving(shot, true) {
         HaltMatchMovement()
         return false
     }
-    ST.lastAction := "прямой ход"
+    ST.lastAction := ST.patrolProbe ? "после обхода: проверяю продвижение" : "прямой ход"
     return true
 }
 
@@ -6397,17 +6497,19 @@ StopMove() {
     AdsSet(false)
     ST.moveMode := "стою"
     ReleaseKeys()
-    ST.segUntil := 0, ST.guidedUntil := 0
+    ST.segUntil := 0, ST.guidedUntil := 0, ST.patrolProbe := 0
     ST.idleUntil := A_TickCount + Random(CFG.idleMinMs, CFG.idleMaxMs)
     ; v7.5: пауза короткая и явная — раньше был «стоп на 0.1-0.35 с» без причины
     ST.pauseUntil := 0
 }
 
-ClearMatchStrafe() {
+ClearMatchStrafe(keepPatrolProbe := false) {
     global ST, SC
     KeyUp(SC.a), KeyUp(SC.s), KeyUp(SC.d)
     ST.retreat := 0, ST.strafeKey := "", ST.strafeFlipAt := 0
     ST.stuckRecoverKey := "", ST.stuckRecoverUntil := 0
+    if !keepPatrolProbe
+        ST.patrolProbe := 0
 }
 
 HaltMatchMovement() {
@@ -6419,7 +6521,7 @@ HaltMatchMovement() {
     ResetMoveWatch()
 }
 
-ForwardStep(shot, ms := 430, scanMs := -1, tryLip := false) {
+ForwardStep(shot, ms := 430, scanMs := -1, tryLip := false, soundGuided := false) {
     global CFG, SC, ST
     if (!CFG.featMove || !WorldFrameCurrent(shot))
         return false
@@ -6433,7 +6535,7 @@ ForwardStep(shot, ms := 430, scanMs := -1, tryLip := false) {
     }
     if !WorldFrameCurrent(shot)
         return false
-    continuing := ST.guidedUntil && ST.held.Has(SC.w)
+    forward := ST.held.Get(SC.w, 0), continuing := false
     ClearMatchStrafe()
     SprintSet(false), CrouchSet(false)
     if !WorldFrameCurrent(shot)
@@ -6441,10 +6543,18 @@ ForwardStep(shot, ms := 430, scanMs := -1, tryLip := false) {
     if !CFG.dryRun {
         if (!ST.held.Has(SC.w) && !KeyDown(SC.w, shot.inputEpochAtCapture, 0, shot))
             return false
-        ; Следующий свежий замер может продлить шаг. Без него W отпустится
-        ; и при долгом тике, и при пропуске следующего скана.
-        if !InputReleaseLater("key", SC.w, ms)
-            return false
+        ; Источник принадлежит тому же объекту W, что и таймер. Следующий
+        ; свежий замер может продлить шаг, но не отменить его ограничение.
+        previous := Critical("On")
+        try {
+            hold := ST.held.Get(SC.w, 0)
+            if (!hold || !InputReleaseLater("key", SC.w, ms))
+                return false
+            continuing := ST.guidedUntil && hold = forward && IsSoundForward(hold) = soundGuided
+            hold.soundGuided := soundGuided
+        } finally {
+            Critical(previous)
+        }
     }
     ST.segUntil := 0, ST.guidedUntil := A_TickCount + ms
     ; Продление той же ходьбы не стирает наблюдения о застревании.
@@ -6546,21 +6656,21 @@ AdsSet(on, shot := 0) {
     }
 }
 
-JumpNow(reason := "") {
+TrySoundJump(shot) {
     global CFG, SC, ST
-    if !CFG.featParkour
+    ; Интервал реакции на кольцо короче интервала прыжков. Проверяем
+    ; допуск Space до остановки, иначе отказ сам рвёт патрульный W.
+    if (!CFG.featParkour || A_TickCount - ST.lastJumpT < CFG.jumpMinGapMs
+        || Random(0, 99) >= CFG.soundDodgeJumpChance || !WorldFrameCurrent(shot))
         return false
-    if (A_TickCount - ST.lastJumpT < CFG.jumpMinGapMs)
+    HaltMatchMovement()
+    if !WorldFrameCurrent(shot)
         return false
-    ST.lastJumpT := A_TickCount
-    ST.jumps += 1
-    if CFG.dryRun {
-        LogThrottledKey("[dryjump]", "[dry-run] прыжок — " reason)
-        return true
-    }
-    TapKey(SC.space, 90)
-    ST.lastAction := "прыжок"
-    LogThrottledKey("[jump]", "[~] прыжок — " reason)
+    jumpAt := A_TickCount, dry := CFG.dryRun
+    if (!dry && !TapKey(SC.space, 90, shot.inputEpochAtCapture, 0, shot))
+        return false
+    ST.lastJumpT := jumpAt, ST.jumps += 1
+    LogThrottledKey(dry ? "[dryjump]" : "[jump]", (dry ? "[dry-run] " : "[~] ") "прыжок — свежая метка выстрела")
     return true
 }
 
@@ -6685,42 +6795,88 @@ CancelInteraction() {
         KeyUp(SC.e, pending.keyHold)
 }
 
-SeekChestBySound(shot, now) {
-    ; Только направление на метку текущего кадра, не цель для E.
+ChestSoundConfirmMs() {
+    global CFG
+    ; Место для повторного скана, одного пропущенного интервала и тика цикла.
+    return Max(300, 2 * CFG.scanSoundMs + CFG.loopMs)
+}
+
+SeekChestBySound(shot, now, soundStill := 0) {
+    ; Золотая группа на кольце — только подсказка о направлении, не цель для E.
     global CFG, ST
     if (!CFG.featChest || !CFG.featSound || !CFG.chestAudioSeek || !CFG.featMove
         || ST.enemy || ST.chest || now < ST.chestAudioCooldown || !WorldFrameCurrent(shot))
         return false
-    CachedSound(shot)
-    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot))
+    prior := ST.chestAudioReading
+    if (prior && (shot.captureId <= prior.seq || shot.capturedAt < prior.at))
         return false
-    if !ST.soundRing.chest {
-        ST.chestAudioAt := 0, ST.chestAudioLastAt := 0
-        return false
+    hasHud := FrameHasMatchHud(shot)
+    if hasHud {
+        CachedSound(shot)
+        if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot))
+            return false
     }
-    if (!ST.chestAudioAt || now - ST.chestAudioLastAt > Max(800, CFG.scanSoundMs * 3))
-        ST.chestAudioAt := now
-    ST.chestAudioLastAt := now
-    if (now - ST.chestAudioAt > 9500) {
+    ambiguous := hasHud && ST.soundRing.goldAmbiguous
+    mark := hasHud && !ambiguous ? ST.soundRing.chest : 0
+    at := shot.capturedAt, view := FrameView(shot), gap := prior ? at - prior.at : 0
+    confirmMs := ChestSoundConfirmMs(), resetMs := Max(800, CFG.scanSoundMs * 3)
+    empty := hasHud && !ambiguous && !mark
+    emptyAt := empty ? at : 0
+    if (empty && prior && prior.emptyAt && gap <= confirmMs && SameFrameView(prior.view, shot))
+        emptyAt := prior.emptyAt
+    reading := {seq:shot.captureId, at:at, view:view, mark:mark, emptyAt:emptyAt}
+    ST.chestAudioReading := reading
+    ; Один промах уже разрывает пару углов, но не возвращает право
+    ; останавливать патруль. Для этого нужна серия пустых замеров
+    ; или прежний тайм-аут без нового наблюдения.
+    if (gap > resetMs || (emptyAt && at - emptyAt >= resetMs))
+        ST.chestAudioAt := 0
+    if !mark
+        return false
+    starting := !ST.chestAudioAt
+    if starting
+        ST.chestAudioAt := at
+    ; Новый угол или собственный поворот не начинают отсчёт попытки заново.
+    if (reading.at - ST.chestAudioAt > 9500) {
         ST.chestAudioAt := 0, ST.chestAudioCooldown := now + 12000
         return false
     }
-    ang := ST.soundRing.chest.angleDeg
-    if (Abs(ang) > 14) {
-        if (!CFG.dryRun && !MouseAllowed(shot.hwnd))
-            return false
+    ang := mark.angleDeg, turn := Abs(ang) > 14
+    if (turn && !CFG.dryRun && !MouseAllowed(shot.hwnd))
+        return false
+    delta := prior && prior.mark ? Abs(SoundBearingOffset(ang, prior.mark.angleDeg)) : 0
+    if (starting || !prior || !prior.mark || !SameFrameView(prior.view, shot)
+        || gap > confirmMs || delta > CFG.soundGoldArcDeg) {
+        ; Одна короткая пауза для второго кадра. Мерцание, новый угол,
+        ; дубликат и отсрочка не начинают её заново.
+        if (starting && A_TickCount < reading.at + confirmMs) {
+            HaltMatchMovement()
+            if WorldFrameCurrent(shot) {
+                ST.guidedUntil := reading.at + confirmMs
+                ST.lastAction := "метка звука: жду повтор направления"
+            }
+        }
+        return false
+    }
+    if turn {
         HaltMatchMovement()
         if !WorldFrameCurrent(shot)
             return false
         if (!CFG.dryRun && !TurnBy(Clamp(ang * 1.2, -40, 40), 0, CFG.turnMaxPx)
             && ST.cameraSeq = shot.cameraSeqAtCapture)
             return false
-        ST.guidedUntil := A_TickCount + Max(260, CFG.scanSoundMs)
-        ST.lastAction := "метка сундука: поворачиваюсь, жду новый кадр"
+        reading.mark := 0 ; после поворота заново два замера, даже в DryRun
+        ST.guidedUntil := A_TickCount + confirmMs
+        ST.lastAction := "метка звука: поворачиваюсь, жду новый кадр"
     } else {
-        if !ForwardStep(shot, 430, CFG.scanSoundMs)
+        if (soundStill && TryStuckRecovery(shot, now, soundStill, 0, reading)) {
+            ; После смещения прежний угол больше не подтверждает шаг.
+            reading.mark := 0
+            return true
+        }
+        if !ForwardStep(shot, 430, CFG.scanSoundMs, false, true)
             return false
-        ST.lastAction := "короткий шаг по метке сундука"
+        ST.lastAction := "короткий шаг по метке звука"
     }
     ST.moveMode := "по метке звука"
     return true
@@ -6944,7 +7100,7 @@ SkipChestSpot(shot, target) {
         , rx:Max(6, Min(shot.w * 0.05, target.w * 0.6)), ry:Max(6, Min(shot.h * 0.06, target.h * 0.6))})
     ST.chestSkips := spots
     ; Не возвращаться сразу на тот же сигнал из-за другой ветки поиска.
-    ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := Max(ST.chestAudioCooldown, now + 2000)
+    ST.chestAudioAt := 0, ST.chestAudioReading := 0, ST.chestAudioCooldown := Max(ST.chestAudioCooldown, now + 2000)
     LogThrottledKey("[chest-skip]", "[chest] Нет подсказки после подхода; пропускаю пятно в ("
         . target.x "," target.y ") на " Round(CFG.chestSkipMs / 1000) " с в этом виде. Ищу дальше.")
     return true
@@ -7480,11 +7636,14 @@ TrackDamageAfterFire(shot, prevFire, enemy) {
 ;                      ПОВЕДЕНИЕ: РЕАКЦИЯ НА ЗВУК
 ; ============================================================================
 SoundReact(shot, now) {
-    global CFG, SC, ST
+    global CFG, ST
     if (!CFG.featSound || !CFG.featMove || !WorldFrameCurrent(shot) || now - ST.lastSound < CFG.soundReactMs)
         return false
     mark := CachedSound(shot)
-    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot) || !mark || mark.kind = "gold")
+    ; Кольцо остаётся доступно для диагностики. Память GAME не заменяет
+    ; подтверждение HUD на кадре, который разрешает поворот или Space.
+    if (ST.soundCacheSeq != shot.captureId || !WorldFrameCurrent(shot) || !FrameHasMatchHud(shot)
+        || !mark || mark.kind = "gold")
         return false
     dx := mark.x - shot.w / 2
     if (Abs(dx) > 15 && !CFG.teamSafe) {
@@ -7494,10 +7653,8 @@ SoundReact(shot, now) {
         if (!CFG.dryRun && !TurnBy(dx * 0.25, 0, Min(42, CFG.turnMaxPx))
             && ST.cameraSeq = shot.cameraSeqAtCapture)
             return false
-    } else if (mark.kind = "red" && Abs(dx) < shot.w * 0.20 && CFG.featParkour
-        && Random(0, 99) < CFG.soundDodgeJumpChance) {
-        HaltMatchMovement()
-        if !JumpNow("свежая метка выстрела")
+    } else if (mark.kind = "red" && Abs(dx) < shot.w * 0.20) {
+        if !TrySoundJump(shot)
             return false
     } else
         return false
@@ -7926,7 +8083,7 @@ CachedLoot(shot) {
 
 CachedSound(shot) {
     global CFG, ST
-    if (ST.soundCacheSeq != shot.captureId && !shot.HasOwnProp("soundDeferred")
+    if (shot.captureId > ST.soundCacheSeq && !shot.HasOwnProp("soundDeferred")
         && WorldFrameCurrent(shot) && A_TickCount - ST.scanSoundAt >= CFG.scanSoundMs) {
         if !ScanAllow(1) {
             shot.soundDeferred := true
@@ -7935,9 +8092,16 @@ CachedSound(shot) {
         ring := SoundRingScan(shot)
         TickCheck("после скана звука")
         prev := Critical("On")
-        ST.soundRing := ring, ST.soundCache := ring.best, ST.soundCacheSeq := shot.captureId
-        ST.scanSoundAt := A_TickCount
-        Critical(prev)
+        try {
+            if WorldFrameCurrent(shot) {
+                ST.soundRing := ring, ST.soundCache := ring.best, ST.soundCacheSeq := shot.captureId
+                ST.scanSoundAt := A_TickCount
+                if CFG.dryRun
+                    shot.soundReading := ring
+            }
+        } finally {
+            Critical(prev)
+        }
     }
     return ST.soundCache
 }
@@ -7950,7 +8114,7 @@ ResetCaches() {
     ; значения обновятся по одному в ближайших тиках (бюджет не даст все сразу).
     ST.scanDensityAt := 0, ST.scanSoundAt := 0
     ST.soundCache := 0, ST.sound := 0, ST.soundCacheSeq := 0, ST.soundRing := 0
-    ST.chestAudioAt := 0, ST.chestAudioLastAt := 0, ST.chestAudioCooldown := 0
+    ST.chestAudioAt := 0, ST.chestAudioReading := 0, ST.chestAudioCooldown := 0
     ST.walkTarget := 0, ST.chestSkips := [], ST.guidedUntil := 0
     CancelInteraction()
     CancelRetreatStep()
@@ -10197,9 +10361,11 @@ Roam(shot, now) {
         KeepPatrolMoving(shot)
         return
     }
-    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil, visualStill := 0
-    if ((watchGuided && !hopping && MoveWatch(shot, now, &visualStill))
-        || TryApproach(shot, now, visualStill) || BreakObstacle(shot, now))
+    watchGuided := ST.guidedUntil || ST.stuckRecoverUntil || IsSoundForward(ST.held.Get(SC.w, 0)), guidedStill := 0
+    if (watchGuided && !hopping && MoveWatch(shot, now, &guidedStill))
+        return
+    soundStill := IsSoundForward(guidedStill) ? guidedStill : 0
+    if (TryApproach(shot, now, soundStill ? 0 : guidedStill) || BreakObstacle(shot, now))
         return
     if (hopping && ST.navHop)
         return
@@ -10208,9 +10374,14 @@ Roam(shot, now) {
     ; Пока маски на паузе, не перебиваем визуальный подход звуковым.
     if (ST.walkTarget && A_TickCount < ST.guidedUntil)
         return
-    if (SeekChestBySound(shot, now) || SoundReact(shot, now))
+    if SoundReact(shot, now) {
+        ; Срочная реакция использует тот же скан, но не продолжает
+        ; ни пару золотых углов, ни серию пустых замеров.
+        if ST.chestAudioReading
+            ST.chestAudioReading.mark := 0, ST.chestAudioReading.emptyAt := 0
         return
-    if (!WorldFrameCurrent(shot) || A_TickCount < ST.guidedUntil)
+    }
+    if (SeekChestBySound(shot, now, soundStill) || !WorldFrameCurrent(shot) || A_TickCount < ST.guidedUntil)
         return
     if (EnsureWeapon(now) || TacticalReloadTick(now, false)) {
         ST.lastAction := "слот / перезарядка"
@@ -10227,11 +10398,15 @@ Roam(shot, now) {
     ; Для патруля память GAME не заменяет замер на кадре действия.
     ; Не начинаем новый отрезок и не сдвигаем таймеры уже выданных W/Shift.
     if !hasHud {
+        if ST.patrolProbe {
+            ST.patrolProbe := 0
+            ResetMoveWatch()
+        }
         ST.lastAction := shot.HasOwnProp("healthDeferred") ? "патруль: замер HP отложен" : "патруль: жду подтверждение HUD"
         return
     }
     if (!WorldFrameCurrent(shot) || (!watchGuided && MoveWatch(shot, now)) || CheckStormAndZone(shot, now)
-        || SteerOpenSpace(shot, now) || LevelHorizonStep(shot, now))
+        || SteerOpenSpace(shot, now) || (!ST.patrolProbe && LevelHorizonStep(shot, now)))
         return
     if (now < ST.pauseUntil || !WorldFrameCurrent(shot))
         return
@@ -10249,7 +10424,7 @@ Roam(shot, now) {
     ; Даём несколько спокойных кадров детектору движения и застревания.
     ; Осмотр не совмещаем с новым отрезком или поворотом в коридор.
     quietMs := CFG.stuckMs + CFG.stuckCameraQuietMs + CFG.stuckSampleMs
-    if (now - Max(ST.lastScanT, ST.cameraAt) >= quietMs
+    if (!ST.patrolProbe && now - Max(ST.lastScanT, ST.cameraAt) >= quietMs
         && (CFG.dryRun || TurnBy(RndF(-CFG.turnMinPx, CFG.turnMinPx) * 0.5, 0, 16))) {
         ST.lastScanT := now
         ST.lastAction := "плавный осмотр"
@@ -15555,6 +15730,9 @@ SaveDryPair(pair, root) {
             text .= "  захват: " CaptureTimingText(frame.captureTiming) "`r`n"
         if frame.HasOwnProp("combatTrace")
             text .= "  боевой скан: " CombatTraceText(frame.combatTrace) "`r`n"
+        sound := frame.HasOwnProp("soundReading") ? GoldSoundText(frame.soundReading)
+            : (frame.HasOwnProp("soundDeferred") ? "скан отложен бюджетом" : "нет замера на этом кадре")
+        text .= "  золотая группа кольца: " sound "`r`n"
     }
     reading := shot.HasOwnProp("enemyReading") ? shot.enemyReading : 0
     text .= "Рамка current в цикле: " (reading ? (reading.src " · " reading.x "," reading.y "," reading.w "," reading.h)
@@ -15651,7 +15829,7 @@ BuildCalibrationReport(shot) {
     diagnostic := {skinPct:0}
     enemy := ReadStaticFigure(shot, CFG.enemyFastFrac, 0, diagnostic)
     prompt := ReadInteractPrompt(shot)
-    ring := SoundMarks(shot)
+    ring := SoundRingScan(shot), sound := ring.best
     flashPct := SoundFlash(shot), nav := ScanNavCorridors(shot)
 
     lines := []
@@ -15698,8 +15876,9 @@ BuildCalibrationReport(shot) {
         lines.Push("     · " c.src (c.pass ? (": " c.w "x" c.h " @ (" c.cx "," c.cy ")") : "")
             . " · только диагностика")
     }
-    lines.Push("  звук: метка " (ring ? ("(" ring.x "," ring.y ") " ring.w "x" ring.h) : "нет")
+    lines.Push("  звук: метка " (sound ? ("(" sound.x "," sound.y ") " sound.w "x" sound.h) : "нет")
         . "   вспышка " Round(flashPct) "%")
+    lines.Push("  золотая группа кольца: " GoldSoundText(ring))
     sq := SquadScanHud(shot)
     slp := FindSleepScreen(shot)
     redL := FindLeaveButton(shot)

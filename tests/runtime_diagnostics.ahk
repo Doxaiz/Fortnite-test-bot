@@ -998,7 +998,7 @@ NavFixture(id, kind, w := 480, h := 288) {
                 shade := 64 + col * 3
                 if (kind = "flat")
                     shade := 96
-                else if (kind = "busy" && lane >= 2)
+                else if ((kind = "busy" && lane >= 2) || (kind = "openRight" && lane <= 2))
                     shade := Mod(col, 2) ? 48 : 202
                 else if (row >= 8 && (kind = "horizon" || (kind = "lip" && lane = 2 && col >= 2 && col <= 14)))
                     shade += 60
@@ -1012,6 +1012,8 @@ NavFixture(id, kind, w := 480, h := 288) {
 
 TestNavigationState() {
     WithGroundFixture(CheckNavigation)
+    WithGroundFixture(CheckPatrolBypassEvidence)
+    WithGroundFixture(CheckPatrolProbeGuards)
 }
 
 CheckNavigation() {
@@ -1073,6 +1075,69 @@ CheckNavigation() {
         , "если кадр устарел во время скана, оценка и подтверждение не обновляются")
     ResetNavigation()
     Check(!ST.lastObsJump && !ST.navInfo && !ST.patrolLeaseAt, "у нового матча чистая навигация")
+}
+
+CheckPatrolBypassEvidence() {
+    global CFG, ST
+    CFG.navScanMs := 60000
+    ST.segUntil := A_TickCount + 4000
+    ST.stuckStillSamples := 1, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
+    first := NavFixture(80, "busy")
+    Check(RefreshNavigation(first) && ST.navInfo.turn = -1, "первый кандидат обхода слева")
+    second := NavFixture(81, "busy"), prior := ST.navInfo
+    Check(!StuckRecoverySide(second, second.capturedAt, false) && ST.navInfo = prior
+        , "одного сравнения мира недостаточно даже при том же коридоре")
+    ST.stuckStillSamples := 2, second.hudEvidence.confirmed := false
+    Check(!StuckRecoverySide(second, second.capturedAt, false) && ST.navInfo = prior
+        , "без текущего HUD патруль не уточняет сторону для нового обхода")
+    crossed := NavFixture(82, "openRight")
+    Check(!RefreshNavigation(crossed) && !StuckRecoverySide(crossed, crossed.capturedAt, false)
+        && ST.navInfo.seq = crossed.captureId && ST.navInfo.turn = 1 && !ST.navInfo.turnStable
+        , "свежий замер опровергает старую левую сторону, но ещё не подтверждает правую")
+    agreed := NavFixture(83, "openRight")
+    Check(StuckRecoverySide(agreed, agreed.capturedAt, false) = 1 && ST.navInfo.turnStable
+        && ST.navInfo.seq = agreed.captureId, "два измерения в том же виде разрешают правую сторону")
+    measured := ST.navInfo
+    Check(!RefreshNavigation(agreed, true) && ST.navInfo = measured, "срочная проверка тоже не сканирует кадр дважды")
+    ST.stuckRecoverN := 1
+    later := NavFixture(84, "openRight")
+    Check(!StuckRecoverySide(later, later.capturedAt, false) && ST.navInfo = measured
+        , "ещё один ранний шаг не вытесняет этапы начатого обхода")
+    ST.stuckRecoverN := 0, ST.cameraSeq += 1
+    changed := NavFixture(85, "openRight")
+    Check(!StuckRecoverySide(changed, changed.capturedAt, false) && ST.navInfo = measured
+        , "согласие со старым видом после поворота не даёт обход")
+}
+
+CheckPatrolProbeGuards() {
+    global CFG, ST
+    CFG.navScanMs := 0
+    ST.segUntil := A_TickCount + 4000, ST.stuckRecoverN := 1
+    ST.stuckStillSamples := 2, ST.stuckStillMs := Max(1100, 2 * CFG.stuckSampleMs)
+    old := NavFixture(90, "openRight")
+    Check(RefreshNavigation(old) && ST.navInfo.turn = 1, "старое направление известно до отпускания")
+    probe := {side:-1, view:FrameView(old), afterSeq:old.captureId, until:A_TickCount + 2000}
+    ST.patrolProbe := probe
+    first := NavFixture(91, "openRight"), prior := ST.navInfo
+    Check(!StuckRecoverySide(first, first.capturedAt, false, probe) && ST.navInfo = prior
+        , "замер на границе отпускания не подтверждает другой бок")
+    ST.navInfo := 0
+    same := NavFixture(92, "busy")
+    Check(RefreshNavigation(same) && ST.navInfo.turn = probe.side, "видна прежняя сторона")
+    next := NavFixture(93, "busy"), prior := ST.navInfo
+    Check(!StuckRecoverySide(next, next.capturedAt, false, probe) && ST.navInfo = prior
+        , "та же сторона не заменяет штатный отход назад")
+    Check(!SteerOpenSpace(next, next.capturedAt) && !ST.navSteerAt && ST.navInfo.turnStable
+        , "пока идёт проверка W, новый замер не запускает прежний разворот")
+    for field in ["cameraSeqAtCapture", "w", "inputEpochAtCapture", "hwnd"] {
+        altered := next.Clone(), altered.%field% += 1
+        ST.patrolProbe := probe
+        Check(!CurrentPatrolProbe(altered), "старый обход не переносится при смене " field)
+    }
+    ST.patrolProbe := probe, next.hudEvidence.confirmed := false
+    Check(!CurrentPatrolProbe(next), "кадр без HUD не оценивает результат обхода")
+    ST.patrolProbe := probe, next.hudEvidence.confirmed := true, probe.until := A_TickCount
+    Check(!CurrentPatrolProbe(next), "проверка прогресса имеет конечный срок")
 }
 
 TestMotionUsesSameWindow() {
@@ -1306,9 +1371,6 @@ WorldFixture(id, kind := "blank", hwnd := 100) {
                 FixtureRect(shot, 236, 140, 9, 9, 0xEE2727)
         case "red", "white", "cyan":
             FixtureRect(shot, 236, 140, 9, 9, kind = "red" ? 0xEE2727 : (kind = "white" ? 0xEEEEEE : 0x25DAEE))
-        case "sound":
-            FixtureRect(shot, 316, 128, 7, 12, 0xE89028)
-            FixtureRect(shot, 323, 140, 8, 12, 0xE89028)
     }
     shot.capturedAt := A_TickCount
     return shot
@@ -2720,32 +2782,289 @@ CheckFireGate() {
 
 TestSoundFrames() {
     WithGroundFixture(CheckSoundFrames)
+    WithGroundFixture(CheckSoundDirectionGuards)
+    WithGroundFixture(CheckSoundRearm)
+    WithGroundFixture(CheckAmbiguousSoundFrames)
+    WithGroundFixture(CheckSoundSectorSpread)
+    WithGroundFixture(CheckSoundReactionPriority)
+    WithGroundFixture(CheckSoundReactionFrames)
+}
+
+SoundFixture(id, x := 316, y := 128) {
+    global ST
+    shot := WorldFixture(id, "blank", ST.hwnd)
+    if x
+        PaintSoundFixtureMark(shot, x, y)
+    shot.hudEvidence := {confirmed:true}, shot.capturedAt := A_TickCount
+    return shot
+}
+
+PaintSoundFixtureMark(shot, x, y, width := 7, color := 0xE89028) {
+    FixtureRect(shot, x, y, width, 12, color)
+    FixtureRect(shot, x + width, y + 12, width + 1, 12, color)
+    shot.capturedAt := A_TickCount
+}
+
+ProbeChestSound(shot) {
+    global ST
+    ST.scanSoundAt := 0, ST.scanWork := 0
+    return SeekChestBySound(shot, A_TickCount)
 }
 
 CheckSoundFrames() {
     global CFG, ST
-    empty := WorldFixture(140)
-    Check(!SeekChestBySound(empty, empty.capturedAt) && ST.soundCacheSeq = empty.captureId
-        && !ST.soundRing.chest, "пустой скан не запускает подход")
-    ST.scanSoundAt := 0, ST.scanWork := 0
-    next := WorldFixture(141, "sound")
-    Check(SeekChestBySound(next, next.capturedAt) && ST.soundCacheSeq = next.captureId
-        && ST.soundRing.chest && !ST.tgt && !ST.enemy, "следующий кадр может увидеть метку после пустого")
-    work := ST.scanWork
-    CachedSound(next)
-    Check(ST.scanWork = work, "реакция и подход делят один замер звука")
-    blank := WorldFixture(142)
-    ST.scanSoundAt := A_TickCount
-    Check(!SeekChestBySound(blank, blank.capturedAt) && !SoundReact(blank, blank.capturedAt)
-        , "старая метка не разрешает поворот, когда скан ещё не назначен")
+    id := 140
+    empty := SoundFixture(++id, 0)
+    Check(!ProbeChestSound(empty) && ST.soundCacheSeq = empty.captureId && !ST.soundRing.chest
+        , "пустой скан не запускает подход")
+    first := SoundFixture(++id)
+    Check(!ProbeChestSound(first) && ST.soundCacheSeq = first.captureId && ST.soundRing.chest
+        && first.soundReading = ST.soundRing && ST.lastAction = "метка звука: жду повтор направления" && !ST.tgt && !ST.held.Count
+        , "одиночная золотая группа видна, но ещё не разрешает поворот по звуку")
+    quiet := ST.guidedUntil, firstReading := ST.chestAudioReading
+    Check(quiet = first.capturedAt + ChestSoundConfirmMs(), "ожидание ограничено возрастом первого замера")
+    Check(!SeekChestBySound(first, A_TickCount) && ST.guidedUntil = quiet, "дубликат не подтверждает угол")
+    CachedSound(first)
+    Check(ST.scanWork = 1, "реакция и подход делят один замер звука")
+    blank := SoundFixture(++id, 0), ST.scanSoundAt := A_TickCount
+    Check(!SeekChestBySound(blank, A_TickCount) && !SoundReact(blank, A_TickCount)
+        && ST.chestAudioReading = firstReading && ST.guidedUntil = quiet
+        , "отсрочка по интервалу не промах и не новый поворот")
     ST.scanSoundAt := 0, ST.scanWork := CFG.scanPerTickMax
     before := ST.scanSkipped
-    Check(!SeekChestBySound(blank, blank.capturedAt) && !SoundReact(blank, blank.capturedAt)
-        && ST.scanSkipped = before + 1, "пропуск скана не повторяется и не превращает метку в действие")
-    ST.scanWork := 0
-    fresh := WorldFixture(143)
-    Check(!SeekChestBySound(fresh, fresh.capturedAt) && ST.soundCacheSeq = fresh.captureId
-        && !ST.soundRing.chest && !ST.chestAudioAt, "актуальный пустой кадр заканчивает аудиоподход")
+    Check(!SeekChestBySound(blank, A_TickCount) && !SoundReact(blank, A_TickCount)
+        && ST.scanSkipped = before + 1 && blank.HasOwnProp("soundDeferred") && !blank.HasOwnProp("soundReading")
+        && ST.chestAudioReading = firstReading && ST.guidedUntil = quiet
+        , "пропуск бюджета не повторяет скан, не публикует замер и не продлевает ожидание")
+    second := SoundFixture(++id, 322, 128)
+    Check(ProbeChestSound(second) && InStr(ST.lastAction, "поворачиваюсь") && !ST.tgt
+        , "второй близкий угол разрешает короткий поворот, не E")
+    episode := ST.chestAudioAt, afterTurn := ST.guidedUntil
+    Check(!SeekChestBySound(second, A_TickCount) && ST.guidedUntil = afterTurn, "тот же кадр не повторяет поворот")
+    Check(!ProbeChestSound(SoundFixture(++id)) && ST.guidedUntil = afterTurn && ST.chestAudioAt = episode
+        , "даже в DryRun после поворота прежний угол не даёт следующий поворот")
+    Check(ProbeChestSound(SoundFixture(++id)) && ST.chestAudioAt = episode
+        , "два новых замера разрешают поворот без продления общего срока")
+
+    fresh := SoundFixture(++id, 0), untilOld := ST.guidedUntil
+    Check(!ProbeChestSound(fresh) && ST.soundCacheSeq = fresh.captureId && !ST.soundRing.chest
+        && !ST.chestAudioReading.mark && ST.chestAudioAt = episode && ST.guidedUntil = untilOld
+        , "пустой замер сбрасывает угол, но не срок попытки")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = untilOld
+        , "после пропажи одного замера мало для шага или новой паузы")
+    front := SoundFixture(++id, 239, 50) ; при шаге 5 группа занимает две колонки маски
+    Check(ProbeChestSound(front) && ST.lastAction = "короткий шаг по метке звука" && !ST.tgt && !ST.held.Count
+        , "два близких угла впереди разрешают ограниченный W в DryRun")
+    stepEnd := ST.guidedUntil
+    Check(!SeekChestBySound(front, A_TickCount) && ST.guidedUntil = stepEnd, "дубликат не продлевает W")
+    ST.chestAudioAt := A_TickCount - 9501
+    Check(!ProbeChestSound(SoundFixture(++id, 0)) && ST.chestAudioAt && ST.guidedUntil = stepEnd
+        , "короткая пропажа не сбрасывает исчерпанный срок")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.chestAudioCooldown > A_TickCount
+        && ST.guidedUntil = stepEnd, "вернувшийся сигнал не продлевает пробу после общего предела")
+}
+
+CheckSoundDirectionGuards() {
+    global ST
+    id := 330
+    Check(!ProbeChestSound(SoundFixture(++id)), "первый угол только кандидат")
+    quiet := ST.guidedUntil
+    for x in [155, 316, 155] {
+        Check(!ProbeChestSound(SoundFixture(++id, x)) && ST.soundRing.chest
+            , "чередующиеся левый и правый углы не дают поворот")
+        Check(ST.guidedUntil = quiet, "несогласованное направление не продлевает паузу")
+    }
+    for change in ["камера", "поколение", "окно", "размер", "интервал"] {
+        ResetCaches()
+        Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), change ": первый угол")
+        quiet := ST.guidedUntil
+        switch change {
+            case "камера": ST.cameraSeq += 1
+            case "поколение": ST.inputEpoch += 1
+            case "окно": ST.hwnd += 1
+            case "интервал": ST.chestAudioReading.at := A_TickCount - ChestSoundConfirmMs() - 1
+        }
+        next := SoundFixture(++id, 231, 50)
+        if (change = "размер")
+            next.w -= 16 ; stride остаётся прежним
+        Check(!ProbeChestSound(next) && ST.chestAudioReading.seq = next.captureId && ST.guidedUntil = quiet
+            , change ": старый угол не даёт W на новом кадре")
+        same := SoundFixture(++id, 231, 50), same.w := next.w
+        Check(ProbeChestSound(same) && ST.lastAction = "короткий шаг по метке звука", change ": новый угол повторился")
+    }
+    ResetCaches()
+    Check(!ProbeChestSound(SoundFixture(++id, 240, 205)) && ST.soundRing.chest.angleDeg > 170, "метка у +180°")
+    Check(ProbeChestSound(SoundFixture(++id, 225, 205)) && ST.soundRing.chest.angleDeg < -170
+        , "смена знака у ±180° не разрывает близкие направления")
+
+    ResetCaches()
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "кандидат с подтверждённым HUD")
+    reading := ST.chestAudioReading, quiet := ST.guidedUntil
+    late := SoundFixture(++id, 231, 50), late.capturedAt := A_TickCount - 251
+    Check(!ProbeChestSound(late) && ST.chestAudioReading = reading && ST.guidedUntil = quiet
+        , "просроченный кадр не подтверждает и не изменяет состояние")
+    lost := SoundFixture(++id, 231, 50), lost.hudEvidence.confirmed := false
+    Check(!ProbeChestSound(lost) && ST.chestAudioReading.seq = lost.captureId && !ST.chestAudioReading.mark
+        && ST.guidedUntil = quiet, "золото без текущего HUD не подтверждает W даже при недавней игре")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "после возврата HUD прежний угол не засчитывается")
+    Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "два новых кадра с HUD возвращают шаг")
+}
+
+CheckSoundRearm() {
+    global CFG, ST
+    id := 570, resetMs := Max(800, CFG.scanSoundMs * 3)
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)), "первый угол для проверки повторной паузы")
+    waitUntil := ST.guidedUntil, episode := A_TickCount - 2 * resetMs
+    ST.chestAudioAt := episode
+    for change in ["конфликт", "нет HUD", "ракурс", "разреженные замеры"] {
+        clear := SoundFixture(++id, 0)
+        Check(!ProbeChestSound(clear) && ST.chestAudioReading.emptyAt = clear.capturedAt
+            && ST.chestAudioAt = episode, change ": один пустой кадр только начинает серию")
+        ; Подводим начало серии к порогу, а новый скан выполняется по пикселям.
+        ST.chestAudioReading.emptyAt := A_TickCount - resetMs
+        if (change = "ракурс")
+            ST.cameraSeq += 1
+        shot := change = "конфликт" ? MixedSoundFixture(++id) : SoundFixture(++id, 0)
+        if (change = "нет HUD")
+            shot.hudEvidence.confirmed := false
+        if (change = "разреженные замеры")
+            ST.chestAudioReading.at := shot.capturedAt - ChestSoundConfirmMs() - 1
+        expected := (change = "ракурс" || change = "разреженные замеры") ? shot.capturedAt : 0
+        Check(!ProbeChestSound(shot) && ST.chestAudioReading.emptyAt = expected && ST.chestAudioAt = episode
+            , change ": не завершает серию измеренной тишины")
+        Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = waitUntil
+            && ST.chestAudioAt = episode && !ST.chestAudioReading.emptyAt
+            , change ": не разрешает новой паузы и не подтверждает угол")
+    }
+
+    clear := SoundFixture(++id, 0)
+    Check(!ProbeChestSound(clear) && ST.chestAudioReading.emptyAt = clear.capturedAt, "начало серии пустых замеров")
+    near := SoundFixture(++id, 0)
+    ST.chestAudioReading.emptyAt := near.capturedAt - resetMs + 1
+    Check(!ProbeChestSound(near) && ST.chestAudioAt = episode, "за миллисекунду до порога попытка сохраняется")
+    prior := ST.chestAudioReading
+    prior.emptyAt := A_TickCount - resetMs
+    Check(!SeekChestBySound(near, A_TickCount) && ST.chestAudioAt = episode, "дубликат не подтверждает серию")
+    deferred := SoundFixture(++id, 0), ST.scanWork := CFG.scanPerTickMax, ST.scanSoundAt := 0
+    Check(!SeekChestBySound(deferred, A_TickCount) && deferred.HasOwnProp("soundDeferred")
+        && ST.chestAudioReading = prior && ST.chestAudioAt = episode, "пропуск не завершает серию пустых замеров")
+    clear := SoundFixture(++id, 0), prior.emptyAt := clear.capturedAt - resetMs
+    Check(!ProbeChestSound(clear) && !ST.chestAudioAt && ST.guidedUntil = waitUntil
+        , "только измеренная серия заканчивает попытку на пороге, не открывая паузу сама")
+    first := SoundFixture(++id, 231, 50)
+    Check(!ProbeChestSound(first) && ST.chestAudioAt = first.capturedAt
+        && ST.guidedUntil = first.capturedAt + ChestSoundConfirmMs(), "после серии первая метка снова может дать короткую паузу")
+    Check(ProbeChestSound(SoundFixture(++id, 231, 50)), "даже после тишины нужны два согласованных замера для шага")
+
+    later := SoundFixture(++id, 231, 50)
+    ST.chestAudioReading.at := later.capturedAt - resetMs - 1
+    Check(!ProbeChestSound(later) && ST.chestAudioAt = later.capturedAt
+        && ST.guidedUntil = later.capturedAt + ChestSoundConfirmMs(), "большой разрыв сохраняет отдельное правило новой попытки")
+}
+
+MixedSoundFixture(id) {
+    mixed := SoundFixture(id, 231, 50)
+    ; Крупная группа впереди и отдельная меньшая слева. Обе проходят
+    ; фильтр цвета и формы; размер больше не решает конфликт направлений.
+    FixtureRect(mixed, 159, 55, 5, 10, 0xE89028)
+    FixtureRect(mixed, 164, 65, 5, 10, 0xE89028)
+    mixed.capturedAt := A_TickCount
+    return mixed
+}
+
+CheckAmbiguousSoundFrames() {
+    global CFG, ST
+    id := 500
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.soundRing.chest, "направление прямо пока только кандидат")
+    quiet := ST.guidedUntil, episode := ST.chestAudioAt
+    mixed := MixedSoundFixture(++id)
+    Check(!ProbeChestSound(mixed) && ST.guidedUntil = quiet
+        , "вторая группа в другом направлении не должна подтверждать W по крупнейшей")
+    Check(ST.soundRing.goldAmbiguous && ST.soundRing.goldCount = 2 && Abs(ST.soundRing.chest.angleDeg) <= 14
+        && !ST.chestAudioReading.mark && ST.chestAudioAt = episode
+        && InStr(GoldSoundText(mixed.soundReading), "разные направления · групп 2 · без наведения")
+        , "точный замер конфликта сохраняется отдельно от пустого кадра")
+    Check(!SeekChestBySound(mixed, A_TickCount) && !ProbeChestSound(MixedSoundFixture(++id))
+        && ST.guidedUntil = quiet && ST.chestAudioAt = episode, "конфликт и его повторы не продлевают паузу или срок пробы")
+    Check(!ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.guidedUntil = quiet
+        , "после конфликта одному оставшемуся углу нужно собственное подтверждение")
+    Check(ProbeChestSound(SoundFixture(++id, 231, 50)) && ST.chestAudioAt = episode && !ST.tgt
+        , "второй однозначный кадр возвращает W, но не разрешает E")
+
+    ResetCaches()
+    CFG.featCombat := false, CFG.featLoot := false, CFG.pauseChance := 0
+    ST.scanWork := 0, ST.segUntil := 0, ST.camPitch := 0
+    mixed := MixedSoundFixture(++id)
+    Roam(mixed, mixed.capturedAt)
+    Check(ST.soundRing.goldAmbiguous && !ST.guidedUntil && !ST.chestAudioAt && ST.segUntil
+        && ST.lastAction = "прямой ход", "без прежней цели конфликт не делает паузу и не блокирует обычный патруль")
+}
+
+CheckSoundSectorSpread() {
+    global ST
+    id := 520
+    ; Два отдельных куска на одном луче, затем два рядом с границей ±180°.
+    for spec in [[231, 50, 231, 98], [238, 172, 225, 211]] {
+        ResetCaches()
+        Loop 2 {
+            same := SoundFixture(++id, spec[1], spec[2])
+            PaintSoundFixtureMark(same, spec[3], spec[4])
+            acted := ProbeChestSound(same)
+            Check(ST.soundRing.goldCount = 2 && !ST.soundRing.goldAmbiguous && acted = (A_Index = 2)
+                , "один узкий сектор допускает две группы и всё равно требует два кадра")
+        }
+    }
+    ResetCaches()
+    wide := SoundFixture(++id, 205, 49)
+    PaintSoundFixtureMark(wide, 255, 48)
+    PaintSoundFixtureMark(wide, 228, 98, 12)
+    Check(!ProbeChestSound(wide) && ST.soundRing.goldCount = 3 && ST.soundRing.goldAmbiguous
+        && Abs(ST.soundRing.chest.angleDeg) < 4 && !ST.guidedUntil
+        , "три группы: близость каждой боковой к крупнейшей не доказывает общий узкий сектор")
+}
+
+CheckSoundReactionPriority() {
+    global CFG, ST
+    CFG.featCombat := false, CFG.featLoot := false
+    for conflict in [false, true] {
+        ResetCaches()
+        ST.lastSound := 0
+        first := SoundFixture(450, 231, 50)
+        Check(!ProbeChestSound(first), "угол для второго замера перед красной меткой")
+        both := conflict ? MixedSoundFixture(451) : SoundFixture(451, 231, 50)
+        PaintSoundFixtureMark(both, 316, 128, 7, 0xEE2727)
+        ST.scanWork := 0, ST.scanSoundAt := 0
+        before := ST.sounds
+        Roam(both, both.capturedAt)
+        Check(ST.sounds = before + 1 && ST.soundCacheSeq = both.captureId && ST.soundRing.chest
+            && ST.soundRing.goldAmbiguous = conflict && ST.lastAction = "реакция на текущую метку звука"
+            && !ST.chestAudioReading.mark, "красная реакция сохраняется при одном и при нескольких золотых направлениях")
+    }
+}
+
+CheckSoundReactionFrames() {
+    global CFG, ST
+    id := 620
+    for kind, color in Map("red", 0xEE2727, "white", 0xEEEEEE) {
+        ResetCaches()
+        ST.lastSound := 0, ST.scanWork := 0, before := ST.sounds
+        missing := SoundFixture(++id, 0)
+        missing.hudEvidence.confirmed := false
+        PaintSoundFixtureMark(missing, 316, 128, 7, color)
+        Check(!SoundReact(missing, A_TickCount) && ST.soundCacheSeq = missing.captureId
+            && missing.soundReading.best.kind = kind && ST.scanWork = 1 && !ST.lastSound && ST.sounds = before
+            , kind ": измерение сохраняется для DryRun, но повороту нужен текущий HUD")
+        skipped := SoundFixture(++id, 0), ST.scanSoundAt := 0, ST.scanWork := CFG.scanPerTickMax
+        PaintSoundFixtureMark(skipped, 316, 128, 7, color)
+        Check(FrameHasMatchHud(skipped) && !SoundReact(skipped, A_TickCount) && skipped.HasOwnProp("soundDeferred")
+            && ST.soundCacheSeq = missing.captureId && ST.sounds = before && !ST.lastSound
+            , kind ": возврат HUD без свежего скана не использует старую метку")
+        fresh := SoundFixture(++id, 0), ST.scanWork := 0
+        PaintSoundFixtureMark(fresh, 316, 128, 7, color)
+        Check(SoundReact(fresh, A_TickCount) && ST.soundCacheSeq = fresh.captureId && fresh.soundReading.best.kind = kind
+            && ST.scanWork = 1 && ST.sounds = before + 1 && ST.lastSound
+            , kind ": свежие HUD и метка возвращают поворот в DryRun")
+    }
 }
 
 RunFixtureRoam(shot) {
@@ -2948,6 +3267,7 @@ TestCalibrationExport() {
         Check(InStr(txt, saved.name ".bmp") && InStr(txt, FormaTitle()) && InStr(txt, "кадр #181")
             && InStr(txt, "источник: " shot.source) && InStr(txt, "плашка E: кандидат")
             && InStr(txt, "цвет прицела не участвует") && InStr(txt, "движение не измерялось")
+            && InStr(txt, "золотая группа кольца: нет")
             && !InStr(txt, A_ScriptDir), "отчёт связывает кадр и признаки, не пишет локальный путь")
         for key, value in before.OwnProps()
             Check(ST.%key% = value, "экспорт не переписывает состояние цикла: " key)
