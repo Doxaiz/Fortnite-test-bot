@@ -45,7 +45,8 @@ RunWindowTests() {
         for test in [TestPromptRoundTrip, TestMinimizedMove, TestWindowHandoff, TestActualFocus, TestCapturedBody
             , TestSavedWindowFrame, TestPatrolLease, TestGuidedRecovery, TestChestFallback, TestCombatRetreat
             , TestResultBlink, TestReturnOnlyResults, TestRepeatedPrompt, TestStaticFallback, TestSlowChestRoundTrip
-            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease] {
+            , TestGuidedLaneBypass, TestGuidedLipHop, TestGuidedRecoveryRecheck, TestPatrolHudLease, TestChestSoundLease
+            , TestChestSoundRecovery] {
             test(a, b)
             FileAppend("OK: " test.Name "`n", "*", "UTF-8")
         }
@@ -1046,6 +1047,40 @@ TestChestSoundLease(a, b) {
     Check(!ST.held.Has(SC.w), "W отпущена без следующего тика")
     ExpectKey(a, SC.w, otherW*)
     ExpectKey(b, SC.e, e*)
+}
+
+TestChestSoundRecovery(a, b) {
+    global CFG, ST, SC
+    FocusFixture(a), SelectFixture(b)
+    CFG.bgMode := true, CFG.dryRun := false, CFG.featMove := true, CFG.sprint := false
+    CFG.featChest := true, CFG.featSound := true, CFG.scanSoundMs := 0
+    CFG.featCombat := false, CFG.featLoot := false, CFG.featParkour := false
+    ApplyPerfProfile("fast")
+    CFG.stuckSampleMs := 550, CFG.stuckMs := 1600, CFG.stuckRecoveryMs := 480
+    HaltMatchMovement()
+    ResetNavigation()
+    ResetSceneEvidence()
+    ResetCaches()
+    ST.state := "GAME", ST.phase := "roam", ST.phaseAt := A_TickCount, ST.matchStarted := true
+    ST.pauseUntil := 0, ST.cameraAt := 0, ST.lastSound := 0
+    d := FixtureKeyCounts(b, SC.d)
+    SetFixtureFrame(b, 30)
+    TickFixture(b)
+    good := TickFixture(b), forward := ST.held.Get(SC.w, 0)
+    Check(forward && forward.target = b && !ST.walkTarget && ST.lastAction = "короткий шаг по метке звука"
+        , "W принадлежит звуковой метке, а не свечению")
+    lease := forward.releaseId
+    PrimeGuidedStill(good)
+    SetFixtureFrame(b, 32)
+    mixed := TickFixture(b)
+    diff := WorldMotionDiff(good, mixed)
+    Check(diff >= 0 && diff < CFG.stuckDiffThreshold, "проход остался неподвижным, даже если метка изменилась")
+    Check(!ST.stuckRecoverUntil && ST.soundCacheSeq = mixed.captureId && ST.soundRing.goldAmbiguous
+        && ST.held.Get(SC.w, 0) = forward && forward.releaseId = lease
+        && ST.stuckShot = mixed && ST.stuckStillMs >= CFG.stuckMs
+        , "до свежего согласованного звука нельзя начинать D по застреванию")
+    ExpectKey(b, SC.d, d*)
+    HaltMatchMovement()
 }
 
 PrimeGuidedStill(shot) {
