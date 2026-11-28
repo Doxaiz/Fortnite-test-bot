@@ -1,0 +1,13 @@
+[package]
+name = "forma_pixels"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85.1"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+strip = "debuginfo"

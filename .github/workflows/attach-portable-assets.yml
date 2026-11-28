@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Tag of the existing Latest release, e.g. v11.0.13'
+        description: 'Existing Latest release with a ZIP tracked at portable/ in its tag'
         required: true
         type: string
       attach:

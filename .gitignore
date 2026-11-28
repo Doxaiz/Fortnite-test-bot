@@ -7,3 +7,8 @@
 /run.log.resume
 /ЖЕТОН_НАЙДЕН.txt
 /macro.txt
+
+# Optional native pixel backend built locally.
+/forma_pixels.dll
+/native/pixels/target/
+/target/

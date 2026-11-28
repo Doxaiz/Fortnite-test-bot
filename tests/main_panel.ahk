@@ -37,8 +37,8 @@ RunPanelTests() {
         BuildGui()
         ShowGui()
         FileAppend("DPI: " A_ScreenDPI " · scale: " UI.panel.scale "`n", "*", "UTF-8-RAW")
-        for test in [TestPanelNavigation, TestPanelTheme, TestPanelSettings, TestPanelClock
-            , TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
+        for test in [TestPanelNavigation, TestPanelJournal, TestPanelTheme, TestPanelSettings, TestPanelCoordinates
+            , TestPanelClock, TestPanelAutoStop, TestPanelFinds, TestPanelActions, TestPanelStartupReport, TestPanelFallback] {
             test()
             FileAppend("OK: " test.Name "`n", "*", "UTF-8-RAW")
         }
@@ -105,21 +105,36 @@ PanelChooseCombo(control, value) {
 }
 
 TestPanelNavigation() {
-    global CFG, UI
+    global CFG, ST, UI
     p := UI.panel
     PanelCheck(UI.visible && p.view = "home" && PanelIsVisible(UI.ddMode), "главный обзор")
     PanelCheck(UI.ddMode.Value = 2 && UI.cbDry.Value && UI.cbTeam.Value && p.keys[1].Value = "F10"
         , "режим, тест, защита команды и переназначенная клавиша из старого INI")
-    PanelCheck(!PanelIsVisible(UI.logEdit) && !PanelIsVisible(UI.findingsEdit), "другие страницы скрыты")
+    PanelCheck(!PanelIsVisible(UI.logEdit) && !PanelIsVisible(UI.findingsEdit) && !PanelIsVisible(UI.btnCheck)
+        && UI.btnStart.Text = "Старт · F10", "на обзоре только основные действия и актуальная клавиша")
     WinGetClientPos(, , &w, &h, "ahk_id " UI.gui.Hwnd)
     PanelCheck(Abs(w - Round(p.w * p.scale)) <= 1 && Abs(h - Round(p.h * p.scale)) <= 1, "размер клиента соответствует DPI")
     WinGetPos(, , &outerW, &outerH, "ahk_id " UI.gui.Hwnd)
     MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
     PanelCheck(outerW <= r-l && outerH <= b-t, "панель помещается на рабочем столе")
+    CheckPanelSessionRow([UI.btnStart, UI.btnPause, UI.btnStop, UI.btnCont, p.detail, UI.btnBypass], w, h)
+    CheckPanelSessionRow([UI.ddMode, UI.cbDry, p.homeCheck], w, h)
+    ini := FileRead(CFG.iniFile), logBefore := FileExist(CFG.logFile) ? FileRead(CFG.logFile) : ""
+    PanelCheck(PanelIsVisible(p.homeCheck) && InStr(p.inputLabel.Value, "БЕЗ ВВОДА"), "проверка запуска и состояние DryRun на обзоре")
+    PanelClick(p.homeCheck)
+    PanelCheck(p.view = "startup" && PanelIsVisible(p.startupReport) && !PanelIsVisible(p.homeCheck)
+        && !ST.running && !ST.hwnd && !ST.captureSeq && !ST.held.Count && FileRead(CFG.iniFile) == ini
+        && (FileExist(CFG.logFile) ? FileRead(CFG.logFile) : "") == logBefore, "переход к сводке не запускает сеанс, ввод или захват")
+    PanelSelectView("home")
 
+    Log("запись вне превью")
     Log("пробная запись панели")
+    Log("средняя строка & детали`nпродолжение многострочного события")
+    Log("последняя строка обзора")
     UpdateUiStatus()
-    PanelCheck(UI.logEdit.Value = "" && InStr(p.lastLog.Value, "пробная запись"), "скрытый журнал не рисуется, а обзор показывает последнее событие")
+    PanelCheck(UI.logEdit.Value = "" && InStr(p.homeLogRows[1].Value, "последняя строка")
+        && InStr(p.homeLogRows[2].Value, "строка & детали …") && !InStr(p.homeLogRows[2].Value, "продолжение")
+        && InStr(p.homeLogRows[3].Value, "пробная запись"), "три последних события в обзоре, скрытый журнал не рисуется")
     PanelPress(p.nav["settings"], 0x20) ; Space: владелец рисует кнопку, но Win32 обрабатывает клавиши
     PanelCheck(p.view = "settings" && !PanelIsVisible(UI.ddMode) && PanelIsVisible(p.themes["dark"])
         && PanelIsVisible(UI.btnEmergency) && Number(p.timers[1].edit.Value) = CFG.matchMaxMin, "клавиатурный переход в настройки")
@@ -145,10 +160,101 @@ TestPanelNavigation() {
     PanelClick(UI.gui["ClearView"])
     PanelCheck(InStr(UI.logEdit.Value, "Новых событий пока нет") && FileRead(CFG.logFile, "UTF-8") == disk
         , "очищается только экран, не run.log")
+    PanelSelectView("home")
+    PanelCheck(p.homeLogRows[1].Value = "Новых событий пока нет." && p.homeLogRows[2].Value = "" && p.homeLogRows[3].Value = ""
+        , "очистка журнала также освобождает предпросмотр обзора")
+    PanelSelectView("log")
     Log("событие после очистки")
     UpdateUiStatus()
     PanelCheck(InStr(UI.logEdit.Value, "событие после очистки") && !InStr(UI.logEdit.Value, "пробная запись")
         , "после очистки новые события продолжают поступать")
+}
+
+CheckPanelSessionRow(row, clientW, clientH) {
+    ; Фактические координаты Win32 после масштабирования, а не копия сетки.
+    right := 0
+    for ctrl in row {
+        ctrl.GetPos(&x, &y, &w, &h)
+        PanelCheck(PanelIsVisible(ctrl) && x >= right && y >= 0 && x + w <= clientW && y + h <= clientH
+            , "кнопки и режим помещаются на обзоре без перекрытия по X")
+        right := x + w
+    }
+}
+
+TestPanelJournal() {
+    global CFG, ST, UI, LogBuf
+    PanelSelectView("log")
+    p := UI.panel, ini := FileRead(CFG.iniFile)
+    PanelClick(UI.gui["ClearView"])
+    PanelCheck(p.logLive.Value && !p.logReset.Enabled && p.logScope.Value = "Показано: 0 из 0"
+        && UI.logEdit.Value = "Новых событий пока нет.", "журнал открывается с живым обновлением и без фильтра")
+    Log("[input] Ожидание окна`nПодробности [ПРОВЕРКА+1]")
+    Log("[perf] Время захвата")
+    UpdateUiStatus()
+    first := LogBuf[1], disk := FileRead(CFG.logFile, "UTF-8")
+    PanelType(p.logSearch, SubStr(first, 1, 8))
+    PanelCheck(InStr(UI.logEdit.Value, first), "поиск находит отображаемое время события")
+    PanelType(p.logSearch, "  [проверка+1]  ")
+    PanelCheck(p.logScope.Value = "Показано: 1 из 2" && p.logReset.Enabled
+        , "поиск не зависит от регистра кириллицы и пробелов по краям: " p.logScope.Value)
+    PanelCheck(UI.logEdit.Value == first "`n", "поиск сохраняет многострочное событие целиком")
+    PanelType(p.logSearch, ".*")
+    PanelCheck(UI.logEdit.Value = "По запросу ничего не найдено." && p.logScope.Value = "Показано: 0 из 2"
+        && FileRead(CFG.logFile, "UTF-8") == disk && LogBuf.Length = 2, "запрос буквальный, фильтр ничего не записывает")
+
+    PanelType(p.logSearch, "проверка+1")
+    SendMessage(0xB1, 2, 11, UI.logEdit) ; EM_SETSEL
+    Log("[perf] Новое событие без совпадения")
+    UpdateUiStatus()
+    PanelCheck(UI.logEdit.Value == first "`n" && p.logScope.Value = "Показано: 1 из 3"
+        && SendMessage(0xB0, 0, 0, UI.logEdit) = (11 << 16 | 2), "несовпадающая запись не сбрасывает выделение")
+    Log("[input] Живое совпадение: проверка+1")
+    UpdateUiStatus()
+    PanelCheck(InStr(UI.logEdit.Value, "Живое совпадение") && p.logScope.Value = "Показано: 2 из 4"
+        , "новые совпадения появляются в открытом фильтре")
+
+    PanelPress(p.logLive, 0x20)
+    frozen := UI.logEdit.Value
+    Log("[input] После фиксации: проверка+1")
+    UpdateUiStatus()
+    disk := FileRead(CFG.logFile, "UTF-8")
+    PanelCheck(!p.logLive.Value && UI.logEdit.Value == frozen && InStr(p.logScope.Value, "2 из 4")
+        && InStr(p.logScope.Value, "Просмотр зафиксирован") && InStr(disk, "После фиксации")
+        , "пауза с клавиатуры удерживает список и не останавливает журнал на диске")
+    PanelSelectView("home")
+    PanelCheck(InStr(p.homeLogRows[1].Value, "После фиксации"), "обзор по-прежнему показывает новое событие")
+    PanelSelectView("log")
+    HideGui()
+    ShowGui()
+    PanelCheck(!p.logLive.Value && p.logSearch.Value = "проверка+1" && UI.logEdit.Value == frozen
+        && PanelIsVisible(UI.btnEmergency), "пауза и запрос сохраняются при переходах между разделами и скрытии окна")
+    PanelClick(p.logReset)
+    PanelCheck(p.logSearch.Focused && p.logSearch.Value = "" && !p.logReset.Enabled
+        && InStr(UI.logEdit.Value, "Время захвата") && !InStr(UI.logEdit.Value, "После фиксации")
+        && InStr(p.logScope.Value, "4 из 4"), "сброс только запроса показывает весь зафиксированный список")
+    PanelClick(p.logLive)
+    PanelCheck(p.logLive.Value && InStr(UI.logEdit.Value, "После фиксации") && p.logScope.Value = "Показано: 5 из 5"
+        && FileRead(CFG.logFile, "UTF-8") == disk && FileRead(CFG.iniFile) == ini && !ST.running && !ST.paused
+        , "возврат к живому списку не меняет профиль, журнал или состояние сеанса")
+
+    Loop 300
+        Log("Тест предела журнала " A_Index)
+    UpdateUiStatus()
+    PanelType(p.logSearch, "После фиксации")
+    PanelCheck(p.logScope.Value = "Показано: 0 из 300" && LogBuf.Length = 300
+        && InStr(FileRead(CFG.logFile, "UTF-8"), "После фиксации"), "поиск ограничен буфером, а не файлом run.log")
+    PanelClick(p.logLive)
+    disk := FileRead(CFG.logFile, "UTF-8")
+    PanelClick(UI.gui["ClearView"])
+    PanelCheck(!p.logLive.Value && p.logSearch.Value = "После фиксации" && UI.logEdit.Value = "Новых событий пока нет."
+        && InStr(p.logScope.Value, "0 из 0") && !LogBuf.Length && FileRead(CFG.logFile, "UTF-8") == disk
+        , "очистка экрана очищает и зафиксированный список, но не запрос и не файл")
+    PanelClick(p.logReset)
+    PanelClick(p.logLive)
+    Log("Событие после очистки зафиксированного списка")
+    UpdateUiStatus()
+    PanelCheck(p.logScope.Value = "Показано: 1 из 1" && InStr(UI.logEdit.Value, "Событие после очистки зафиксированного списка")
+        , "после очистки новые записи снова видны")
 }
 
 TestPanelTheme() {
@@ -243,6 +349,39 @@ TestPanelSettings() {
     PanelChooseCombo(p.coordPick, 1)
 }
 
+TestPanelCoordinates() {
+    global CFG, ST, UI
+    PanelSelectView("settings")
+    p := UI.panel, ini := FileRead(CFG.iniFile), log := FileRead(CFG.logFile, "UTF-8"), before := CFG.Clone()
+    PanelChooseCombo(p.coordPick, 7)
+    PanelCheck(InStr(p.coordHint.Value, "показана база"), "пустой свой размер не считается рассчитанным")
+    for value in ["1600x900", " 1600 X 900 ", "1600 × 900", "1600 х 900"] {
+        PanelType(p.coordSize, value)
+        PanelClick(p.coordCalc)
+        PanelCheck(p.coordPick.Value = 7 && p.coordSize.Value = "1600 × 900"
+            && InStr(p.coordHint.Value, "1600 × 900") && !p.coordError.Value, "свой размер: " value)
+        for i, point in [[CFG.playNormX, CFG.playNormY], [CFG.optNormX, CFG.optNormY], [CFG.leaveNormX, CFG.leaveNormY]]
+            PanelCheck(p.coordValues[i].Value = Round(point[1] * 1600) "  /  " Round(point[2] * 900), "пересчитана точка " i)
+    }
+    for value in ["", "0x900", "-1x900", "1.5x900", "900", "20000x900", "1600x900 тест"] {
+        PanelType(p.coordSize, value)
+        PanelClick(p.coordCalc)
+        PanelCheck(InStr(p.coordError.Value, "Введите") && p.coordPick.Value = 7 && InStr(p.coordHint.Value, "1600 × 900")
+            , "неверный размер не меняет предыдущий расчёт: " value)
+    }
+    PanelClick(p.coordDesktop)
+    size := A_ScreenWidth " × " A_ScreenHeight
+    PanelCheck(p.coordPick.Value = 5 && p.coordSize.Value = size && InStr(p.coordHint.Value, size) && !p.coordError.Value
+        , "кнопка использует реальный размер экрана")
+    PanelChooseCombo(p.coordPick, 7)
+    PanelCheck(p.coordSize.Value = "1600 × 900" && InStr(p.coordHint.Value, "1600 × 900"), "свой размер восстанавливается в поле")
+    for key, value in before.OwnProps()
+        PanelCheck(CFG.%key% == value, "предпросмотр не меняет CFG." key)
+    PanelCheck(FileRead(CFG.iniFile) == ini && FileRead(CFG.logFile, "UTF-8") == log && !ST.hwnd && !ST.captureSeq
+        , "подгонка не сохраняет профиль, не захватывает игру и не пишет журнал")
+    PanelChooseCombo(p.coordPick, 1)
+}
+
 TestPanelClock() {
     global CFG, ST, UI
     PanelSelectView("home")
@@ -279,10 +418,44 @@ TestPanelClock() {
     }
 }
 
+TestPanelAutoStop() {
+    global CFG, ST, UI
+    PanelSelectView("home")
+    p := UI.panel, saved := CFG.stopAfterMin, elapsed := ST.sessionActiveSec
+    try {
+        CFG.stopAfterMin := 0
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "Без лимита", "отключённый автостоп")
+        CFG.stopAfterMin := 2.5
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "02:30" && InStr(p.stopNote.Value, "после старта"), "лимит до запуска")
+        ST.running := true, ST.sessionActiveSec := 60
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "01:30" && p.elapsed.Value = "00:01:00", "отсчёт от активного времени движка")
+        ST.paused := true
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "01:30" && InStr(p.stopNote.Value, "на паузе"), "на паузе отсчёт отмечен как замороженный")
+        ST.paused := false, ST.sessionActiveSec := 151
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "00:00" && InStr(p.stopNote.Value, "достигнут"), "отсчёт не уходит в минус")
+        ST.finishMatchArmed := true
+        UpdateUiStatus()
+        PanelCheck(p.stopTime.Value = "Доигрываю" && InStr(p.stopNote.Value, "после матча"), "видна отложенная остановка")
+    } finally {
+        CFG.stopAfterMin := saved, ST.sessionActiveSec := elapsed
+        ST.running := false, ST.paused := false, ST.finishMatchArmed := false
+        UpdateUiStatus()
+    }
+}
+
 TestPanelFinds() {
     global CFG, ST, UI
+    PanelSelectView("home")
+    p := UI.panel, filters := p.findingsButtons, shortcuts := p.homeFindingsButtons
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 0" && InStr(p.homeFindingsHint.Value, "80 СТРОК")
+        && !FileExist(CFG.tokenFile), "на обзоре пустая история не создаёт файл")
     PanelSelectView("finds")
-    PanelCheck(UI.panel.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет")
+    PanelCheck(p.view = "finds" && InStr(UI.findingsEdit.Value, "Записей пока нет") && filters["all"].control.Text = "Все · 0"
         && !FileExist(CFG.tokenFile), "пустая история не создаёт файл")
     a := "2026-11-18 12:30:15  Жетон пиратского магазина (0.5, 0.4) (сессия: 1, всего: 8)"
     b := "2026-11-18 13:00:50  Баннер редкой находки (скин/машина/жетон) (сессия: 2, всего: 9)"
@@ -291,10 +464,55 @@ TestPanelFinds() {
     UpdateUiStatus()
     PanelCheck(UI.findingsEdit.Value == b "`n" a && UI.findingsSession.Value = "За сеанс: 2"
         && UI.findingsTotal.Value = "Всего: 9", "BOM, кириллица, порядок и отдельные счётчики")
+    for kind, expected in Map("all", "Все · 2", "token", "Жетоны · 1", "banner", "Редкие баннеры · 1", "other", "Прочие записи · 0")
+        PanelCheck(filters[kind].control.Text == expected, "количество в хвосте: " kind)
+    ini := FileRead(CFG.iniFile)
+    PanelClick(filters["other"].control)
+    PanelCheck(InStr(UI.findingsEdit.Value, "В выбранной категории нет записей") && InStr(p.findingsScope.Value, "0 из 2")
+        , "пустая категория отличается от пустого файла")
+    PanelClick(filters["banner"].control)
+    PanelCheck(UI.findingsEdit.Value == b && InStr(p.findingsScope.Value, "1 из 2"), "баннер не смешивается с жетоном")
     c := "2026-11-18 13:10:50  Ещё одна тестовая находка"
-    FileAppend(c "`n", CFG.tokenFile, "UTF-8-RAW")
+    d := "2026-11-18 13:20:50  Жетон пиратского магазина (без координат) (сессия: 9, всего: 99)"
+    FileAppend(c "`n" d "`n", CFG.tokenFile, "UTF-8-RAW")
     UpdateUiStatus()
-    PanelCheck(UI.findingsEdit.Value == c "`n" b "`n" a, "новая строка подхватывается и без смены счётчиков")
+    PanelCheck(UI.findingsEdit.Value == b && p.findingsFilter = "banner" && InStr(p.findingsScope.Value, "1 из 4")
+        , "новые записи обновляют выборку без сброса текущего фильтра")
+    history := FileRead(CFG.tokenFile, "UTF-8")
+    PanelClick(filters["other"].control)
+    PanelCheck(UI.findingsEdit.Value == d "`n" c, "неизвестная и неполная записи остаются в истории")
+    PanelClick(filters["token"].control)
+    PanelCheck(UI.findingsEdit.Value == a, "видны только штатные сигналы о жетоне")
+    PanelSelectView("home")
+    PanelSelectView("finds")
+    PanelCheck(UI.findingsEdit.Value == a && p.findingsFilter = "token", "выбор сохраняется при переходе между вкладками")
+    PanelClick(filters["all"].control)
+    PanelCheck(UI.findingsEdit.Value == d "`n" c "`n" b "`n" a && FileRead(CFG.tokenFile, "UTF-8") == history
+        && FileRead(CFG.iniFile) == ini && ST.tokensFound = 2 && CFG.totalTokens = 9
+        , "фильтры не меняют историю, профиль или общие счётчики")
+
+    PanelSelectView("home")
+    for kind, item in shortcuts
+        PanelCheck(item.control.Text == filters[kind].control.Text, "на обзоре то же количество недавних записей: " kind)
+    PanelPress(shortcuts["banner"].control, 0x20)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "banner" && UI.findingsEdit.Value == b && PanelIsVisible(UI.btnEmergency)
+        , "быстрая кнопка открывает историю на нужной категории, в том числе с клавиатуры")
+    PanelSelectView("home")
+    at := p.findingsOverviewAt
+    e := "2026-11-18 13:30:50  Жетон пиратского магазина (0, 1) (сессия: 3, всего: 10)"
+    FileAppend(e "`n", CFG.tokenFile, "UTF-8-RAW")
+    PanelRefreshHomeFindings(at + 1199)
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 1", "обзор не читает хвост при каждом обновлении панели")
+    PanelRefreshHomeFindings(at + 1200)
+    PanelCheck(shortcuts["token"].control.Text = "Жетоны · 2" && p.homeTotal.Value = "9", "новая запись видна отдельно от общих счётчиков")
+    PanelClick(shortcuts["token"].control)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "token" && UI.findingsEdit.Value == e "`n" a
+        , "открытая категория показывает тот же хвост в порядке от новых к старым")
+    PanelSelectView("home")
+    PanelClick(p.homeFindingsHistory)
+    PanelCheck(p.view = "finds" && p.findingsFilter = "all" && UI.findingsEdit.Value == e "`n" d "`n" c "`n" b "`n" a
+        && FileRead(CFG.tokenFile, "UTF-8") == history e "`n" && FileRead(CFG.iniFile) == ini
+        , "«История» открывает все записи, быстрые переходы ничего не записывают")
     FileDelete(CFG.tokenFile)
     payload := "", want := "", row := "  Жетон " Rep("я", 240)
     Loop 160 {
@@ -305,15 +523,20 @@ TestPanelFinds() {
     FileAppend(payload, CFG.tokenFile, "UTF-8-RAW")
     PanelClick(UI.gui["FindRefresh"])
     PanelCheck(FileGetSize(CFG.tokenFile) > 48 * 1024 && UI.findingsEdit.Value == RTrim(want, "`n")
+        && filters["other"].control.Text = "Прочие записи · 80" && InStr(p.findingsScope.Value, "80 из 80")
         && FileRead(CFG.tokenFile, "UTF-8") == payload, "большой журнал: до 80 последних строк без изменения файла")
     original := CFG.tokenFile
     CFG.tokenFile := A_Temp ; Каталог нельзя открыть как файл.
     PanelClick(UI.gui["FindRefresh"])
-    PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать"), "ошибка файла показана в панели")
-    CFG.tokenFile := original
+    PanelCheck(InStr(UI.findingsEdit.Value, "Не удалось прочитать") && filters["all"].control.Text = "Все · —"
+        && UI.findingsTotal.Value = "Всего: 9", "ошибка файла не выдаёт устаревшие числа и не меняет счётчик")
     PanelSelectView("home")
-    p := UI.panel
-    PanelCheck(p.homeFound.Value = "Сеанс: 2" && p.homeTotal.Value = "Всего: 9" && p.resetFinds.Enabled
+    PanelCheck(shortcuts["other"].control.Text = "Прочие записи · —" && p.homeFindingsHint.Value = "ИСТОРИЯ НЕДОСТУПНА"
+        , "обзор тоже отличает ошибку чтения от нуля записей")
+    CFG.tokenFile := original
+    PanelSelectView("finds")
+    PanelSelectView("home")
+    PanelCheck(p.homeFound.Value = "2" && p.homeTotal.Value = "9" && p.resetFinds.Enabled
         , "лента обзора показывает те же реальные счётчики")
     CFG.totalRounds := 13, ST.rounds := 3
     PanelClickReset(p.resetFinds, 7) ; IDNO
@@ -321,7 +544,7 @@ TestPanelFinds() {
     PanelClickReset(p.resetFinds, 6) ; IDYES
     PanelCheck(!CFG.totalTokens && !ST.tokensFound && CFG.totalRounds = 13 && ST.rounds = 3
         && IniRead(CFG.iniFile, "stats", "totalTokens") = "0" && FileRead(CFG.tokenFile, "UTF-8") == payload
-        && p.homeTotal.Value = "Всего: 0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
+        && p.homeTotal.Value = "0" && !p.resetFinds.Enabled, "сброс только счётчиков находок, история и раунды сохранены")
 }
 
 PanelClickReset(control, answer) {
@@ -359,9 +582,10 @@ TestPanelActions() {
     PanelClick(UI.btnPause)
     PanelCheck(!ST.paused && UI.btnPause.Text = "Пауза", "снятие паузы")
     PanelClick(UI.cbDry)
-    PanelCheck(!CFG.dryRun && ST.paused, "смена DryRun требует ручного продолжения, как прежде")
+    PanelCheck(!CFG.dryRun && ST.paused && UI.panel.inputLabel.Value = "РЕАЛЬНЫЙ ВВОД"
+        , "смена DryRun видна на обзоре и требует ручного продолжения, как прежде")
     PanelClick(UI.cbDry)
-    PanelCheck(CFG.dryRun && ST.paused, "DryRun восстановлен; пауза не снялась")
+    PanelCheck(CFG.dryRun && ST.paused && InStr(UI.panel.inputLabel.Value, "БЕЗ ВВОДА"), "DryRun восстановлен; пауза не снялась")
     PanelClick(UI.btnCont)
     PanelCheck(!ST.cancelHold && ST.paused, "возобновление очереди не снимает общую паузу")
     PanelClick(UI.btnPause)
@@ -396,6 +620,8 @@ TestPanelStartupReport() {
             PanelCheck(InStr(report, expected), "поле сводки: " expected)
         PanelCheck(PanelIsVisible(p.startupReport) && (WinGetStyle("ahk_id " p.startupReport.Hwnd) & 0x800)
             && !PanelIsVisible(UI.logEdit) && p.startupLog.Enabled, "сводка только для чтения, журнал доступен")
+        for control in [UI.btnCheck, UI.btnCal, UI.btnVision, UI.btnHud, UI.btnHelp, UI.btnEmergency]
+            PanelCheck(PanelIsVisible(control), "диагностика и аварийный стоп доступны в проверке запуска")
         for private in [logPath, CFG.iniFile, CFG.webhookUrl, "ПРИВАТНЫЙ_МАРКЕР_В_ЖУРНАЛЕ"]
             PanelCheck(!InStr(report, private), "сводка не захватывает пути, webhook или содержание журнала")
         PanelClick(UI.gui["StartupCopy"])
